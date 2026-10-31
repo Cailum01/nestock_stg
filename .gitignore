@@ -1,0 +1,37 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Flutter / IDE / OS
+.dart_tool/
+.flutter-plugins-dependencies
+build/
+coverage/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+*.log
+
+# Native local build state
+**/android/local.properties
+**/android/.gradle/
+**/android/key.properties
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/ephemeral/
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/flutter_export_environment.sh

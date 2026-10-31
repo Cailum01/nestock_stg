@@ -1,0 +1,113 @@
+# Nestock｜窩有
+
+Repository: `nestock`. A clean, runnable Skeleton v1 for six developers: Flutter
+Android/iOS frontend and FastAPI backend. This is a shared foundation, not the MVP.
+It starts without cloud credentials. All data shown is read-only demo data.
+
+## Structure
+
+```text
+frontend/
+  lib/
+    app.dart                    # dependency injection and route composition
+    features/agent/              # client port, mock, scene, results, approval UI
+    features/inventory/          # independent Inventory screen
+    features/shopping/           # independent Shopping screen
+    shared/                     # read-only catalog port and reusable states
+  android/  ios/                # generated native Flutter targets
+  test/                         # baseline widget/interaction tests
+  pubspec.yaml  pubspec.lock
+backend/
+  app/
+    api/                        # health, demo read routes, provisional Agent routes
+    agent/                      # runtime protocol; A1 implementation boundary
+    tools/                      # read adapters using the same domain services
+    services/                   # domain ports and read-only fixtures
+    models/                     # authoritative Pydantic models
+    core/                       # settings and service composition
+    main.py
+  tests/
+  pyproject.toml  uv.lock
+contracts/                      # human-readable contracts and examples
+docs/                           # architecture, decisions and verification
+AGENTS.md
+```
+
+## Run the frontend
+
+Use Flutter **3.47.7 stable / Dart 3.13.5** (the generation/validation baseline).
+Install the Android SDK and accept licenses for Android. iOS requires macOS,
+Xcode and an iOS simulator/device. Native identifiers currently use
+`com.example.nestock`; C2 must choose production identifiers/signing later.
+
+```sh
+cd frontend
+flutter pub get
+flutter devices
+flutter run -d <android-or-ios-device-id>
+```
+
+The app injects `MockAgentClient` and `DemoCatalog` in `lib/main.dart`. It works
+offline and does not call the backend. Any nonempty message produces the same
+demonstration proposal; it does not perform language understanding. Confirmation
+and cancellation both leave the catalog unchanged. Photo entry shows an unavailable
+message. Cabinet/cart buttons push independent screens; native back returns home.
+Page navigation is a replaceable scaffold, not the final presentation decision.
+
+```sh
+dart format --output=none --set-exit-if-changed lib test
+flutter analyze
+flutter test
+flutter build apk --debug
+```
+
+On macOS, also validate `flutter build ios --simulator` and launch on a simulator.
+No web or desktop application targets are included.
+
+## Run the backend
+
+Install Python and `uv`. The project supports Python 3.12+; `.python-version`
+selects **3.14**, the local validation baseline. `uv sync` can install it if needed.
+
+```sh
+cd backend
+uv sync --locked
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Open `http://127.0.0.1:8000/health` for `{"status":"ok"}` and
+`http://127.0.0.1:8000/docs` for generated interactive API documentation.
+
+| Route | Skeleton behavior |
+| --- | --- |
+| `GET /health` | 200; process health, no cloud connectivity check |
+| `GET /inventory` | read-only demo inventory, fixed household scope |
+| `GET /shopping` | read-only demo shopping list, fixed household scope |
+| `POST /agent/messages` | validates provisional request, then 501 |
+| `POST /agent/resume` | validates provisional request, then 501; no writes |
+
+```sh
+uv run ruff check .
+uv run ruff format --check .
+uv run pytest
+```
+
+No environment variables, secrets or external services are required. Change local
+demo configuration in `backend/app/core/config.py`. Keep development endpoints
+local; authentication and deployment are outside this skeleton.
+
+## Where each owner extends
+
+| Owner | Starting point |
+| --- | --- |
+| A1 — Agent/HITL | `app/agent/interfaces.py`, `app/models/agent.py`, `app/tools/` |
+| A2 — Vision/naming/commerce | future service/tool adapters; no provider selected |
+| B1 — Cosmos/inventory | `app/models/domain.py`, `app/services/interfaces.py`, `app/core/dependencies.py` |
+| B2 — transactions/forecast | `Transaction`, `TransactionHistory`; no inventory write port |
+| C1 — shopping/workflows | `ShoppingService`, `ShoppingItem`; orchestration remains open |
+| C2 — Flutter | `lib/app.dart`, feature modules, injected `AgentClient` and `CatalogClient` |
+
+Normal APIs and Agent tools must use the same domain services. Predicted inventory
+must never replace confirmed inventory. See [architecture and all open decisions](docs/architecture.md),
+[provisional contracts](contracts/README.md), [contributor rules](AGENTS.md), and
+[validation evidence](docs/validation.md).

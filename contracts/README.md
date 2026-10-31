@@ -1,0 +1,68 @@
+# Contract coordination — provisional
+
+Authoritative models live in `backend/app/models/domain.py` and `agent.py`.
+FastAPI's `/openapi.json` derives schemas for the HTTP routes from these Pydantic
+classes. Do not maintain a second JSON Schema here. Examples below illustrate
+current models; they are not another source of truth. Transaction is a shared
+domain model with no exposed history endpoint in Skeleton v1.
+
+## Agreed persistent semantics
+
+InventoryItem requires item_id, household_id, name, quantity, unit, created_at,
+updated_at. Optional: aliases, free-text location, expiry_date, opaque image_ref.
+No category or image bytes. Quantity is confirmed, never forecast-overwritten.
+
+ShoppingItem requires shopping_item_id, household_id, name, quantity, unit, status,
+created_at, updated_at. Optional: item_id, source, product_url. Status:
+pending/completed. No persisted price or external checkout authorization.
+
+Transaction requires transaction_id, household_id, item_id, operation_id,
+quantity_delta, reason, created_at. Reason: purchase/consumption/adjustment.
+Stable operation identity is necessary for future durable idempotency.
+
+## Provisional Agent envelopes
+
+| Model | Current minimal purpose |
+| --- | --- |
+| AgentRequest | household scope and natural-language message |
+| AgentResponse | speech, result list, optional pending approval |
+| AgentResult | kind, display summary, provisional structured data |
+| PendingApproval | identity, presentation, proposed operation group |
+| ProposedOperation | stable identity, description, resolved values for display |
+| ResumeRequest | scope, approval identity, approve/reject decision |
+
+Result kinds: inventory, vision, forecast, purchase_options, action_result.
+Approval presentations: single_action, batch_action, purchase_options.
+
+```json
+{
+  "message": "Preview only: add milk to the Shopping List?",
+  "results": [],
+  "pending_approval": {
+    "approval_id": "demo-approval-1",
+    "presentation": "single_action",
+    "operations": [{
+      "operation_id": "demo-operation-1",
+      "description": "Add milk to the demo household Shopping List",
+      "values": {"household_id": "demo-household", "name": "牛奶", "quantity": 1, "unit": "瓶", "status": "pending"}
+    }]
+  }
+}
+```
+
+This is documentation, not a successful backend response: Agent HTTP routes
+currently return 501. Example resume:
+
+```json
+{"household_id":"demo-household","approval_id":"demo-approval-1","approved":true}
+```
+
+Never execute generic `values` or trust `approved` alone. Future implementation
+must load the exact server-side resolved proposal, validate scope and values,
+bind approval, and use durable operation idempotency. Changed values need new
+approval; retrying unchanged operations reuses identity. Inference never authorizes
+inventory writes. Purchase-option selection authorizes Shopping List additions only.
+
+A1/C2 must agree final wire mapping before replacing the Flutter mocks. A1/B1/C1
+must agree typed mutations, approval identity and durable retry semantics; A2/C1/C2
+must agree option selection and display values. Do not lock those choices here.

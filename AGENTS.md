@@ -1,5 +1,27 @@
 # Nestock contributor instructions
 
+## Session start (read first)
+
+1. The user states their owner code (A1–C2). If not, ask first. Never guess.
+2. Only modify paths owned by that code (README "Where each owner extends").
+   Before touching shared files or another owner's paths, stop, explain why,
+   and wait for approval.
+3. Git workflow (run it for the user):
+   - Branch: `feature/<code>-<topic>`, e.g. `feature/b1-cosmos-spike`.
+   - Stage only changed files by path; never `git add .`.
+   - List the files to the user and wait for confirmation before committing.
+   - Commit with the user's own Git identity, not as the AI.
+   - Push the branch and open a pull request to `main`. Never push to `main`.
+   - Never commit `.env`, keys or local environments.
+4. Planned locations — create only when first needed; any other new
+   top-level folder needs team agreement:
+   - `prompts/` Agent and vision prompts
+   - `evals/` golden prompts, workflow acceptance, vision test set
+   - `mocks/` mock tool responses shared by frontend and backend
+   - `data/` seed transaction history, demo price fallback
+   - `datalake/` Data Lake practice track (B1)
+   - `deploy/` Azure deployment notes
+
 This repository is a clean Skeleton v1 for **Nestock｜窩有**. Implement only the
 confirmed P0 scope. Keep the six-owner foundation small and independently usable.
 

@@ -1,5 +1,20 @@
 # Nestock｜窩有
 
+> 📖 Want to read this in detail? Ask your AI tool to translate it into
+> Traditional Chinese first. Always edit the English original; never save
+> a separate Chinese copy.
+
+## Start here
+
+When you open your AI coding tool, paste this first
+(replace with your own owner code, name and GitHub account):
+
+> I am B1 任軒 (GitHub: Cailum01). Read README.md and AGENTS.md first
+> and follow their rules.
+
+Your scope is listed in "Where each owner extends" below. Branches,
+uploads and new folders are handled by your AI tool following AGENTS.md.
+
 Repository: `nestock`. A clean, runnable Skeleton v1 for six developers: Flutter
 Android/iOS frontend and FastAPI backend. This is a shared foundation, not the MVP.
 It starts without cloud credentials. All data shown is read-only demo data.
@@ -98,14 +113,14 @@ local; authentication and deployment are outside this skeleton.
 
 ## Where each owner extends
 
-| Owner | Starting point |
-| --- | --- |
-| A1 — Agent/HITL | `app/agent/interfaces.py`, `app/models/agent.py`, `app/tools/` |
-| A2 — Vision/naming/commerce | future service/tool adapters; no provider selected |
-| B1 — Cosmos/inventory | `app/models/domain.py`, `app/services/interfaces.py`, `app/core/dependencies.py` |
-| B2 — transactions/forecast | `Transaction`, `TransactionHistory`; no inventory write port |
-| C1 — shopping/workflows | `ShoppingService`, `ShoppingItem`; orchestration remains open |
-| C2 — Flutter | `lib/app.dart`, feature modules, injected `AgentClient` and `CatalogClient` |
+| Owner | Member | GitHub | Starting point |
+| --- | --- | --- | --- |
+| A1 — Agent/HITL | Jason | `jasonko13w` | `app/agent/interfaces.py`, `app/models/agent.py`, `app/tools/` |
+| A2 — Vision/naming/commerce | 宗逸 | `YANG-ZONG-YI` | future service/tool adapters; no provider selected |
+| B1 — Cosmos/inventory | 任軒 | `Cailum01` | `app/models/domain.py`, `app/services/interfaces.py`, `app/core/dependencies.py` |
+| B2 — transactions/forecast | Michelle | `firmwindsor-alt` | `Transaction`, `TransactionHistory`; no inventory write port |
+| C1 — shopping/workflows | Judy | `oceanwhileru` | `ShoppingService`, `ShoppingItem`; orchestration remains open |
+| C2 — Flutter | 兔毛 | `deerdollfie` | `lib/app.dart`, feature modules, injected `AgentClient` and `CatalogClient` |
 
 Normal APIs and Agent tools must use the same domain services. Predicted inventory
 must never replace confirmed inventory. See [architecture and all open decisions](docs/architecture.md),

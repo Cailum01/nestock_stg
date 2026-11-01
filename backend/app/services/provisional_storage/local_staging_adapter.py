@@ -9,6 +9,7 @@
 ================================================================================
 """
 
+import time
 import uuid
 from pathlib import Path
 
@@ -29,6 +30,8 @@ class LocalStagingMediaStorage:
         self._base_staging_url = base_staging_url
         # In-memory registry tracking staged items: (household_id, image_ref) -> bytes
         self._staged_media: dict[tuple[str, str], bytes] = {}
+        # In-memory registry tracking pending authorization tokens
+        self._pending_tokens: dict[str, dict] = {}
 
     def _determine_extension(self, filename: str, content_type: AllowedMediaContentType) -> str:
         suffix = Path(filename).suffix.lower()
@@ -52,6 +55,14 @@ class LocalStagingMediaStorage:
         upload_token = f"staging-token-{media_id}"
         upload_url = f"{self._base_staging_url}/{upload_token}"
 
+        self._pending_tokens[upload_token] = {
+            "household_id": request.household_id,
+            "image_ref": image_ref,
+            "content_type": str(request.content_type),
+            "expires_at": time.time() + 300,
+            "file_size_bytes": request.file_size_bytes,
+        }
+
         return UploadAuthorizationResponse(
             upload_url=upload_url,
             image_ref=image_ref,
@@ -62,9 +73,39 @@ class LocalStagingMediaStorage:
             },
         )
 
+    async def receive_staged_upload(
+        self, upload_token: str, payload_bytes: bytes
+    ) -> tuple[str, str]:
+        """Receive raw binary upload payload, validate token, and persist to staging."""
+        token_info = self._pending_tokens.get(upload_token)
+        if not token_info:
+            raise KeyError(f"Upload token '{upload_token}' not found or already consumed")
+
+        if time.time() > token_info["expires_at"]:
+            self._pending_tokens.pop(upload_token, None)
+            raise TimeoutError(f"Upload token '{upload_token}' has expired")
+
+        if len(payload_bytes) == 0:
+            raise ValueError("Payload cannot be empty")
+
+        if len(payload_bytes) > 10_485_760:
+            raise ValueError(
+                f"Payload exceeds maximum allowed size of 10MB: {len(payload_bytes)} bytes"
+            )
+
+        household_id = token_info["household_id"]
+        image_ref = token_info["image_ref"]
+        self._staged_media[(household_id, image_ref)] = payload_bytes
+        self._pending_tokens.pop(upload_token, None)
+        return (household_id, image_ref)
+
     async def verify_media_exists(self, household_id: str, image_ref: str) -> bool:
         """Verify if media exists in temporary staging for the specified household."""
         return (household_id, image_ref) in self._staged_media
+
+    async def get_media_bytes(self, household_id: str, image_ref: str) -> bytes | None:
+        """Retrieve media raw binary bytes if present for the specified household."""
+        return self._staged_media.get((household_id, image_ref))
 
     async def simulate_client_upload(
         self, household_id: str, image_ref: str, payload_bytes: bytes

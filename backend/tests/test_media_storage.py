@@ -88,3 +88,48 @@ async def test_local_staging_creates_authorization_and_validates():
 
     # Cross-household access must return False
     assert await storage.verify_media_exists("other-household", auth_resp.image_ref) is False
+
+
+@pytest.mark.anyio
+async def test_local_staging_receive_upload_lifecycle():
+    storage = LocalStagingMediaStorage()
+    req = UploadAuthorizationRequest(**sample_request())
+    auth_resp = await storage.create_upload_authorization(req)
+    token = auth_resp.upload_url.split("/")[-1]
+
+    # Verify not yet uploaded
+    assert await storage.verify_media_exists("demo-household", auth_resp.image_ref) is False
+    assert await storage.get_media_bytes("demo-household", auth_resp.image_ref) is None
+
+    # Perform staged upload
+    payload = b"\xff\xd8\xff\xe0\x00\x10JFIF"
+    household_id, image_ref = await storage.receive_staged_upload(token, payload)
+    assert household_id == "demo-household"
+    assert image_ref == auth_resp.image_ref
+
+    # Verify media now exists and bytes match
+    assert await storage.verify_media_exists("demo-household", auth_resp.image_ref) is True
+    assert await storage.get_media_bytes("demo-household", auth_resp.image_ref) == payload
+
+
+@pytest.mark.anyio
+async def test_local_staging_receive_upload_invalid_or_expired_token():
+    storage = LocalStagingMediaStorage()
+    with pytest.raises(KeyError):
+        await storage.receive_staged_upload("invalid-token", b"bytes")
+
+
+@pytest.mark.anyio
+async def test_local_staging_receive_upload_payload_boundary_validation():
+    storage = LocalStagingMediaStorage()
+    req = UploadAuthorizationRequest(**sample_request())
+    auth_resp = await storage.create_upload_authorization(req)
+    token = auth_resp.upload_url.split("/")[-1]
+
+    # Empty payload
+    with pytest.raises(ValueError, match="Payload cannot be empty"):
+        await storage.receive_staged_upload(token, b"")
+
+    # Exceeding 10MB limit
+    with pytest.raises(ValueError, match="Payload exceeds"):
+        await storage.receive_staged_upload(token, b"x" * (10_485_760 + 1))

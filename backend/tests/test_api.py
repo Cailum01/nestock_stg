@@ -214,3 +214,48 @@ def test_media_upload_authorization_dependency_override():
         assert response.status_code == 200
         assert response.json()["upload_url"] == "https://custom-storage.example.com/upload"
         assert response.json()["required_headers"] == {"x-custom": "true"}
+
+
+def test_staging_binary_put_upload_flow_and_errors():
+    with TestClient(create_app()) as client:
+        # 1. Obtain authorization
+        auth_res = client.post(
+            "/api/media/upload-authorization",
+            json={
+                "household_id": "demo-household",
+                "filename": "camera.jpg",
+                "content_type": "image/jpeg",
+                "file_size_bytes": 1024,
+            },
+        )
+        assert auth_res.status_code == 200
+        auth_data = auth_res.json()
+        upload_url = auth_data["upload_url"]
+        headers = auth_data["required_headers"]
+
+        from urllib.parse import urlparse
+
+        path = urlparse(upload_url).path
+
+        # 2. Upload binary payload directly via PUT
+        payload = b"\xff\xd8\xff\xe0\x00\x10JFIF_fake_image_bytes"
+        put_res = client.put(path, content=payload, headers=headers)
+        assert put_res.status_code == 201
+
+        # 3. Test non-existent token returns 404
+        bad_put = client.put("/staging/upload/non-existent-token", content=payload, headers=headers)
+        assert bad_put.status_code == 404
+
+        # 4. Test empty body returns 400
+        empty_auth = client.post(
+            "/api/media/upload-authorization",
+            json={
+                "household_id": "demo-household",
+                "filename": "empty.jpg",
+                "content_type": "image/jpeg",
+                "file_size_bytes": 1024,
+            },
+        ).json()
+        empty_path = urlparse(empty_auth["upload_url"]).path
+        empty_res = client.put(empty_path, content=b"", headers=headers)
+        assert empty_res.status_code == 400

@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from app.core.config import settings
 from app.core.dependencies import (
@@ -74,3 +74,57 @@ async def create_upload_authorization(
     storage: Annotated[MediaStorageService, Depends(get_media_storage_service)],
 ) -> UploadAuthorizationResponse:
     return await storage.create_upload_authorization(request)
+
+
+@router.put(
+    "/staging/upload/{upload_token}",
+    status_code=status.HTTP_201_CREATED,
+    tags=["media", "provisional"],
+    summary="[PROVISIONAL_STAGING] Receive direct binary PUT upload for provisional staging",
+    responses={
+        201: {"description": "Binary payload successfully staged (Azure Put Blob parity)"},
+        400: {"description": "Empty payload or malformed request"},
+        404: {"description": "Token not found or already consumed"},
+        410: {"description": "Token has expired"},
+        413: {"description": "Payload exceeds size limit"},
+        501: {"description": "Storage backend does not support provisional staging PUT receiver"},
+    },
+)
+async def receive_staged_upload(
+    upload_token: str,
+    request: Request,
+    storage: Annotated[MediaStorageService, Depends(get_media_storage_service)],
+) -> Response:
+    if not hasattr(storage, "receive_staged_upload"):
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Staging upload receiver is not supported by current storage backend",
+        )
+
+    payload_bytes = await request.body()
+
+    try:
+        await storage.receive_staged_upload(upload_token, payload_bytes)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        msg = str(exc)
+        if "exceeds" in msg:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=msg,
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=msg,
+        ) from exc
+
+    return Response(status_code=status.HTTP_201_CREATED)

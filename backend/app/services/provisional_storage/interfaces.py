@@ -26,3 +26,7 @@ class MediaStorageService(Protocol):
     async def verify_media_exists(self, household_id: str, image_ref: str) -> bool:
         """Check whether media bytes exist and belong to the specified household."""
         ...
+
+    async def get_media_bytes(self, household_id: str, image_ref: str) -> bytes | None:
+        """Retrieve media raw binary bytes if present for the specified household."""
+        ...

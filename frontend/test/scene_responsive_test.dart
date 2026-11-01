@@ -17,11 +17,11 @@ void main() {
           catalog: const DemoCatalog(),
         ),
       );
-      expect(find.text('窩有的小天地'), findsOneWidget);
+      expect(find.byKey(const Key('room')), findsOneWidget);
       expect(tester.takeException(), isNull);
-      await tester.ensureVisible(find.text('打開庫存櫃'));
+      await tester.ensureVisible(find.byKey(const Key('cabinet')));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('打開庫存櫃'));
+      await tester.tap(find.byKey(const Key('cabinet')));
       await tester.pumpAndSettle();
       expect(find.text('白米'), findsOneWidget);
       await tester.pageBack();

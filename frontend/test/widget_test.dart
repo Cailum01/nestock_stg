@@ -48,12 +48,12 @@ void main() {
     expect(find.text('Nestock｜窩有'), findsOneWidget);
     expect(find.byType(NavigationBar), findsNothing);
     expect(find.byType(BottomNavigationBar), findsNothing);
-    await tester.tap(find.text('打開庫存櫃'));
+    await tester.tap(find.byKey(const Key('cabinet')));
     await tester.pumpAndSettle();
     expect(find.text('白米'), findsOneWidget);
     await tester.pageBack();
     await tester.pumpAndSettle();
-    await tester.tap(find.text('打開購物清單'));
+    await tester.tap(find.byKey(const Key('cart')));
     await tester.pumpAndSettle();
     expect(find.text('牛奶'), findsOneWidget);
     await tester.pageBack();

@@ -26,6 +26,8 @@ void main() {
       expect(find.text('白米'), findsOneWidget);
       if (find.byTooltip('關閉庫存').evaluate().isNotEmpty) {
         await tester.tap(find.byTooltip('關閉庫存'));
+      } else if (find.byTooltip('關閉購物清單').evaluate().isNotEmpty) {
+        await tester.tap(find.byTooltip('關閉購物清單'));
       } else {
         await tester.pageBack();
       }

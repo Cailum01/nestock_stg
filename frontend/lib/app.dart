@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'features/agent/domain/agent_client.dart';
 import 'features/agent/presentation/agent_home.dart';
 import 'features/inventory/inventory_view_client.dart';
-import 'features/shopping/shopping_screen.dart';
+import 'features/shopping/shopping_view_client.dart';
 import 'shared/data/catalog_client.dart';
 import 'shared/theme/app_theme.dart';
 import 'features/photo/photo_client.dart';
@@ -15,11 +15,13 @@ class NestockApp extends StatelessWidget {
     required this.catalog,
     this.photoClient = const UnavailablePhotoClient(),
     this.inventoryClient = const DemoInventoryViewClient(),
+    this.shoppingClient = const DemoShoppingViewClient(),
   });
   final AgentClient agentClient;
   final CatalogClient catalog;
   final PhotoClient photoClient;
   final InventoryViewClient inventoryClient;
+  final ShoppingViewClient shoppingClient;
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -29,9 +31,7 @@ class NestockApp extends StatelessWidget {
       client: agentClient,
       photoClient: photoClient,
       inventoryClient: inventoryClient,
-      openShopping: (context) => Navigator.of(context).push<void>(
-        MaterialPageRoute(builder: (_) => ShoppingScreen(catalog: catalog)),
-      ),
+      shoppingClient: shoppingClient,
     ),
   );
 }

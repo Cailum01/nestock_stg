@@ -12,6 +12,8 @@ import 'home_scene.dart';
 import '../../inventory/inventory_overlay.dart';
 import '../../inventory/inventory_view_client.dart';
 import 'agent_work_surface.dart';
+import '../../shopping/shopping_overlay.dart';
+import '../../shopping/shopping_view_client.dart';
 import '../../photo/photo_client.dart';
 
 class AgentHome extends StatefulWidget {
@@ -19,13 +21,13 @@ class AgentHome extends StatefulWidget {
     super.key,
     required this.client,
     required this.inventoryClient,
-    required this.openShopping,
+    required this.shoppingClient,
     this.photoClient = const UnavailablePhotoClient(),
   });
   final AgentClient client;
   final PhotoClient photoClient;
   final InventoryViewClient inventoryClient;
-  final void Function(BuildContext) openShopping;
+  final ShoppingViewClient shoppingClient;
   @override
   State<AgentHome> createState() => _AgentHomeState();
 }
@@ -36,6 +38,7 @@ class _AgentHomeState extends State<AgentHome> {
   AgentReply? _reply;
   bool _workOpen = false;
   bool _inventoryOpen = false;
+  bool _shoppingOpen = false;
   AgentState _state = AgentState.idle;
   bool get _busy => _state == AgentState.loading;
   Future<AgentReply> Function()? _retry;
@@ -52,6 +55,7 @@ class _AgentHomeState extends State<AgentHome> {
       setState(() {
         _reply = reply;
         _inventoryOpen = false;
+        _shoppingOpen = false;
         _workOpen = false;
         _state = reply.approval == null
             ? AgentState.completed
@@ -85,6 +89,7 @@ class _AgentHomeState extends State<AgentHome> {
 
   Future<void> _openPhoto() async {
     _closeInventory();
+    _closeShopping();
     try {
       final access = await widget.photoClient.open();
       if (!mounted) return;
@@ -107,8 +112,29 @@ class _AgentHomeState extends State<AgentHome> {
     if (_inventoryOpen) setState(() => _inventoryOpen = false);
   }
 
+  void _closeShopping() {
+    if (_shoppingOpen) setState(() => _shoppingOpen = false);
+  }
+
+  void _openShopping() {
+    setState(() {
+      _inventoryOpen = false;
+      _shoppingOpen = !_shoppingOpen;
+    });
+    if (_sceneScroll.hasClients) {
+      _sceneScroll.animateTo(
+        0,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
   void _openInventory() {
-    setState(() => _inventoryOpen = !_inventoryOpen);
+    setState(() {
+      _shoppingOpen = false;
+      _inventoryOpen = !_inventoryOpen;
+    });
     if (_sceneScroll.hasClients) {
       _sceneScroll.animateTo(
         0,
@@ -154,8 +180,7 @@ class _AgentHomeState extends State<AgentHome> {
                               child: HomeScene(
                                 onInventory: () => _openInventory(),
                                 onShopping: () {
-                                  _closeInventory();
-                                  widget.openShopping(context);
+                                  _openShopping();
                                 },
                                 message:
                                     _reply?.message ??
@@ -181,7 +206,10 @@ class _AgentHomeState extends State<AgentHome> {
                                         maxHeight: constraints.maxHeight * .90,
                                       ),
                                       child: IgnorePointer(
-                                        ignoring: !_workOpen || _inventoryOpen,
+                                        ignoring:
+                                            !_workOpen ||
+                                            _inventoryOpen ||
+                                            _shoppingOpen,
                                         child: AnimatedSlide(
                                           offset: _workOpen
                                               ? Offset.zero
@@ -191,7 +219,9 @@ class _AgentHomeState extends State<AgentHome> {
                                           ),
                                           child: AnimatedOpacity(
                                             opacity:
-                                                _workOpen && !_inventoryOpen
+                                                _workOpen &&
+                                                    !_inventoryOpen &&
+                                                    !_shoppingOpen
                                                 ? 1
                                                 : 0,
                                             duration: const Duration(
@@ -211,6 +241,59 @@ class _AgentHomeState extends State<AgentHome> {
                                   ),
                                 ),
                               ),
+                            Positioned.fill(
+                              child: ClipRect(
+                                key: const Key('shopping-room-clip'),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Align(
+                                    alignment: Alignment.topRight,
+                                    child: ConstrainedBox(
+                                      constraints: BoxConstraints(
+                                        maxHeight: constraints.maxHeight - 32,
+                                      ),
+                                      child: AnimatedSwitcher(
+                                        duration: const Duration(
+                                          milliseconds: 180,
+                                        ),
+                                        layoutBuilder: (current, previous) =>
+                                            Stack(
+                                              alignment: Alignment.topRight,
+                                              children: [...previous, ?current],
+                                            ),
+                                        transitionBuilder: (child, animation) =>
+                                            FadeTransition(
+                                              opacity: _inventoryOpen
+                                                  ? const AlwaysStoppedAnimation(
+                                                      0,
+                                                    )
+                                                  : animation,
+                                              child: ScaleTransition(
+                                                alignment: RoomAnchors.cart,
+                                                scale: Tween<double>(
+                                                  begin: .94,
+                                                  end: 1,
+                                                ).animate(animation),
+                                                child: child,
+                                              ),
+                                            ),
+                                        child: _shoppingOpen
+                                            ? ShoppingOverlay(
+                                                key: const Key(
+                                                  'shopping-panel',
+                                                ),
+                                                client: widget.shoppingClient,
+                                                onClose: _closeShopping,
+                                              )
+                                            : const SizedBox.shrink(
+                                                key: Key('shopping-hidden'),
+                                              ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
                             Positioned.fill(
                               child: ClipRect(
                                 key: const Key('inventory-room-clip'),
@@ -233,7 +316,11 @@ class _AgentHomeState extends State<AgentHome> {
                                             ),
                                         transitionBuilder: (child, animation) =>
                                             FadeTransition(
-                                              opacity: animation,
+                                              opacity: _shoppingOpen
+                                                  ? const AlwaysStoppedAnimation(
+                                                      0,
+                                                    )
+                                                  : animation,
                                               child: ScaleTransition(
                                                 alignment: RoomAnchors.cabinet,
                                                 scale: Tween<double>(
@@ -296,7 +383,10 @@ class _AgentHomeState extends State<AgentHome> {
                   Expanded(
                     child: TextField(
                       controller: _input,
-                      onTap: _closeInventory,
+                      onTap: () {
+                        _closeInventory();
+                        _closeShopping();
+                      },
                       enabled: !_busy && approval == null,
                       decoration: const InputDecoration(
                         labelText: '告訴窩有…',
@@ -328,8 +418,7 @@ class _AgentHomeState extends State<AgentHome> {
                 ),
                 TextButton(
                   onPressed: () {
-                    _closeInventory();
-                    widget.openShopping(context);
+                    _openShopping();
                   },
                   child: const Text('購物清單'),
                 ),

@@ -53,6 +53,8 @@ void main() {
     expect(find.text('白米'), findsOneWidget);
     if (find.byTooltip('關閉庫存').evaluate().isNotEmpty) {
       await tester.tap(find.byTooltip('關閉庫存'));
+    } else if (find.byTooltip('關閉購物清單').evaluate().isNotEmpty) {
+      await tester.tap(find.byTooltip('關閉購物清單'));
     } else {
       await tester.pageBack();
     }
@@ -60,11 +62,7 @@ void main() {
     await tester.tap(find.byKey(const Key('cart')));
     await tester.pumpAndSettle();
     expect(find.text('牛奶'), findsOneWidget);
-    if (find.byTooltip('關閉庫存').evaluate().isNotEmpty) {
-      await tester.tap(find.byTooltip('關閉庫存'));
-    } else {
-      await tester.pageBack();
-    }
+    await tester.tap(find.byTooltip('關閉購物清單'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('拍照／照片'));
     await tester.pumpAndSettle();

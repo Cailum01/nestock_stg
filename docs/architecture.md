@@ -85,11 +85,11 @@ selection or batch workflow implementations.
 | --- | --- |
 | A1 | LangGraph graph/state, tool registry internals, checkpoint storage, interrupt/resume, final Agent/HITL wire protocol, binding/validation of approvals |
 | A2 | Vision, item normalization, image processing/storage integration, commerce provider, purchase-option retrieval |
-| B1 | Cosmos containers, partition keys, indexing, embedded vs referenced documents, transactional/atomic writes, durable idempotency |
-| B2 | Forecast algorithm, consumption model, reorder thresholds, refresh strategy, transaction-history aggregation |
+| B1 | Cosmos containers, partition keys, indexing, document mapping, atomic writes/idempotency, append-only transaction-to-item links, soft deletion, and system-owned canonical units |
+| B2 | Forecast/consumption algorithms, reorder thresholds, refresh strategy, raw-transaction query use, transaction-history aggregation, and forecast-evaluation records; B1 does not pre-aggregate B2 inputs |
 | C1 | ShoppingService internals, complete_purchase orchestration, cross-domain persistence |
 | C2 | Final scene design, responsive hotspots, navigation details, page vs overlay vs sheet, animation, final view-model and API mapping |
-| Cross-owner | Transaction storage/partitioning, forecast query aggregation, complete_purchase atomicity; typed operation values and purchase-option selection contract |
+| Cross-owner | Proposed Transaction contract change (optional `item_id` plus `feature_keywords`, requiring at least one), exact feature normalization/query semantics, B2 use of append-only transaction-to-item links, quantity-confirmation timestamp semantics, and `complete_purchase` atomicity; typed operation values and purchase-option selection contract |
 
 ## Explicit skeleton assumptions
 

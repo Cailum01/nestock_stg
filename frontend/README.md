@@ -31,3 +31,9 @@ For the offline work-surface demo use `--dart-define=MOCK_SCENARIO=visionDemo`;
 `visionMany` supplies seven presentation-only items for scrolling checks. Enter
 any message to open the panel. Confirmation is a no-write demonstration. These
 fixtures are not a Vision or upload contract.
+
+Inventory cabinet and toolbar shortcuts open the same room overlay using a
+read-only mock presentation client. Search matches names and aliases locally.
+Opening Inventory hides an open Work Surface without discarding its local edits;
+closing Inventory reveals it again. A new Agent response closes Inventory. This
+is presentation coordination, not backend cancellation or resume semantics.

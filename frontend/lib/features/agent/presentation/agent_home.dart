@@ -9,6 +9,8 @@ import 'agent_result_card.dart';
 import 'approval_card.dart';
 import 'agent_state.dart';
 import 'home_scene.dart';
+import '../../inventory/inventory_overlay.dart';
+import '../../inventory/inventory_view_client.dart';
 import 'agent_work_surface.dart';
 import '../../photo/photo_client.dart';
 
@@ -16,13 +18,13 @@ class AgentHome extends StatefulWidget {
   const AgentHome({
     super.key,
     required this.client,
-    required this.openInventory,
+    required this.inventoryClient,
     required this.openShopping,
     this.photoClient = const UnavailablePhotoClient(),
   });
   final AgentClient client;
   final PhotoClient photoClient;
-  final void Function(BuildContext) openInventory;
+  final InventoryViewClient inventoryClient;
   final void Function(BuildContext) openShopping;
   @override
   State<AgentHome> createState() => _AgentHomeState();
@@ -33,6 +35,7 @@ class _AgentHomeState extends State<AgentHome> {
   final _sceneScroll = ScrollController();
   AgentReply? _reply;
   bool _workOpen = false;
+  bool _inventoryOpen = false;
   AgentState _state = AgentState.idle;
   bool get _busy => _state == AgentState.loading;
   Future<AgentReply> Function()? _retry;
@@ -48,6 +51,7 @@ class _AgentHomeState extends State<AgentHome> {
       if (!mounted) return;
       setState(() {
         _reply = reply;
+        _inventoryOpen = false;
         _workOpen = false;
         _state = reply.approval == null
             ? AgentState.completed
@@ -80,6 +84,7 @@ class _AgentHomeState extends State<AgentHome> {
   }
 
   Future<void> _openPhoto() async {
+    _closeInventory();
     try {
       final access = await widget.photoClient.open();
       if (!mounted) return;
@@ -95,6 +100,21 @@ class _AgentHomeState extends State<AgentHome> {
         ScaffoldMessenger.of(context)
             .showSnackBar(const SnackBar(content: Text('無法開啟相機，請稍後再試。')));
       }
+    }
+  }
+
+  void _closeInventory() {
+    if (_inventoryOpen) setState(() => _inventoryOpen = false);
+  }
+
+  void _openInventory() {
+    setState(() => _inventoryOpen = !_inventoryOpen);
+    if (_sceneScroll.hasClients) {
+      _sceneScroll.animateTo(
+        0,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+      );
     }
   }
 
@@ -132,9 +152,11 @@ class _AgentHomeState extends State<AgentHome> {
                           children: [
                             Positioned.fill(
                               child: HomeScene(
-                                onInventory: () =>
-                                    widget.openInventory(context),
-                                onShopping: () => widget.openShopping(context),
+                                onInventory: () => _openInventory(),
+                                onShopping: () {
+                                  _closeInventory();
+                                  widget.openShopping(context);
+                                },
                                 message:
                                     _reply?.message ??
                                     '歡迎回家！打開櫃子看看庫存，或告訴我你想整理什麼。',
@@ -159,7 +181,7 @@ class _AgentHomeState extends State<AgentHome> {
                                         maxHeight: constraints.maxHeight * .90,
                                       ),
                                       child: IgnorePointer(
-                                        ignoring: !_workOpen,
+                                        ignoring: !_workOpen || _inventoryOpen,
                                         child: AnimatedSlide(
                                           offset: _workOpen
                                               ? Offset.zero
@@ -168,7 +190,10 @@ class _AgentHomeState extends State<AgentHome> {
                                             milliseconds: 220,
                                           ),
                                           child: AnimatedOpacity(
-                                            opacity: _workOpen ? 1 : 0,
+                                            opacity:
+                                                _workOpen && !_inventoryOpen
+                                                ? 1
+                                                : 0,
                                             duration: const Duration(
                                               milliseconds: 220,
                                             ),
@@ -186,6 +211,55 @@ class _AgentHomeState extends State<AgentHome> {
                                   ),
                                 ),
                               ),
+                            Positioned.fill(
+                              child: ClipRect(
+                                key: const Key('inventory-room-clip'),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Align(
+                                    alignment: Alignment.topLeft,
+                                    child: ConstrainedBox(
+                                      constraints: BoxConstraints(
+                                        maxHeight: constraints.maxHeight - 32,
+                                      ),
+                                      child: AnimatedSwitcher(
+                                        duration: const Duration(
+                                          milliseconds: 180,
+                                        ),
+                                        layoutBuilder: (current, previous) =>
+                                            Stack(
+                                              alignment: Alignment.topLeft,
+                                              children: [...previous, ?current],
+                                            ),
+                                        transitionBuilder: (child, animation) =>
+                                            FadeTransition(
+                                              opacity: animation,
+                                              child: ScaleTransition(
+                                                alignment: RoomAnchors.cabinet,
+                                                scale: Tween<double>(
+                                                  begin: .94,
+                                                  end: 1,
+                                                ).animate(animation),
+                                                child: child,
+                                              ),
+                                            ),
+                                        child: _inventoryOpen
+                                            ? InventoryOverlay(
+                                                key: const Key(
+                                                  'inventory-panel',
+                                                ),
+                                                client: widget.inventoryClient,
+                                                onClose: _closeInventory,
+                                              )
+                                            : const SizedBox.shrink(
+                                                key: Key('inventory-hidden'),
+                                              ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -222,6 +296,7 @@ class _AgentHomeState extends State<AgentHome> {
                   Expanded(
                     child: TextField(
                       controller: _input,
+                      onTap: _closeInventory,
                       enabled: !_busy && approval == null,
                       decoration: const InputDecoration(
                         labelText: '告訴窩有…',
@@ -248,11 +323,14 @@ class _AgentHomeState extends State<AgentHome> {
                   label: const Text('拍照／照片'),
                 ),
                 TextButton(
-                  onPressed: () => widget.openInventory(context),
+                  onPressed: () => _openInventory(),
                   child: const Text('庫存'),
                 ),
                 TextButton(
-                  onPressed: () => widget.openShopping(context),
+                  onPressed: () {
+                    _closeInventory();
+                    widget.openShopping(context);
+                  },
                   child: const Text('購物清單'),
                 ),
               ],

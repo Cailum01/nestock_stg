@@ -1,6 +1,13 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
-/// Replaceable room placeholders; positions scale with the available room.
+/// Scene geometry and overlay origin live together so artwork can replace props.
+abstract final class RoomAnchors {
+  static const cabinet = Alignment(-.86, -.88);
+  static const cart = Alignment(.87, .15);
+}
+
 class HomeScene extends StatelessWidget {
   const HomeScene({
     super.key,
@@ -11,12 +18,17 @@ class HomeScene extends StatelessWidget {
   final VoidCallback onInventory;
   final VoidCallback onShopping;
   final String message;
-
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final colors = Theme.of(context).colorScheme;
-      final compact = constraints.maxHeight < 300;
+      final width = constraints.maxWidth;
+      final height = constraints.maxHeight;
+      final cabinetWidth = width * .29;
+      final cabinetHeight = height * .48;
+      final characterSize = math
+          .min(width * .34, height * .31)
+          .clamp(44.0, 150.0);
       return Container(
         key: const Key('room'),
         decoration: BoxDecoration(
@@ -25,59 +37,127 @@ class HomeScene extends StatelessWidget {
         ),
         child: Stack(
           children: [
-            Positioned(
-              top: 8,
-              left: 8,
-              child: _SceneObject(
-                key: const Key('cabinet'),
-                icon: Icons.kitchen_outlined,
+            Align(
+              alignment: RoomAnchors.cabinet,
+              child: Semantics(
                 label: '庫存櫃',
-                onTap: onInventory,
-              ),
-            ),
-            Positioned(
-              top: 8,
-              right: 8,
-              child: _SceneObject(
-                key: const Key('cart'),
-                icon: Icons.shopping_cart_outlined,
-                label: '購物車',
-                onTap: onShopping,
-              ),
-            ),
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 54),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      key: const Key('speech'),
-                      padding: const EdgeInsets.all(8),
+                button: true,
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    key: const Key('cabinet'),
+                    onTap: onInventory,
+                    child: Container(
+                      width: cabinetWidth,
+                      height: cabinetHeight,
                       decoration: BoxDecoration(
-                        color: colors.surface,
-                        borderRadius: BorderRadius.circular(16),
+                        color: colors.surfaceContainerHighest,
+                        border: Border.all(color: colors.outline, width: 2),
+                        borderRadius: BorderRadius.circular(6),
                       ),
-                      child: Text(
-                        message,
-                        maxLines: compact ? 2 : 4,
-                        overflow: TextOverflow.ellipsis,
-                        textAlign: TextAlign.center,
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Center(
+                              child: Container(
+                                width: 3,
+                                height: 14,
+                                color: colors.outline,
+                              ),
+                            ),
+                          ),
+                          Container(width: 1, color: colors.outline),
+                          Expanded(
+                            child: Center(
+                              child: Container(
+                                width: 3,
+                                height: 14,
+                                color: colors.outline,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    CircleAvatar(
-                      key: const Key('agent'),
-                      radius: compact ? 26 : 38,
-                      backgroundColor: colors.surface,
+                  ),
+                ),
+              ),
+            ),
+            Align(
+              alignment: const Alignment(.82, -.83),
+              child: Container(
+                key: const Key('window'),
+                width: width * .23,
+                height: height * .20,
+                decoration: BoxDecoration(
+                  color: colors.surface,
+                  border: Border.all(color: colors.outline, width: 3),
+                ),
+                child: Center(
+                  child: Container(width: 2, color: colors.outline),
+                ),
+              ),
+            ),
+            Align(
+              alignment: RoomAnchors.cart,
+              child: Semantics(
+                label: '購物車',
+                button: true,
+                child: InkWell(
+                  key: const Key('cart'),
+                  onTap: onShopping,
+                  child: SizedBox(
+                    width: width * .20,
+                    height: math.max(48, height * .20),
+                    child: Icon(
+                      Icons.shopping_cart_outlined,
+                      size: math.min(width * .16, 64),
+                      color: colors.primary,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Align(
+              alignment: const Alignment(0, .55),
+              child: SizedBox(
+                key: const Key('agent'),
+                width: characterSize,
+                height: characterSize,
+                child: Semantics(
+                  label: '窩有小幫手',
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: colors.surface,
+                      border: Border.all(color: colors.outline, width: 2),
+                      borderRadius: BorderRadius.circular(characterSize * .43),
+                    ),
+                    child: Center(
                       child: Icon(
-                        Icons.smart_toy_outlined,
-                        size: compact ? 36 : 48,
+                        Icons.face_outlined,
+                        size: characterSize * .45,
                         color: colors.primary,
-                        semanticLabel: '窩有小幫手',
                       ),
                     ),
-                  ],
+                  ),
+                ),
+              ),
+            ),
+            Align(
+              alignment: const Alignment(0, -.10),
+              child: Container(
+                key: const Key('speech'),
+                constraints: BoxConstraints(maxWidth: width * .48),
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: colors.surface,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Text(
+                  message,
+                  maxLines: height < 300 ? 2 : 3,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
                 ),
               ),
             ),
@@ -85,29 +165,5 @@ class HomeScene extends StatelessWidget {
         ),
       );
     },
-  );
-}
-
-class _SceneObject extends StatelessWidget {
-  const _SceneObject({
-    super.key,
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-  @override
-  Widget build(BuildContext context) => Semantics(
-    button: true,
-    label: label,
-    child: InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Icon(icon, size: 36),
-      ),
-    ),
   );
 }

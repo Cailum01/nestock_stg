@@ -30,12 +30,31 @@ void main() {
       final room = tester.getRect(find.byKey(const Key('room')));
       final cabinet = tester.getRect(find.byKey(const Key('cabinet')));
       final cart = tester.getRect(find.byKey(const Key('cart')));
+      final window = tester.getRect(find.byKey(const Key('window')));
       final agent = tester.getRect(find.byKey(const Key('agent')));
       final speech = tester.getRect(find.byKey(const Key('speech')));
       final composer = tester.getRect(find.byKey(const Key('composer')));
       final toolbar = tester.getRect(find.byKey(const Key('toolbar')));
       expect(cabinet.center.dy, lessThan(room.center.dy));
-      expect(cart.center.dy, lessThan(room.center.dy));
+      expect(cabinet.center.dx, lessThan(room.center.dx));
+      expect(cart.center.dx, greaterThan(room.center.dx));
+      expect(cart.center.dy, greaterThan(window.center.dy));
+      expect(
+        room.contains(cart.topLeft) && room.contains(cart.bottomRight),
+        isTrue,
+      );
+      expect(
+        room.contains(agent.topLeft) && room.contains(agent.bottomRight),
+        isTrue,
+      );
+      expect(cabinet.width, greaterThan(room.width * .2));
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('window')),
+          matching: find.byType(InkWell),
+        ),
+        findsNothing,
+      );
       expect(
         (agent.center.dy - room.center.dy).abs(),
         lessThan(room.height * .3),
@@ -58,7 +77,11 @@ void main() {
         await tester.tap(target);
         await tester.pumpAndSettle();
         expect(find.text(pair.$2), findsOneWidget);
-        await tester.pageBack();
+        if (find.byTooltip('關閉庫存').evaluate().isNotEmpty) {
+          await tester.tap(find.byTooltip('關閉庫存'));
+        } else {
+          await tester.pageBack();
+        }
         await tester.pumpAndSettle();
       }
       expect(find.byType(TextField).hitTestable(), findsOneWidget);

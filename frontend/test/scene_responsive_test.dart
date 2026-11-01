@@ -24,7 +24,11 @@ void main() {
       await tester.tap(find.byKey(const Key('cabinet')));
       await tester.pumpAndSettle();
       expect(find.text('白米'), findsOneWidget);
-      await tester.pageBack();
+      if (find.byTooltip('關閉庫存').evaluate().isNotEmpty) {
+        await tester.tap(find.byTooltip('關閉庫存'));
+      } else {
+        await tester.pageBack();
+      }
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.byType(TextField));
       await tester.pumpAndSettle();

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../shared/widgets/async_state.dart';
@@ -5,6 +7,8 @@ import '../domain/agent_client.dart';
 import '../domain/agent_view_data.dart';
 import 'agent_result_card.dart';
 import 'approval_card.dart';
+import 'agent_state.dart';
+import '../../photo/photo_client.dart';
 
 class AgentHome extends StatefulWidget {
   const AgentHome({
@@ -12,8 +16,10 @@ class AgentHome extends StatefulWidget {
     required this.client,
     required this.openInventory,
     required this.openShopping,
+    this.photoClient = const UnavailablePhotoClient(),
   });
   final AgentClient client;
+  final PhotoClient photoClient;
   final void Function(BuildContext) openInventory;
   final void Function(BuildContext) openShopping;
   @override
@@ -23,15 +29,14 @@ class AgentHome extends StatefulWidget {
 class _AgentHomeState extends State<AgentHome> {
   final _input = TextEditingController();
   AgentReply? _reply;
-  bool _busy = false;
-  bool _failed = false;
+  AgentState _state = AgentState.idle;
+  bool get _busy => _state == AgentState.loading;
   Future<AgentReply> Function()? _retry;
 
   Future<void> _perform(Future<AgentReply> Function() action) async {
     if (_busy) return;
     setState(() {
-      _busy = true;
-      _failed = false;
+      _state = AgentState.loading;
       _retry = action;
     });
     try {
@@ -39,12 +44,34 @@ class _AgentHomeState extends State<AgentHome> {
       if (!mounted) return;
       setState(() {
         _reply = reply;
+        _state = reply.approval == null
+            ? AgentState.completed
+            : AgentState.waitingForApproval;
         _input.clear();
       });
+    } on TimeoutException {
+      if (mounted) setState(() => _state = AgentState.timeout);
     } catch (_) {
-      if (mounted) setState(() => _failed = true);
-    } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _state = AgentState.error);
+    }
+  }
+
+  Future<void> _openPhoto() async {
+    try {
+      final access = await widget.photoClient.open();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            access == PhotoAccess.denied ? '相機權限遭拒，請檢查裝置設定。' : '拍照與選取照片功能尚未開放。',
+          ),
+        ),
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('無法開啟相機，請稍後再試。')));
+      }
     }
   }
 
@@ -78,7 +105,12 @@ class _AgentHomeState extends State<AgentHome> {
                 semanticLabel: '窩有小幫手',
               ),
             ),
-            Text(_reply?.message ?? '歡迎回家！打開櫃子看看庫存，或告訴我你想整理什麼。'),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(_reply?.message ?? '歡迎回家！打開櫃子看看庫存，或告訴我你想整理什麼。'),
+              ),
+            ),
             const SizedBox(height: 16),
             Wrap(
               spacing: 12,
@@ -110,9 +142,7 @@ class _AgentHomeState extends State<AgentHome> {
               spacing: 12,
               children: [
                 TextButton.icon(
-                  onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('拍照與選取照片功能尚未開放。')),
-                  ),
+                  onPressed: _openPhoto,
                   icon: const Icon(Icons.camera_alt_outlined),
                   label: const Text('拍照／照片'),
                 ),
@@ -123,7 +153,11 @@ class _AgentHomeState extends State<AgentHome> {
               ],
             ),
             if (_busy) const LoadingState(),
-            if (_failed && !_busy) ErrorState(onRetry: () => _perform(_retry!)),
+            if (_state == AgentState.error || _state == AgentState.timeout)
+              ErrorState(
+                timeout: _state == AgentState.timeout,
+                onRetry: () => _perform(_retry!),
+              ),
             for (final result in _reply?.results ?? <AgentResultView>[])
               AgentResultCard(result: result),
             if (approval != null)

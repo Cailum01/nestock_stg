@@ -222,13 +222,15 @@ class _AgentWorkSurfaceState extends State<AgentWorkSurface> {
                 const Icon(Icons.location_on_outlined, size: 16),
                 const SizedBox(width: 4),
                 Expanded(
-                  child: TextField(
-                    key: ValueKey('location-$itemId'),
-                    controller: locations[itemId],
-                    decoration: const InputDecoration(
-                      labelText: '位置',
-                      isDense: true,
-                      contentPadding: EdgeInsets.all(6),
+                  child: Semantics(
+                    label: '位置',
+                    child: TextField(
+                      key: ValueKey('location-$itemId'),
+                      controller: locations[itemId],
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        contentPadding: EdgeInsets.all(6),
+                      ),
                     ),
                   ),
                 ),

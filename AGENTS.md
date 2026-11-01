@@ -7,11 +7,15 @@
    Before touching shared files or another owner's paths, stop, explain why,
    and wait for approval.
 3. Git workflow (run it for the user):
+   - Before creating a branch, switch to `main` and pull the latest changes.
    - Branch: `feature/<code>-<topic>`, e.g. `feature/b1-cosmos-spike`.
    - Stage only changed files by path; never `git add .`.
    - List the files to the user and wait for confirmation before committing.
    - Commit with the user's own Git identity, not as the AI.
+   - Before pushing, pull the latest `main` into your branch and resolve conflicts locally.
    - Push the branch and open a pull request to `main`. Never push to `main`.
+   - When opening a pull request, request a reviewer from the owner table.
+     For shared files, request `jasonko13w` or `Cailum01`.
    - Never commit `.env`, keys or local environments.
 4. Planned locations — create only when first needed; any other new
    top-level folder needs team agreement:

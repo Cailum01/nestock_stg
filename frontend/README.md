@@ -26,3 +26,8 @@ Vision invocation and provider. A1/C2 still need to agree request/response mappi
 conversation identity, checkpoint/resume, HITL resume, batch partial approval, and
 purchase-option selection. The temporary page navigation and visual design remain
 C2 decisions. No client-side approval authorizes backend writes.
+
+For the offline work-surface demo use `--dart-define=MOCK_SCENARIO=visionDemo`;
+`visionMany` supplies seven presentation-only items for scrolling checks. Enter
+any message to open the panel. Confirmation is a no-write demonstration. These
+fixtures are not a Vision or upload contract.

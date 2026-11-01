@@ -9,6 +9,7 @@ import 'agent_result_card.dart';
 import 'approval_card.dart';
 import 'agent_state.dart';
 import 'home_scene.dart';
+import 'agent_work_surface.dart';
 import '../../photo/photo_client.dart';
 
 class AgentHome extends StatefulWidget {
@@ -31,6 +32,7 @@ class _AgentHomeState extends State<AgentHome> {
   final _input = TextEditingController();
   final _sceneScroll = ScrollController();
   AgentReply? _reply;
+  bool _workOpen = false;
   AgentState _state = AgentState.idle;
   bool get _busy => _state == AgentState.loading;
   Future<AgentReply> Function()? _retry;
@@ -46,11 +48,19 @@ class _AgentHomeState extends State<AgentHome> {
       if (!mounted) return;
       setState(() {
         _reply = reply;
+        _workOpen = false;
         _state = reply.approval == null
             ? AgentState.completed
             : AgentState.waitingForApproval;
         _input.clear();
       });
+      if (reply.mockVisionItems != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && identical(_reply, reply)) {
+            setState(() => _workOpen = true);
+          }
+        });
+      }
       if (reply.results.isNotEmpty || reply.approval != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted && _sceneScroll.hasClients) {
@@ -138,6 +148,44 @@ class _AgentHomeState extends State<AgentHome> {
                                 style: Theme.of(context).textTheme.labelSmall,
                               ),
                             ),
+                            if (_reply?.mockVisionItems != null)
+                              Positioned.fill(
+                                child: ClipRect(
+                                  key: const Key('room-work-clip'),
+                                  child: Align(
+                                    alignment: Alignment.bottomCenter,
+                                    child: ConstrainedBox(
+                                      constraints: BoxConstraints(
+                                        maxHeight: constraints.maxHeight * .90,
+                                      ),
+                                      child: IgnorePointer(
+                                        ignoring: !_workOpen,
+                                        child: AnimatedSlide(
+                                          offset: _workOpen
+                                              ? Offset.zero
+                                              : const Offset(0, 1),
+                                          duration: const Duration(
+                                            milliseconds: 220,
+                                          ),
+                                          child: AnimatedOpacity(
+                                            opacity: _workOpen ? 1 : 0,
+                                            duration: const Duration(
+                                              milliseconds: 220,
+                                            ),
+                                            child: AgentWorkSurface(
+                                              key: ValueKey(_reply),
+                                              items: _reply!.mockVisionItems!,
+                                              onClose: () => setState(
+                                                () => _workOpen = false,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
                           ],
                         ),
                       ),

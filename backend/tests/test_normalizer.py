@@ -27,15 +27,16 @@ def test_normalized_item_model_validation():
 
 
 def test_normalized_item_rejects_unagreed_fields():
+    data = {
+        "raw_text": "測試",
+        "canonical_name": "測試品",
+        "feature_keywords": ["測試"],
+        "quantity": 1.0,
+        "unit": "個",
+        "extra_field": "unagreed",
+    }
     with pytest.raises(ValidationError):
-        NormalizedItem(
-            raw_text="測試",
-            canonical_name="測試品",
-            feature_keywords=["測試"],
-            quantity=1.0,
-            unit="個",
-            extra_field="unagreed",
-        )
+        NormalizedItem.model_validate(data)
 
 
 def test_item_normalizer_strips_marketing_noise():

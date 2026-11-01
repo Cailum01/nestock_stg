@@ -19,7 +19,7 @@ void main() {
           catalog: catalog,
         ),
       );
-      await tester.enterText(find.byType(TextField), '照片');
+      await tester.enterText(find.byType(TextField), '/vision-demo');
       await tester.tap(find.text('送出'));
       await tester.pumpAndSettle();
       expect(find.text('辨識到 3 件物品'), findsOneWidget);

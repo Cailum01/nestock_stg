@@ -7,11 +7,11 @@ import 'shared/data/demo_catalog.dart';
 void main() {
   const name = String.fromEnvironment(
     'MOCK_SCENARIO',
-    defaultValue: 'singleAction',
+    defaultValue: 'conversation',
   );
   final scenario =
       MockScenario.values.where((value) => value.name == name).firstOrNull ??
-      MockScenario.singleAction;
+      MockScenario.conversation;
   runApp(
     NestockApp(
       agentClient: MockAgentClient(scenario: scenario),

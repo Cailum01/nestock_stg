@@ -155,9 +155,9 @@ class HomeScene extends StatelessWidget {
                 ),
                 child: Text(
                   message,
-                  maxLines: height < 300 ? 2 : 3,
-                  overflow: TextOverflow.ellipsis,
                   textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ),

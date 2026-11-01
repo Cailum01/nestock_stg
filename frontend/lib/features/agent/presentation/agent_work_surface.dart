@@ -8,9 +8,11 @@ class AgentWorkSurface extends StatefulWidget {
     super.key,
     required this.items,
     required this.onClose,
+    this.embedded = false,
   });
   final List<({String name, String quantity, String location})> items;
   final VoidCallback onClose;
+  final bool embedded;
   @override
   State<AgentWorkSurface> createState() => _AgentWorkSurfaceState();
 }
@@ -77,12 +79,8 @@ class _AgentWorkSurfaceState extends State<AgentWorkSurface> {
   }
 
   @override
-  Widget build(BuildContext context) => Material(
-    key: const Key('work-surface'),
-    color: Theme.of(context).colorScheme.surface,
-    elevation: 4,
-    borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-    child: Column(
+  Widget build(BuildContext context) {
+    final content = Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         Row(
@@ -94,15 +92,23 @@ class _AgentWorkSurfaceState extends State<AgentWorkSurface> {
                 style: Theme.of(context).textTheme.titleMedium,
               ),
             ),
-            IconButton(
-              onPressed: widget.onClose,
-              icon: const Icon(Icons.close),
-              tooltip: '關閉',
-            ),
+            if (!widget.embedded)
+              IconButton(
+                onPressed: widget.onClose,
+                icon: const Icon(Icons.close),
+                tooltip: '關閉',
+              ),
           ],
         ),
         if (remaining.isEmpty)
           const Padding(padding: EdgeInsets.all(16), child: Text('目前沒有待確認的物品。'))
+        else if (widget.embedded)
+          Column(
+            children: List.generate(
+              remaining.length,
+              (index) => _item(context, index),
+            ),
+          )
         else
           Flexible(
             child: ListView.builder(
@@ -110,126 +116,7 @@ class _AgentWorkSurfaceState extends State<AgentWorkSurface> {
               scrollCacheExtent: const ScrollCacheExtent.pixels(1200),
               shrinkWrap: true,
               itemCount: remaining.length,
-              itemBuilder: (context, index) {
-                final itemId = remaining[index];
-                final item = widget.items[itemId];
-                final date = dates[itemId];
-                final dateText = date == null
-                    ? '選擇日期（選填）'
-                    : '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
-                return Card(
-                  key: ValueKey('vision-item-$itemId'),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                item.name,
-                                style: Theme.of(context).textTheme.titleSmall,
-                              ),
-                            ),
-                            IconButton(
-                              tooltip: '移除此項',
-                              visualDensity: VisualDensity.compact,
-                              constraints: const BoxConstraints(
-                                minWidth: 40,
-                                minHeight: 40,
-                              ),
-                              padding: EdgeInsets.zero,
-                              icon: const Icon(Icons.close, size: 18),
-                              onPressed: () => setState(() {
-                                remaining.remove(itemId);
-                                dates.remove(itemId);
-                              }),
-                            ),
-                          ],
-                        ),
-                        if ((double.tryParse(quantities[itemId]!.text) ?? 0) <=
-                            0)
-                          Text(
-                            '請輸入大於零的數量',
-                            style: TextStyle(
-                              color: Theme.of(context).colorScheme.error,
-                            ),
-                          ),
-                        Row(
-                          children: [
-                            const Text('數量'),
-                            const SizedBox(width: 4),
-                            SizedBox(
-                              width: 55,
-                              child: TextField(
-                                key: ValueKey('quantity-$itemId'),
-                                controller: quantities[itemId],
-                                keyboardType:
-                                    const TextInputType.numberWithOptions(
-                                      decimal: true,
-                                    ),
-                                inputFormatters: [
-                                  TextInputFormatter.withFunction(
-                                    (oldValue, newValue) =>
-                                        RegExp(r'^\d*\.?\d*$')
-                                            .hasMatch(newValue.text)
-                                        ? newValue
-                                        : oldValue,
-                                  ),
-                                ],
-                                onChanged: (_) => setState(() {}),
-                                decoration: const InputDecoration(
-                                  isDense: true,
-                                  contentPadding: EdgeInsets.all(6),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                            Text(units[itemId]!),
-                            const SizedBox(width: 8),
-                            const Icon(Icons.location_on_outlined, size: 16),
-                            const SizedBox(width: 4),
-                            Expanded(
-                              child: TextField(
-                                key: ValueKey('location-$itemId'),
-                                controller: locations[itemId],
-                                decoration: const InputDecoration(
-                                  labelText: '位置',
-                                  isDense: true,
-                                  contentPadding: EdgeInsets.all(6),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        Row(
-                          children: [
-                            const Text('效期'),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: TextButton.icon(
-                                onPressed: () => selectDate(itemId),
-                                icon: const Icon(
-                                  Icons.calendar_today_outlined,
-                                  size: 16,
-                                ),
-                                label: Text(dateText),
-                                style: TextButton.styleFrom(
-                                  alignment: Alignment.centerLeft,
-                                  minimumSize: const Size(0, 36),
-                                  padding: EdgeInsets.zero,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
+              itemBuilder: _item,
             ),
           ),
         if (remaining.isNotEmpty)
@@ -247,6 +134,127 @@ class _AgentWorkSurfaceState extends State<AgentWorkSurface> {
           ),
         const SizedBox(height: 8),
       ],
-    ),
-  );
+    );
+    if (widget.embedded) return content;
+    return Material(
+      key: const Key('work-surface'),
+      color: Theme.of(context).colorScheme.surface,
+      elevation: 4,
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      child: content,
+    );
+  }
+
+  Widget _item(BuildContext context, int index) {
+    final itemId = remaining[index];
+    final item = widget.items[itemId];
+    final date = dates[itemId];
+    final dateText = date == null
+        ? '選擇日期（選填）'
+        : '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+    return Card(
+      key: ValueKey('vision-item-$itemId'),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    item.name,
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ),
+                IconButton(
+                  tooltip: '移除此項',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(
+                    minWidth: 40,
+                    minHeight: 40,
+                  ),
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.close, size: 18),
+                  onPressed: () => setState(() {
+                    remaining.remove(itemId);
+                    dates.remove(itemId);
+                  }),
+                ),
+              ],
+            ),
+            if ((double.tryParse(quantities[itemId]!.text) ?? 0) <= 0)
+              Text(
+                '請輸入大於零的數量',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            Row(
+              children: [
+                const Text('數量'),
+                const SizedBox(width: 4),
+                SizedBox(
+                  width: 55,
+                  child: TextField(
+                    key: ValueKey('quantity-$itemId'),
+                    controller: quantities[itemId],
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    inputFormatters: [
+                      TextInputFormatter.withFunction(
+                        (oldValue, newValue) =>
+                            RegExp(r'^\d*\.?\d*$').hasMatch(newValue.text)
+                            ? newValue
+                            : oldValue,
+                      ),
+                    ],
+                    onChanged: (_) => setState(() {}),
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      contentPadding: EdgeInsets.all(6),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Text(units[itemId]!),
+                const SizedBox(width: 8),
+                const Icon(Icons.location_on_outlined, size: 16),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: TextField(
+                    key: ValueKey('location-$itemId'),
+                    controller: locations[itemId],
+                    decoration: const InputDecoration(
+                      labelText: '位置',
+                      isDense: true,
+                      contentPadding: EdgeInsets.all(6),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                const Text('效期'),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextButton.icon(
+                    onPressed: () => selectDate(itemId),
+                    icon: const Icon(Icons.calendar_today_outlined, size: 16),
+                    label: Text(dateText),
+                    style: TextButton.styleFrom(
+                      alignment: Alignment.centerLeft,
+                      minimumSize: const Size(0, 36),
+                      padding: EdgeInsets.zero,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

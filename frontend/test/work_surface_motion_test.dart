@@ -19,7 +19,7 @@ void main() {
             catalog: const DemoCatalog(),
           ),
         );
-        await tester.enterText(find.byType(TextField), '照片');
+        await tester.enterText(find.byType(TextField), '/vision-demo');
         await tester.tap(find.text('送出'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 50));

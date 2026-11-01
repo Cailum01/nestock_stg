@@ -22,7 +22,7 @@ void main() {
         ),
       );
       expect(find.byKey(const Key('work-surface')), findsNothing);
-      await tester.enterText(find.byType(TextField), '照片');
+      await tester.enterText(find.byType(TextField), '/vision-demo');
       await tester.tap(find.text('送出'));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('work-surface')), findsOneWidget);
@@ -82,7 +82,7 @@ void main() {
         catalog: const DemoCatalog(),
       ),
     );
-    await tester.enterText(find.byType(TextField), '照片');
+    await tester.enterText(find.byType(TextField), '/vision-demo');
     await tester.tap(find.text('送出'));
     await tester.pumpAndSettle();
     await tester.drag(

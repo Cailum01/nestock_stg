@@ -5,6 +5,7 @@ import '../domain/agent_view_data.dart';
 
 /// Local-only presentation scenarios. These are not backend status values.
 enum MockScenario {
+  conversation,
   completed,
   singleAction,
   batchAction,
@@ -23,8 +24,7 @@ class MockAgentClient implements AgentClient {
 
   @override
   Future<AgentReply> send(String message) async {
-    if (scenario == MockScenario.visionDemo ||
-        scenario == MockScenario.visionMany) {
+    if (message.trim() == '/vision-demo') {
       const items = [
         (name: '衛生紙', quantity: '3 包', location: '儲藏櫃'),
         (name: '洗衣精', quantity: '1 瓶', location: '洗衣間'),
@@ -42,6 +42,11 @@ class MockAgentClient implements AgentClient {
           ],
         ],
       );
+    }
+    if (scenario == MockScenario.conversation ||
+        scenario == MockScenario.visionDemo ||
+        scenario == MockScenario.visionMany) {
+      return const AgentReply(message: '這是對話介面示範回覆。');
     }
     if (scenario == MockScenario.error) throw StateError('demo error');
     if (scenario == MockScenario.timeout) {

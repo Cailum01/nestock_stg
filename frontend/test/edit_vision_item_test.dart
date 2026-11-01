@@ -21,7 +21,7 @@ void main() {
           catalog: catalog,
         ),
       );
-      await tester.enterText(find.byType(TextField), '照片');
+      await tester.enterText(find.byType(TextField), '/vision-demo');
       await tester.tap(find.text('送出'));
       await tester.pumpAndSettle();
       final q = find.byKey(const Key('quantity-0'));

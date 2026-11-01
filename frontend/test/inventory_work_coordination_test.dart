@@ -14,7 +14,7 @@ void main() {
         catalog: const DemoCatalog(),
       ),
     );
-    await tester.enterText(find.byType(TextField), '照片');
+    await tester.enterText(find.byType(TextField), '/vision-demo');
     await tester.tap(find.text('送出'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('quantity-0')), '5');

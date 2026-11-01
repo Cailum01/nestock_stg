@@ -35,6 +35,9 @@ class AgentHome extends StatefulWidget {
 class _AgentHomeState extends State<AgentHome> {
   final _input = TextEditingController();
   final _sceneScroll = ScrollController();
+  final _interactionScroll = ScrollController();
+  final List<({bool user, String text, AgentReply? reply})> _messages = [];
+  int _conversationGeneration = 0;
   AgentReply? _reply;
   bool _workOpen = false;
   bool _inventoryOpen = false;
@@ -45,46 +48,47 @@ class _AgentHomeState extends State<AgentHome> {
 
   Future<void> _perform(Future<AgentReply> Function() action) async {
     if (_busy) return;
+    final generation = _conversationGeneration;
     setState(() {
       _state = AgentState.loading;
       _retry = action;
     });
     try {
       final reply = await action();
-      if (!mounted) return;
+      if (!mounted || generation != _conversationGeneration) return;
       setState(() {
+        _messages.add((user: false, text: reply.message, reply: reply));
         _reply = reply;
         _inventoryOpen = false;
         _shoppingOpen = false;
-        _workOpen = false;
+        _workOpen = true;
         _state = reply.approval == null
             ? AgentState.completed
             : AgentState.waitingForApproval;
         _input.clear();
       });
-      if (reply.mockVisionItems != null) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && identical(_reply, reply)) {
-            setState(() => _workOpen = true);
-          }
-        });
-      }
-      if (reply.results.isNotEmpty || reply.approval != null) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && _sceneScroll.hasClients) {
-            _sceneScroll.animateTo(
-              _sceneScroll.position.maxScrollExtent,
-              duration: const Duration(milliseconds: 250),
-              curve: Curves.easeOut,
-            );
-          }
-        });
-      }
+      if (reply.mockVisionItems == null) _showLatestMessage();
     } on TimeoutException {
-      if (mounted) setState(() => _state = AgentState.timeout);
+      if (mounted && generation == _conversationGeneration) {
+        setState(() => _state = AgentState.timeout);
+      }
     } catch (_) {
-      if (mounted) setState(() => _state = AgentState.error);
+      if (mounted && generation == _conversationGeneration) {
+        setState(() => _state = AgentState.error);
+      }
     }
+  }
+
+  void _clearConversation() {
+    setState(() {
+      _conversationGeneration++;
+      _messages.clear();
+      _workOpen = false;
+      _input.clear();
+      _state = AgentState.idle;
+      _retry = null;
+      _reply = null;
+    });
   }
 
   Future<void> _openPhoto() async {
@@ -147,13 +151,114 @@ class _AgentHomeState extends State<AgentHome> {
   void _send() {
     final message = _input.text.trim();
     if (message.isEmpty || _reply?.approval != null) return;
+    setState(() {
+      _messages.add((user: true, text: message, reply: null));
+      _workOpen = true;
+    });
+    _showLatestMessage();
     _perform(() => widget.client.send(message));
   }
+
+  void _showLatestMessage() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_interactionScroll.hasClients) return;
+      _interactionScroll.animateTo(
+        _interactionScroll.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  Widget _interactionSurface() => Material(
+    key: const Key('work-surface'),
+    color: Theme.of(context).colorScheme.surface,
+    borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          children: [
+            TextButton(
+              onPressed: _clearConversation,
+              child: const Text('清除對話'),
+            ),
+            const Spacer(),
+            IconButton(
+              onPressed: () => setState(() => _workOpen = false),
+              icon: const Icon(Icons.close),
+              tooltip: '關閉',
+            ),
+          ],
+        ),
+        Flexible(
+          child: SingleChildScrollView(
+            key: const Key('work-items'),
+            controller: _interactionScroll,
+            child: Column(
+              children: [
+                for (final entry in _messages) ...[
+                  Align(
+                    alignment: entry.user
+                        ? Alignment.centerRight
+                        : Alignment.centerLeft,
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 4,
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: entry.user
+                            ? Theme.of(context).colorScheme.primaryContainer
+                            : Theme.of(context)
+                                  .colorScheme
+                                  .surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Text(entry.text),
+                    ),
+                  ),
+                  if (entry.reply != null) ...[
+                    for (final result in entry.reply!.results)
+                      AgentResultCard(result: result),
+                    if (entry.reply!.approval != null &&
+                        identical(entry.reply, _reply))
+                      ApprovalCard(
+                        approval: entry.reply!.approval!,
+                        busy: _busy,
+                        onDecision: (approved) => _perform(
+                          () => widget.client.resume(
+                            approvalId: entry.reply!.approval!.id,
+                            approved: approved,
+                          ),
+                        ),
+                      ),
+                    if (entry.reply!.mockVisionItems != null)
+                      AgentWorkSurface(
+                        key: ValueKey(entry.reply),
+                        items: entry.reply!.mockVisionItems!,
+                        embedded: true,
+                        onClose: () => setState(() => _workOpen = false),
+                      ),
+                  ],
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
 
   @override
   void dispose() {
     _input.dispose();
     _sceneScroll.dispose();
+    _interactionScroll.dispose();
     super.dispose();
   }
 
@@ -182,9 +287,7 @@ class _AgentHomeState extends State<AgentHome> {
                                 onShopping: () {
                                   _openShopping();
                                 },
-                                message:
-                                    _reply?.message ??
-                                    '歡迎回家！打開櫃子看看庫存，或告訴我你想整理什麼。',
+                                message: _busy ? '思考中...' : '歡迎回家',
                               ),
                             ),
                             Positioned(
@@ -195,7 +298,20 @@ class _AgentHomeState extends State<AgentHome> {
                                 style: Theme.of(context).textTheme.labelSmall,
                               ),
                             ),
-                            if (_reply?.mockVisionItems != null)
+                            if (_messages.isNotEmpty &&
+                                !_workOpen &&
+                                !_inventoryOpen &&
+                                !_shoppingOpen)
+                              Positioned(
+                                right: 8,
+                                bottom: 4,
+                                child: TextButton(
+                                  onPressed: () =>
+                                      setState(() => _workOpen = true),
+                                  child: const Text('顯示互動'),
+                                ),
+                              ),
+                            if (_messages.isNotEmpty)
                               Positioned.fill(
                                 child: ClipRect(
                                   key: const Key('room-work-clip'),
@@ -203,7 +319,7 @@ class _AgentHomeState extends State<AgentHome> {
                                     alignment: Alignment.bottomCenter,
                                     child: ConstrainedBox(
                                       constraints: BoxConstraints(
-                                        maxHeight: constraints.maxHeight * .90,
+                                        maxHeight: constraints.maxHeight * .72,
                                       ),
                                       child: IgnorePointer(
                                         ignoring:
@@ -227,13 +343,7 @@ class _AgentHomeState extends State<AgentHome> {
                                             duration: const Duration(
                                               milliseconds: 220,
                                             ),
-                                            child: AgentWorkSurface(
-                                              key: ValueKey(_reply),
-                                              items: _reply!.mockVisionItems!,
-                                              onClose: () => setState(
-                                                () => _workOpen = false,
-                                              ),
-                                            ),
+                                            child: _interactionSurface(),
                                           ),
                                         ),
                                       ),
@@ -350,20 +460,6 @@ class _AgentHomeState extends State<AgentHome> {
                           ],
                         ),
                       ),
-                      for (final result
-                          in _reply?.results ?? <AgentResultView>[])
-                        AgentResultCard(result: result),
-                      if (approval != null)
-                        ApprovalCard(
-                          approval: approval,
-                          busy: _busy,
-                          onDecision: (approved) => _perform(
-                            () => widget.client.resume(
-                              approvalId: approval.id,
-                              approved: approved,
-                            ),
-                          ),
-                        ),
                     ],
                   ),
                 ),
@@ -395,6 +491,13 @@ class _AgentHomeState extends State<AgentHome> {
                       ),
                       onSubmitted: (_) => _send(),
                     ),
+                  ),
+                  IconButton(
+                    onPressed: () => ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(const SnackBar(content: Text('語音輸入尚未開放。'))),
+                    icon: const Icon(Icons.mic_none),
+                    tooltip: '語音輸入',
                   ),
                   FilledButton(
                     onPressed: _busy || approval != null ? null : _send,

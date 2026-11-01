@@ -17,6 +17,27 @@ import '../../shopping/shopping_overlay.dart';
 import '../../shopping/shopping_view_client.dart';
 import '../../photo/photo_client.dart';
 import '../../photo/camera_capture.dart';
+import '../../photo/photo_upload.dart';
+
+/// The uploaded reference stays attached to its session-only photo message.
+class PhotoMessageImage extends StatelessWidget {
+  const PhotoMessageImage({
+    super.key,
+    required this.bytes,
+    required this.imageRef,
+  });
+  final Uint8List bytes;
+  final String imageRef;
+
+  @override
+  Widget build(BuildContext context) => Image.memory(
+    bytes,
+    key: const Key('message-photo'),
+    width: 120,
+    height: 120,
+    fit: BoxFit.cover,
+  );
+}
 
 class AgentHome extends StatefulWidget {
   const AgentHome({
@@ -26,10 +47,12 @@ class AgentHome extends StatefulWidget {
     required this.shoppingClient,
     this.photoClient = const UnavailablePhotoClient(),
     this.cameraCapture = const DeviceCameraCapture(),
+    required this.photoUpload,
   });
   final AgentClient client;
   final PhotoClient photoClient;
   final CameraCapture cameraCapture;
+  final PhotoUpload photoUpload;
   final InventoryViewClient inventoryClient;
   final ShoppingViewClient shoppingClient;
   @override
@@ -39,9 +62,19 @@ class AgentHome extends StatefulWidget {
 class _AgentHomeState extends State<AgentHome> {
   final _input = TextEditingController();
   Uint8List? _photo;
+  bool _uploading = false;
+  String? _uploadError;
   final _sceneScroll = ScrollController();
   final _interactionScroll = ScrollController();
-  final List<({bool user, String text, AgentReply? reply, Uint8List? photo})>
+  final List<
+    ({
+      bool user,
+      String text,
+      AgentReply? reply,
+      Uint8List? photo,
+      String? imageRef,
+    })
+  >
   _messages = [];
   int _conversationGeneration = 0;
   AgentReply? _reply;
@@ -68,6 +101,7 @@ class _AgentHomeState extends State<AgentHome> {
           text: reply.message,
           reply: reply,
           photo: null,
+          imageRef: null,
         ));
         _reply = reply;
         _inventoryOpen = false;
@@ -152,15 +186,48 @@ class _AgentHomeState extends State<AgentHome> {
     }
   }
 
-  void _send() {
+  Future<void> _send() async {
     final message = _input.text.trim();
     if ((message.isEmpty && _photo == null) ||
         _reply?.approval != null ||
-        _busy) {
+        _busy ||
+        _uploading) {
       return;
     }
+    final photo = _photo;
+    final generation = _conversationGeneration;
+    String? imageRef;
+    if (photo != null) {
+      setState(() {
+        _uploading = true;
+        _uploadError = null;
+      });
+      try {
+        imageRef = await widget.photoUpload.upload(photo);
+      } catch (_) {
+        if (mounted) {
+          setState(() {
+            _uploading = false;
+            _uploadError = '照片上傳失敗，請重試。';
+          });
+        }
+        return;
+      }
+      if (!mounted) return;
+      if (generation != _conversationGeneration) {
+        setState(() => _uploading = false);
+        return;
+      }
+    }
     setState(() {
-      _messages.add((user: true, text: message, reply: null, photo: _photo));
+      _uploading = false;
+      _messages.add((
+        user: true,
+        text: message,
+        reply: null,
+        photo: photo,
+        imageRef: imageRef,
+      ));
       _photo = null;
       _input.clear();
       _workOpen = true;
@@ -238,12 +305,9 @@ class _AgentHomeState extends State<AgentHome> {
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
                           if (entry.photo != null)
-                            Image.memory(
-                              entry.photo!,
-                              key: const Key('message-photo'),
-                              width: 120,
-                              height: 120,
-                              fit: BoxFit.cover,
+                            PhotoMessageImage(
+                              bytes: entry.photo!,
+                              imageRef: entry.imageRef!,
                             ),
                           if (entry.text.isNotEmpty) Text(entry.text),
                         ],
@@ -494,6 +558,8 @@ class _AgentHomeState extends State<AgentHome> {
               ),
             ),
             if (_busy) const LoadingState(),
+            if (_uploading) const LinearProgressIndicator(),
+            if (_uploadError != null) Text(_uploadError!),
             if (_state == AgentState.error || _state == AgentState.timeout)
               ErrorState(
                 timeout: _state == AgentState.timeout,
@@ -525,7 +591,9 @@ class _AgentHomeState extends State<AgentHome> {
                             top: 0,
                             child: IconButton(
                               tooltip: '移除照片',
-                              onPressed: () => setState(() => _photo = null),
+                              onPressed: _uploading
+                                  ? null
+                                  : () => setState(() => _photo = null),
                               icon: const Icon(Icons.cancel),
                               visualDensity: VisualDensity.compact,
                             ),
@@ -542,7 +610,7 @@ class _AgentHomeState extends State<AgentHome> {
                             _closeInventory();
                             _closeShopping();
                           },
-                          enabled: !_busy && approval == null,
+                          enabled: !_busy && !_uploading && approval == null,
                           decoration: const InputDecoration(
                             hintText: '告訴窩有…',
                             border: OutlineInputBorder(),
@@ -560,7 +628,9 @@ class _AgentHomeState extends State<AgentHome> {
                         tooltip: '語音輸入',
                       ),
                       FilledButton(
-                        onPressed: _busy || approval != null ? null : _send,
+                        onPressed: _busy || _uploading || approval != null
+                            ? null
+                            : _send,
                         child: const Text('送出'),
                       ),
                     ],
@@ -573,7 +643,7 @@ class _AgentHomeState extends State<AgentHome> {
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
                 TextButton.icon(
-                  onPressed: _openPhoto,
+                  onPressed: _uploading ? null : _openPhoto,
                   icon: const Icon(Icons.camera_alt_outlined),
                   label: const Text('拍照／照片'),
                 ),

@@ -25,6 +25,7 @@ approved as a domain-model change.
 | Transaction history | B2 reads raw transaction records; B1 does not pre-aggregate | Query contract and proposed feature-only transaction schema require cross-owner approval |
 | Transaction-to-item resolution | Append an immutable link record; never rewrite the source transaction | B2 reads link records for attribution, but never reads `change_event` |
 | Inventory removal | Soft-delete inventory records; retain IDs and transaction history | Distinct from personal-data erasure and Blob retention |
+| Family member preferences | Keep household inventory shared and store `like` / `dislike` per member and item; missing preference means `normal` | Requires an approved identity/membership feature; excluded from Skeleton v1 |
 | Forecast evaluation | Store internal B2 prediction/evaluation records in Cosmos | B2 owns schema and algorithm; records are not shown to users |
 | Authorization | No client-supplied value or model output authorizes a write; approval is validated server-side | Approval protocol is jointly owned with A1 and affected domain owners |
 | Retention and limits | Use centralized, environment-configured pilot defaults; do not hard-code policy throughout services | Product/legal decisions can change defaults without changing the storage model |
@@ -55,7 +56,8 @@ than the active policy permits.
 This design covers B1-owned persistence foundations for inventory, transaction
 records, user-submitted source records, and their references to stored media. It
 also defines extension points that other owners can use without making their
-decisions for them.
+decisions for them. It proposes a future persistence shape for member-specific
+item preferences, but does not implement household accounts or membership.
 
 - **A1** owns Agent graph/state, checkpoints, approval protocol, and task
   orchestration. The persistence design must not expose Cosmos SDK details to
@@ -79,8 +81,9 @@ Agent adapters.
 
 - Connecting to Cosmos DB, Blob Storage, ADLS Gen2, Azure AI services, queues, or
   any other cloud service.
-- Implementing authentication, accounts, household membership, real uploads,
-  real Agent execution, task resume, approval persistence, or domain mutations.
+- Implementing authentication, accounts, household membership, member
+  preferences, real uploads, real Agent execution, task resume, approval
+  persistence, or domain mutations.
 - Choosing a final Agent conversation/checkpoint schema or final wire protocol.
 - Implementing forecasting, shopping orchestration, checkout, or payment.
 - Treating AI-generated observations as confirmed inventory facts.
@@ -110,6 +113,9 @@ Agent adapters.
    do not store a separate `unit` field.
 10. Removing an inventory item is a soft delete. It preserves the item identity
     and transaction history; it is not a request to erase personal data.
+11. Inventory is shared at the household level. A member's preference is personal
+    metadata and never changes shared stock, another member's preference, or
+    write authorization.
 
 ## 4. Logical architecture and data flow
 
@@ -164,6 +170,7 @@ must define whether and how ordinary conversational messages are retained.
 | --- | --- | --- | --- |
 | Inventory and shopping records | Cosmos DB | Authoritative structured domain records | None |
 | Transactions | Cosmos DB | Authoritative append-only transaction records | None |
+| Future household membership and item preference | Cosmos DB | Household membership metadata and separate per-member preference records; never credentials | None |
 | Transaction-to-item resolution | Cosmos DB | Append-only links from feature-only transactions to selected items | None |
 | Text input / descriptive note | Cosmos DB | Text, scope, timestamps, retention class, optional links | None |
 | Original photo, audio, video, or document | Blob Storage | Opaque blob reference, media metadata, ownership/scope, status | Original bytes |
@@ -221,6 +228,8 @@ The following are proposed storage concepts, not final public models:
 | `shopping_item` | Shopping state; C1 owns service behavior | Updated only by validated domain operations |
 | `transaction` | Purchase, consumption, or adjustment fact; proposed `item_id` / `feature_keywords` alternative is pending unanimous contract approval | Append-only |
 | `transaction_item_link` | Approved attribution of a previously feature-only transaction to an item | Append-only |
+| `household_membership` | Future association between a stable member identity and a household | Membership lifecycle is not implemented; identity and roles require a separate owner-approved design |
+| `item_preference` | A member's preference for a shared inventory item | One current preference per member/item; omit the record for the default `normal` |
 | `user_input` | Text or reference to original media | Metadata may change for processing/deletion |
 | `note` | Descriptive user-provided context | Editable/deletable under explicit user action |
 | `agent_task_metadata` | Bounded task status and input/artifact references | State transitions validated; A1 owns runtime semantics |
@@ -278,7 +287,59 @@ Do not infer note links from text, silently rewrite notes into facts, or treat a
 note as authorization. If a user says a fact that changes inventory, the Agent
 must resolve and display the proposed change and follow HITL rules.
 
-### 6.4 Atomic inventory writes
+### 6.4 Future household membership and per-member preferences
+
+The current product has no authentication, household account, or membership
+feature. The following is a forward-compatible storage proposal only; it does
+not make the current `demo-household` scope a real security boundary.
+
+Keep the inventory item as one shared household record. Store personal
+preferences in separate records rather than embedding a per-member map in
+`inventory_item`, so a preference update does not contend with or mutate shared
+quantity. A future `item_preference` record may contain:
+
+```text
+record_type = "item_preference"
+household_id
+member_id
+item_id
+value = "like" | "dislike"
+created_at
+updated_at
+```
+
+The logical identity is `(household_id, member_id, item_id)`, enforced through a
+deterministic document ID or an equivalent conditional write. The effective
+preference is `normal` when no preference record exists; persist only explicit
+`like` or `dislike` values. Setting a preference back to `normal` removes the
+current preference record. If a future audit requirement needs preference-change
+history, add a separate append-only event rather than retaining stale current
+state in this record.
+
+Use an opaque, stable `member_id` issued by the future identity/membership
+system. Do not use email addresses, display names, or client-supplied IDs as
+authorization evidence or storage keys. A future `household_membership` record
+must establish that the member is active in the requested household before
+reading or writing that member's preferences. The server derives household and
+member scope from trusted authentication context; it must not trust a submitted
+`household_id` or `member_id` by itself.
+
+With the proposed `/household_id` partition, membership and preference records
+can reside in the same household partition as the shared inventory. Preference
+queries must always include both household and member scope. A member can update
+their own preference only, subject to a future authorization policy; another
+member's preference is not overwritten or averaged. Roles, invitation flows,
+visibility rules, and membership-removal behavior remain undecided and require
+agreement with the identity/product owners before implementation.
+
+Soft-deleting a shared item does not automatically erase transaction history.
+Whether to retain or remove associated member preferences on soft deletion is a
+product decision; a reasonable default is to retain them with the item and make
+them effective again if the same item identity is restored. A member-removal or
+personal-data-erasure workflow must separately define cleanup of that member's
+preferences without deleting household inventory or other members' data.
+
+### 6.5 Atomic inventory writes
 
 For one approved inventory operation, use a Cosmos transactional batch containing
 the applicable operations in the `household-data` container and household
@@ -347,7 +408,7 @@ field or equivalent persistence metadata; do not use general `updated_at` unless
 the contract guarantees it changes only when quantity is confirmed. Agree any
 public model change before exposing it through Pydantic/OpenAPI.
 
-### 6.5 Queries and indexing
+### 6.6 Queries and indexing
 
 Expose raw, household-scoped Transaction reads for B2. These are storage queries,
 not B1-side aggregation:
@@ -412,7 +473,7 @@ need broad search over notes, OCR, or transcripts, evaluate Azure AI Search as a
 separate optional index. It must enforce household filters, support deletion
 propagation, and remain a derived index rather than the source of truth.
 
-### 6.6 Units, soft deletion, and forecast evaluation
+### 6.7 Units, soft deletion, and forecast evaluation
 
 #### System-defined units
 
@@ -440,7 +501,7 @@ resolution can still find them. A later confirmed match may restore the same
 
 Reusing an old identity does not make its old on-hand quantity current. Require a
 fresh user-confirmed quantity or apply only a later, approved, not-yet-counted
-Transaction under the §6.4 rule. Keep soft deletion distinct from privacy-driven
+Transaction under the §6.5 rule. Keep soft deletion distinct from privacy-driven
 personal-data erasure in §7.3; an erasure request follows a separately approved
 retention/legal workflow.
 
@@ -656,6 +717,7 @@ When an AI agent implements a task from this document:
 | 4. Agent processing | Async task lifecycle and derived artifact references | A1/A2 agree task and resume boundaries |
 | 5. Optional Data Lake | Change Feed projection to ADLS Gen2 | Named analytics/audit consumer, retention, access, and cost approved |
 | 6. Search, if needed | Search index for notes/transcripts/OCR | Query requirements and household filtering tested |
+| 7. Optional member preferences | Membership-validated, per-member item preference records | Identity, membership, authorization, privacy, and preference ownership agreed; not part of Skeleton v1 |
 
 Phases are independent gates, not a commitment to deploy every Azure service.
 
@@ -667,6 +729,9 @@ Phases are independent gates, not a commitment to deploy every Azure service.
   measured scale; migration plan if not.
 - Production identity, household authorization, data residency, encryption/key,
   and network requirements.
+- If member preferences are implemented: stable member identity, active
+  household-membership validation, member-removal behavior, preference visibility,
+  and deletion/retention rules.
 - Final media types, content scanning, upload limits, retention, legal holds,
   user deletion, and backup/recovery objectives.
 - A1's Agent task/checkpoint/approval protocol and A2's processing/artifact
@@ -675,7 +740,7 @@ Phases are independent gates, not a commitment to deploy every Azure service.
   semantics, plus the active-link/correction rules and quantity-confirmation
   timestamp needed for late transaction resolution.
 - B2's forecast algorithm and evaluation-record schema; query behavior is
-  specified in §6.5 and B1 does not pre-aggregate its input.
+  specified in §6.6 and B1 does not pre-aggregate its input.
 - C1's shopping and `complete_purchase` atomicity requirements.
 - Whether Data Lake activation criteria are met, plus event schema, lake
   retention, consumers, and access ownership.

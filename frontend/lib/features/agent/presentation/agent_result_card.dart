@@ -16,7 +16,14 @@ class AgentResultCard extends StatelessWidget {
         ResultKind.purchaseOptions => Icons.shopping_bag_outlined,
         ResultKind.actionResult => Icons.info_outline,
       }),
-      title: Text(result.summary),
+      title: Text(switch (result.kind) {
+        ResultKind.inventory => '庫存',
+        ResultKind.vision => '照片辨識',
+        ResultKind.forecast => '庫存預估',
+        ResultKind.purchaseOptions => '購買選項',
+        ResultKind.actionResult => '操作結果',
+      }, style: Theme.of(context).textTheme.labelLarge),
+      subtitle: Text(result.summary),
     ),
   );
 }

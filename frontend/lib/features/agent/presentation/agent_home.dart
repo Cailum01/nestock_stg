@@ -8,6 +8,7 @@ import '../domain/agent_view_data.dart';
 import 'agent_result_card.dart';
 import 'approval_card.dart';
 import 'agent_state.dart';
+import 'home_scene.dart';
 import '../../photo/photo_client.dart';
 
 class AgentHome extends StatefulWidget {
@@ -97,36 +98,17 @@ class _AgentHomeState extends State<AgentHome> {
           padding: const EdgeInsets.all(16),
           children: [
             const Text('示範模式 · 資料不會儲存'),
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Icon(
-                Icons.smart_toy_outlined,
-                size: 72,
-                semanticLabel: '窩有小幫手',
-              ),
+            const SizedBox(height: 12),
+            HomeScene(
+              onInventory: () => widget.openInventory(context),
+              onShopping: () => widget.openShopping(context),
             ),
+            const SizedBox(height: 12),
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: Text(_reply?.message ?? '歡迎回家！打開櫃子看看庫存，或告訴我你想整理什麼。'),
               ),
-            ),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 12,
-              runSpacing: 8,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: () => widget.openInventory(context),
-                  icon: const Icon(Icons.kitchen_outlined),
-                  label: const Text('打開庫存櫃'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () => widget.openShopping(context),
-                  icon: const Icon(Icons.shopping_cart_outlined),
-                  label: const Text('打開購物清單'),
-                ),
-              ],
             ),
             const SizedBox(height: 16),
             TextField(

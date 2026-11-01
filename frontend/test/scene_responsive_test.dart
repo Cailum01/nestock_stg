@@ -1,0 +1,45 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:nestock/app.dart';
+import 'package:nestock/features/agent/data/mock_agent_client.dart';
+import 'package:nestock/shared/data/demo_catalog.dart';
+
+void main() {
+  for (final size in [const Size(320, 568), const Size(390, 844)]) {
+    testWidgets('scene and input remain usable at $size', (tester) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        NestockApp(
+          agentClient: MockAgentClient(),
+          catalog: const DemoCatalog(),
+        ),
+      );
+      expect(find.text('窩有的小天地'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.ensureVisible(find.text('打開庫存櫃'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('打開庫存櫃'));
+      await tester.pumpAndSettle();
+      expect(find.text('白米'), findsOneWidget);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byType(TextField));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '查看庫存');
+      await tester.ensureVisible(find.text('送出'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('送出'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('單一操作確認示範'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('單一操作確認示範'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  }
+}

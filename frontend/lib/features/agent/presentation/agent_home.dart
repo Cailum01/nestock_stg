@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -15,6 +16,7 @@ import 'agent_work_surface.dart';
 import '../../shopping/shopping_overlay.dart';
 import '../../shopping/shopping_view_client.dart';
 import '../../photo/photo_client.dart';
+import '../../photo/camera_capture.dart';
 
 class AgentHome extends StatefulWidget {
   const AgentHome({
@@ -23,9 +25,11 @@ class AgentHome extends StatefulWidget {
     required this.inventoryClient,
     required this.shoppingClient,
     this.photoClient = const UnavailablePhotoClient(),
+    this.cameraCapture = const DeviceCameraCapture(),
   });
   final AgentClient client;
   final PhotoClient photoClient;
+  final CameraCapture cameraCapture;
   final InventoryViewClient inventoryClient;
   final ShoppingViewClient shoppingClient;
   @override
@@ -34,9 +38,11 @@ class AgentHome extends StatefulWidget {
 
 class _AgentHomeState extends State<AgentHome> {
   final _input = TextEditingController();
+  Uint8List? _photo;
   final _sceneScroll = ScrollController();
   final _interactionScroll = ScrollController();
-  final List<({bool user, String text, AgentReply? reply})> _messages = [];
+  final List<({bool user, String text, AgentReply? reply, Uint8List? photo})>
+  _messages = [];
   int _conversationGeneration = 0;
   AgentReply? _reply;
   bool _workOpen = false;
@@ -57,7 +63,12 @@ class _AgentHomeState extends State<AgentHome> {
       final reply = await action();
       if (!mounted || generation != _conversationGeneration) return;
       setState(() {
-        _messages.add((user: false, text: reply.message, reply: reply));
+        _messages.add((
+          user: false,
+          text: reply.message,
+          reply: reply,
+          photo: null,
+        ));
         _reply = reply;
         _inventoryOpen = false;
         _shoppingOpen = false;
@@ -65,7 +76,6 @@ class _AgentHomeState extends State<AgentHome> {
         _state = reply.approval == null
             ? AgentState.completed
             : AgentState.waitingForApproval;
-        _input.clear();
       });
       if (reply.mockVisionItems == null) _showLatestMessage();
     } on TimeoutException {
@@ -95,15 +105,9 @@ class _AgentHomeState extends State<AgentHome> {
     _closeInventory();
     _closeShopping();
     try {
-      final access = await widget.photoClient.open();
+      final photo = await widget.cameraCapture.capture();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            access == PhotoAccess.denied ? '相機權限遭拒，請檢查裝置設定。' : '拍照與選取照片功能尚未開放。',
-          ),
-        ),
-      );
+      if (photo != null) setState(() => _photo = photo);
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -150,13 +154,23 @@ class _AgentHomeState extends State<AgentHome> {
 
   void _send() {
     final message = _input.text.trim();
-    if (message.isEmpty || _reply?.approval != null) return;
+    if ((message.isEmpty && _photo == null) ||
+        _reply?.approval != null ||
+        _busy) {
+      return;
+    }
     setState(() {
-      _messages.add((user: true, text: message, reply: null));
+      _messages.add((user: true, text: message, reply: null, photo: _photo));
+      _photo = null;
+      _input.clear();
       _workOpen = true;
     });
     _showLatestMessage();
-    _perform(() => widget.client.send(message));
+    _perform(
+      () => message.isEmpty
+          ? Future.value(const AgentReply(message: '這是對話介面示範回覆。'))
+          : widget.client.send(message),
+    );
   }
 
   void _showLatestMessage() {
@@ -219,7 +233,21 @@ class _AgentHomeState extends State<AgentHome> {
                                   .surfaceContainerHighest,
                         borderRadius: BorderRadius.circular(14),
                       ),
-                      child: Text(entry.text),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          if (entry.photo != null)
+                            Image.memory(
+                              entry.photo!,
+                              key: const Key('message-photo'),
+                              width: 120,
+                              height: 120,
+                              fit: BoxFit.cover,
+                            ),
+                          if (entry.text.isNotEmpty) Text(entry.text),
+                        ],
+                      ),
                     ),
                   ),
                   if (entry.reply != null) ...[
@@ -474,34 +502,68 @@ class _AgentHomeState extends State<AgentHome> {
             Padding(
               key: const Key('composer'),
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Row(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _input,
-                      onTap: () {
-                        _closeInventory();
-                        _closeShopping();
-                      },
-                      enabled: !_busy && approval == null,
-                      decoration: const InputDecoration(
-                        labelText: '告訴窩有…',
-                        border: OutlineInputBorder(),
-                        isDense: true,
+                  if (_photo != null)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Stack(
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.all(4),
+                            child: Image.memory(
+                              _photo!,
+                              key: const Key('photo-attachment'),
+                              width: 64,
+                              height: 64,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                          Positioned(
+                            right: 0,
+                            top: 0,
+                            child: IconButton(
+                              tooltip: '移除照片',
+                              onPressed: () => setState(() => _photo = null),
+                              icon: const Icon(Icons.cancel),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                          ),
+                        ],
                       ),
-                      onSubmitted: (_) => _send(),
                     ),
-                  ),
-                  IconButton(
-                    onPressed: () => ScaffoldMessenger.of(
-                      context,
-                    ).showSnackBar(const SnackBar(content: Text('語音輸入尚未開放。'))),
-                    icon: const Icon(Icons.mic_none),
-                    tooltip: '語音輸入',
-                  ),
-                  FilledButton(
-                    onPressed: _busy || approval != null ? null : _send,
-                    child: const Text('送出'),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _input,
+                          onTap: () {
+                            _closeInventory();
+                            _closeShopping();
+                          },
+                          enabled: !_busy && approval == null,
+                          decoration: const InputDecoration(
+                            hintText: '告訴窩有…',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          onSubmitted: (_) => _send(),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => ScaffoldMessenger.of(context)
+                            .showSnackBar(
+                              const SnackBar(content: Text('語音輸入尚未開放。')),
+                            ),
+                        icon: const Icon(Icons.mic_none),
+                        tooltip: '語音輸入',
+                      ),
+                      FilledButton(
+                        onPressed: _busy || approval != null ? null : _send,
+                        child: const Text('送出'),
+                      ),
+                    ],
                   ),
                 ],
               ),

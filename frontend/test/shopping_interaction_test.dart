@@ -1,3 +1,5 @@
+import 'fake_camera.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nestock/app.dart';
@@ -5,6 +7,8 @@ import 'package:nestock/features/agent/data/mock_agent_client.dart';
 import 'package:nestock/shared/data/demo_catalog.dart';
 
 void main() {
+  late FakeCamera testCamera;
+  setUp(() => testCamera = FakeCamera());
   for (final size in [const Size(320, 568), const Size(390, 844)]) {
     testWidgets('shopping dismissal and room clipping at $size', (
       tester,
@@ -15,6 +19,7 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
       await tester.pumpWidget(
         NestockApp(
+          cameraCapture: testCamera,
           agentClient: MockAgentClient(),
           catalog: const DemoCatalog(),
         ),
@@ -69,7 +74,7 @@ void main() {
       await tester.tap(find.text('拍照／照片'));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('shopping-overlay')), findsNothing);
-      expect(find.text('拍照與選取照片功能尚未開放。'), findsOneWidget);
+      expect(testCamera.calls, 1);
       await tester.pump(const Duration(seconds: 5));
       await tester.pumpAndSettle();
       await open();
@@ -83,6 +88,7 @@ void main() {
   testWidgets('shopping preserves edited work surface', (tester) async {
     await tester.pumpWidget(
       NestockApp(
+        cameraCapture: testCamera,
         agentClient: MockAgentClient(scenario: MockScenario.visionDemo),
         catalog: const DemoCatalog(),
       ),

@@ -2,13 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nestock/app.dart';
 import 'package:nestock/features/agent/data/mock_agent_client.dart';
-import 'package:nestock/features/photo/photo_client.dart';
-import 'package:nestock/shared/data/demo_catalog.dart';
 
-class DeniedPhoto implements PhotoClient {
-  @override
-  Future<PhotoAccess> open() async => PhotoAccess.denied;
-}
+import 'fake_camera.dart';
+
+import 'package:nestock/shared/data/demo_catalog.dart';
 
 void main() {
   final cases = <MockScenario, String>{
@@ -49,16 +46,17 @@ void main() {
       }
     });
   }
-  testWidgets('denied photo access is explained', (tester) async {
+  testWidgets('camera capture failure is explained', (tester) async {
+    final camera = FakeCamera()..fail = true;
     await tester.pumpWidget(
       NestockApp(
         agentClient: MockAgentClient(),
         catalog: const DemoCatalog(),
-        photoClient: DeniedPhoto(),
+        cameraCapture: camera,
       ),
     );
     await tester.tap(find.text('拍照／照片'));
     await tester.pumpAndSettle();
-    expect(find.text('相機權限遭拒，請檢查裝置設定。'), findsOneWidget);
+    expect(find.text('無法開啟相機，請稍後再試。'), findsOneWidget);
   });
 }

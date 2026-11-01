@@ -1,3 +1,5 @@
+import 'fake_camera.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nestock/app.dart';
@@ -15,6 +17,8 @@ class Items implements InventoryViewClient {
 }
 
 void main() {
+  late FakeCamera testCamera;
+  setUp(() => testCamera = FakeCamera());
   testWidgets('short panel wraps and long panel scrolls at its cap', (
     tester,
   ) async {
@@ -57,6 +61,7 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
       await tester.pumpWidget(
         NestockApp(
+          cameraCapture: testCamera,
           agentClient: MockAgentClient(),
           catalog: const DemoCatalog(),
         ),
@@ -101,7 +106,7 @@ void main() {
       await tester.tap(find.text('拍照／照片'));
       await tester.pumpAndSettle();
       expect(find.text('我的庫存'), findsNothing);
-      expect(find.text('拍照與選取照片功能尚未開放。'), findsOneWidget);
+      expect(testCamera.calls, 1);
       expect(tester.takeException(), isNull);
     });
   }

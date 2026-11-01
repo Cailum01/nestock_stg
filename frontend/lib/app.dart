@@ -7,6 +7,7 @@ import 'features/shopping/shopping_view_client.dart';
 import 'shared/data/catalog_client.dart';
 import 'shared/theme/app_theme.dart';
 import 'features/photo/photo_client.dart';
+import 'features/photo/camera_capture.dart';
 
 class NestockApp extends StatelessWidget {
   const NestockApp({
@@ -14,12 +15,14 @@ class NestockApp extends StatelessWidget {
     required this.agentClient,
     required this.catalog,
     this.photoClient = const UnavailablePhotoClient(),
+    this.cameraCapture = const DeviceCameraCapture(),
     this.inventoryClient = const DemoInventoryViewClient(),
     this.shoppingClient = const DemoShoppingViewClient(),
   });
   final AgentClient agentClient;
   final CatalogClient catalog;
   final PhotoClient photoClient;
+  final CameraCapture cameraCapture;
   final InventoryViewClient inventoryClient;
   final ShoppingViewClient shoppingClient;
 
@@ -30,6 +33,7 @@ class NestockApp extends StatelessWidget {
     home: AgentHome(
       client: agentClient,
       photoClient: photoClient,
+      cameraCapture: cameraCapture,
       inventoryClient: inventoryClient,
       shoppingClient: shoppingClient,
     ),

@@ -259,3 +259,52 @@ def test_staging_binary_put_upload_flow_and_errors():
         empty_path = urlparse(empty_auth["upload_url"]).path
         empty_res = client.put(empty_path, content=b"", headers=headers)
         assert empty_res.status_code == 400
+
+
+def test_speech_transcribe_success_auto_language():
+    fake_audio = b"\x00\x00\x00\x20ftypM4A " + b"x" * 100
+    files = {"file": ("recording.m4a", fake_audio, "audio/m4a")}
+
+    with TestClient(create_app()) as client:
+        response = client.post("/api/speech/transcribe", files=files)
+        assert response.status_code == 200
+        data = response.json()
+        assert "transcript" in data
+        assert data["transcript"] == "幫我查一下衛生紙"
+        assert data["detected_language"] == "zh-TW"
+        assert data["duration_seconds"] is not None
+
+
+def test_speech_transcribe_with_explicit_language():
+    fake_audio = b"\x00\x00\x00\x20ftypM4A " + b"x" * 100
+    files = {"file": ("recording.m4a", fake_audio, "audio/m4a")}
+    data = {"language": "en-US"}
+
+    with TestClient(create_app()) as client:
+        response = client.post("/api/speech/transcribe", files=files, data=data)
+        assert response.status_code == 200
+        res_data = response.json()
+        assert res_data["detected_language"] == "en-US"
+
+
+def test_speech_transcribe_empty_file_returns_400():
+    files = {"file": ("recording.m4a", b"", "audio/m4a")}
+    with TestClient(create_app()) as client:
+        response = client.post("/api/speech/transcribe", files=files)
+        assert response.status_code == 400
+        assert "Empty audio payload" in response.json()["detail"]
+
+
+def test_speech_transcribe_oversized_file_returns_413():
+    oversized = b"0" * (5 * 1024 * 1024 + 1)
+    files = {"file": ("huge.m4a", oversized, "audio/m4a")}
+    with TestClient(create_app()) as client:
+        response = client.post("/api/speech/transcribe", files=files)
+        assert response.status_code == 413
+
+
+def test_speech_transcribe_unsupported_media_type_returns_415():
+    files = {"file": ("fake.txt", b"plain text content", "text/plain")}
+    with TestClient(create_app()) as client:
+        response = client.post("/api/speech/transcribe", files=files)
+        assert response.status_code == 415

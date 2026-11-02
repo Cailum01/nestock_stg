@@ -86,6 +86,10 @@ confirmed P0 scope. Keep the six-owner foundation small and independently usable
 Transaction storage/partitioning, history aggregation and complete_purchase
 atomicity require cross-owner decisions. Do not infer Cosmos design from models.
 Leave missing owner-specific decisions as interfaces/documented gaps.
+Before implementing approval, writes, `/agent/resume`, voice input or anything
+listed in `contracts/open-decisions.md`, read that file. If the relevant item is
+not marked "已定案" (decided), stop and tell the user; do not choose an answer
+yourself.
 
 ## Frontend scope
 

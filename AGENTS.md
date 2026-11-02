@@ -39,8 +39,11 @@ confirmed P0 scope. Keep the six-owner foundation small and independently usable
   examples and decisions, not a second manually maintained schema.
 - Agent/HITL models, service ports and Dart view projections are PROVISIONAL.
   Coordinate changes with affected owners; do not freeze a final protocol here.
-- Cosmos DB for NoSQL, Azure OpenAI and LangGraph are planned baselines. Skeleton
-  v1 must not connect to them or implement real Agent, Vision, forecast or commerce.
+- Cosmos DB for NoSQL, Azure OpenAI and LangGraph are planned baselines.
+  The A1 read-only Agent (`POST /agent/messages`) connects to Azure OpenAI only
+  when `backend/.env` is configured, and returns 501 otherwise. Until their owners
+  deliver them, do not connect any other cloud service or implement real writes,
+  Vision, forecast or commerce.
 
 ## Mandatory product invariants
 
@@ -69,8 +72,10 @@ confirmed P0 scope. Keep the six-owner foundation small and independently usable
 6. Retries of the same logical write reuse the same operation identity. UI retries,
    timeouts, lost responses and Agent resume must never duplicate logical writes.
 7. Backend validation is mandatory; frontend validation is not authorization.
-8. Current mock approval UI writes nothing. HTTP Agent/resume endpoints return 501.
-   Do not interpret generic proposed values or a client boolean as permission to write.
+8. `POST /agent/messages` is read-only: the Agent has no write tools.
+   `POST /agent/resume` and the approval UI still write nothing and return 501
+   until write services and approval storage are agreed. Do not interpret generic
+   proposed values or a client boolean as permission to write.
 
 ## Owners and intentionally open decisions
 
@@ -86,6 +91,11 @@ confirmed P0 scope. Keep the six-owner foundation small and independently usable
 Transaction storage/partitioning, history aggregation and complete_purchase
 atomicity require cross-owner decisions. Do not infer Cosmos design from models.
 Leave missing owner-specific decisions as interfaces/documented gaps.
+Before implementing anything listed in `contracts/open-decisions.md`, read that
+file. If the item is "已定案" (decided), follow the decision. If it is pending but
+has a proposal, follow the proposal, keep it easy to revise, and write
+"provisional per D-x" in the pull request. If it is pending with no proposal,
+stop and tell the user; do not choose an answer yourself.
 
 ## Frontend scope
 

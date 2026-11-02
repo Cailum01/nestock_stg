@@ -366,6 +366,26 @@ Transaction signs, unit conversions, and quantity arithmetic policy remain
 domain decisions; persistence must store the already validated domain operation,
 not invent those rules.
 
+#### A1 coordination: approval and repository boundary
+
+A1 agrees that approval is bound to the exact server-resolved operations and
+relevant values presented to the user. A changed target, quantity, location,
+selected purchase option, or other relevant value requires fresh approval.
+Approval is checked against the backend-stored proposal; a client-supplied
+`approved` flag or mutable values never authorize persistence.
+
+The domain service owns business validation and approval checks. The B1
+repository owns persistence primitives only, including reads/writes, conditional
+updates, and transactional batches; it does not interpret approval. Reusing an
+`operation_id` for the same logical write must not duplicate mutations. Reuse
+with different canonical values is a conflict and requires a newly resolved
+proposal and approval.
+
+Still deferred to A1's interrupt/resume experiment are who creates the
+`operation_id`, when it is created, and the externally visible outcomes for
+rejection, timeout, and retry/resume. Do not hard-code those lifecycle or
+response semantics in B1 persistence until A1 completes that work.
+
 Shopping operations and `complete_purchase` need C1's decision on which records
 belong in the same atomic batch. Do not claim cross-container, cross-partition,
 or cross-service atomicity.

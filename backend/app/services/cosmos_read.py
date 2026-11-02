@@ -7,7 +7,7 @@ application. It prepares the B1 read boundary without enabling persistence.
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Protocol, TypeVar
+from typing import Generic, Protocol, TypeVar
 
 from app.models.domain import InventoryItem, ShoppingItem, Transaction
 
@@ -21,6 +21,13 @@ _RECORD_IDENTITIES: dict[type[DomainRecord], tuple[str, str]] = {
     Transaction: ("transaction", "transaction_id"),
 }
 _COSMOS_SYSTEM_FIELDS = frozenset({"_rid", "_self", "_etag", "_attachments", "_ts"})
+
+
+@dataclass(frozen=True)
+class MappedDocument(Generic[RecordT]):
+    record: RecordT
+    document_id: str
+    etag: str | None
 
 
 def _utc_isoformat(value: datetime) -> str:
@@ -58,6 +65,19 @@ class CosmosDocumentMapper:
         *,
         household_id: str,
     ) -> RecordT:
+        return CosmosDocumentMapper.from_document_with_metadata(
+            model_type,
+            document,
+            household_id=household_id,
+        ).record
+
+    @staticmethod
+    def from_document_with_metadata(
+        model_type: type[RecordT],
+        document: Mapping[str, object],
+        *,
+        household_id: str,
+    ) -> MappedDocument[RecordT]:
         expected_record_type, identity_field = _RECORD_IDENTITIES[model_type]
         if document.get("record_type") != expected_record_type:
             raise ValueError(
@@ -77,7 +97,14 @@ class CosmosDocumentMapper:
             for key, value in document.items()
             if key not in _RECORD_METADATA and key not in _COSMOS_SYSTEM_FIELDS
         }
-        return model_type.model_validate(domain_data)
+        etag = document.get("_etag")
+        if etag is not None and not isinstance(etag, str):
+            raise ValueError("Cosmos _etag must be a string when present.")
+        return MappedDocument(
+            record=model_type.model_validate(domain_data),
+            document_id=expected_document_id,
+            etag=etag,
+        )
 
 
 @dataclass(frozen=True)
@@ -228,3 +255,23 @@ class CosmosReadRepository:
             )
             for document in documents
         ]
+
+
+class CosmosInventoryService:
+    """Adapt the B1 repository to the shared InventoryService read port."""
+
+    def __init__(self, repository: CosmosReadRepository) -> None:
+        self._repository = repository
+
+    async def list_items(self, household_id: str) -> list[InventoryItem]:
+        return await self._repository.list_inventory(household_id)
+
+
+class CosmosShoppingService:
+    """Adapt the B1 repository to the shared ShoppingService read port."""
+
+    def __init__(self, repository: CosmosReadRepository) -> None:
+        self._repository = repository
+
+    async def list_items(self, household_id: str) -> list[ShoppingItem]:
+        return await self._repository.list_shopping(household_id)

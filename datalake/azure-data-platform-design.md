@@ -362,6 +362,19 @@ stored result without applying the mutation again. The same operation ID with
 different values is a conflict, not a retry; require a new proposal and approval.
 Do not rely only on a separate “check then write,” which is race-prone.
 
+The `(household_id, operation_id)` pair is the idempotency key: store the receipt
+in the same household partition with a deterministic ID derived from the
+operation ID, and create it in the same transactional batch as all related
+writes. A1 confirms the Agent creates the operation ID before pausing and stores
+it server-side; the App cannot supply it. Editing any approved value requires a
+new operation ID. On a retry, the same ID and canonical payload returns
+`already_applied` as a successful outcome without repeating writes. Reusing the
+ID with a different payload returns an operation conflict so A1 can request a
+new approval. If the original response was lost after commit, the receipt makes
+the retry resolve to `already_applied`; if the batch did not commit, the retry
+can execute the batch using the same ID. A1 owns translating this repository
+outcome into the prior user-facing result.
+
 Transaction signs, unit conversions, and quantity arithmetic policy remain
 domain decisions; persistence must store the already validated domain operation,
 not invent those rules.
@@ -382,9 +395,13 @@ with different canonical values is a conflict and requires a newly resolved
 proposal and approval.
 
 Still deferred to A1's interrupt/resume experiment are who creates the
-`operation_id`, when it is created, and the externally visible outcomes for
-rejection, timeout, and retry/resume. Do not hard-code those lifecycle or
-response semantics in B1 persistence until A1 completes that work.
+confirmation-card expiry, pause-state storage, and the behavior of multi-item
+approval groups. A1 has confirmed that a rejection performs no write and returns
+“已取消”; cancelling after a committed write does not roll it back. A failed or
+timed-out attempt keeps the same confirmation and operation ID available for
+retry; if the user cancels instead, no later write is attempted. Invalid or
+cross-household confirmation IDs are rejected by A1 before B1 persistence is
+called.
 
 Shopping operations and `complete_purchase` need C1's decision on which records
 belong in the same atomic batch. Do not claim cross-container, cross-partition,
@@ -475,10 +492,14 @@ loading task/input metadata by stable task or input ID.
 
 Use the partition key and record type in queries. Add composite/range indexes only
 when a concrete query and measured workload justify them. Keep indexing policy in
-one reviewed configuration. Transaction queries need a composite index compatible
-with `created_at DESC, transaction_id ASC`; feature-keyword equality plus the
-requested sort may require an additional composite index, to be verified against
-the selected Cosmos SDK and query plan.
+one reviewed configuration. The household Transaction query's
+`created_at DESC, transaction_id ASC` ordering requires a Cosmos composite index
+with those paths and sort directions before the query is deployed. Keep the
+definition in [cosmos-indexing-policy.json](./cosmos-indexing-policy.json) and
+apply/verify it on every environment's `household-data` container. The shared
+development container has this index applied. Feature-keyword equality plus the
+requested sort may require another composite index; add it only after the
+Transaction contract is approved and the selected SDK's query plan is verified.
 
 The proposed single `/household_id` partition is supported by B2's current
 estimate of approximately 700–3,000 transactions per household per year, or

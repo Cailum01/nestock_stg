@@ -20,6 +20,7 @@ The following development resources have been created and verified:
 | Database | `nestock` |
 | Container | `household-data` |
 | Container partition key | `/household_id` |
+| Cosmos composite index | `/created_at` descending, then `/transaction_id` ascending |
 | Cosmos endpoint | `https://nestock-cosmos-dev-20261101.documents.azure.com:443/` |
 | Storage account | `stnestockdev20261101` |
 | Storage SKU / location | Standard LRS / Southeast Asia |
@@ -29,9 +30,13 @@ The following development resources have been created and verified:
 | ADLS Gen2 DFS endpoint | `https://stnestockdev20261101.dfs.core.windows.net/` |
 
 The account, database, container, and private media container exist. This does
-**not** mean the production schema, indexing policy, seed data, application
-repository, or cloud integration is complete. Setup did not insert domain or
-sample records; check the environment before assuming it remains empty.
+**not** mean the production schema, complete indexing policy for every approved
+query, seed data, application repository, or cloud integration is complete.
+Setup did not insert domain or sample records; check the environment before
+assuming it remains empty. The dev container has the composite index required
+by the current Transaction ordering query, defined in
+[cosmos-indexing-policy.json](./cosmos-indexing-policy.json); a future approved
+feature-keyword query may require another index after its query plan is verified.
 
 These resources are in a shared resource group because the school role cannot
 create a separate group. Do not change or delete unrelated resources in

@@ -1,12 +1,17 @@
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from app.models.domain import InventoryItem, ShoppingItem, Transaction
 from app.services.cosmos_read import (
     CosmosDocumentMapper,
+    CosmosInventoryService,
     CosmosReadRepository,
+    CosmosShoppingService,
+    MappedDocument,
     TransactionQuery,
     build_transaction_query,
 )
@@ -170,6 +175,31 @@ def test_document_mapping_rejects_record_type_and_namespaced_id_mismatch():
         )
 
 
+def test_document_mapping_preserves_cosmos_etag_for_conditional_writes():
+    item = InventoryItem(
+        item_id="rice",
+        household_id="home",
+        name="Rice",
+        quantity=2,
+        unit="bag",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    document = CosmosDocumentMapper.to_document(item) | {"_etag": '"etag-1"'}
+
+    mapped = CosmosDocumentMapper.from_document_with_metadata(
+        InventoryItem,
+        document,
+        household_id="home",
+    )
+
+    assert mapped == MappedDocument(
+        record=item,
+        document_id="inventory_item:rice",
+        etag='"etag-1"',
+    )
+
+
 def test_transaction_query_applies_exact_item_since_limit_and_partition():
     since = datetime.fromisoformat("2025-12-01T08:00:00+08:00")
     query = build_transaction_query(
@@ -195,6 +225,18 @@ def test_transaction_query_applies_exact_item_since_limit_and_partition():
         "@since": "2025-12-01T00:00:00.000000Z",
         "@limit": 10,
     }
+
+
+def test_cosmos_index_policy_supports_transaction_ordering():
+    policy_path = Path(__file__).resolve().parents[2] / "datalake" / "cosmos-indexing-policy.json"
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+
+    assert policy["compositeIndexes"] == [
+        [
+            {"path": "/created_at", "order": "descending"},
+            {"path": "/transaction_id", "order": "ascending"},
+        ]
+    ]
 
 
 @pytest.mark.parametrize(
@@ -260,3 +302,36 @@ def test_inventory_repository_maps_only_requested_household_records():
     assert client.calls[0]["partition_key"] == "home"
     assert "c.record_type = @record_type" in client.calls[0]["query"]
     assert "c.household_id = @household_id" in client.calls[0]["query"]
+
+
+def test_service_adapters_match_shared_list_items_interfaces():
+    item = InventoryItem(
+        item_id="rice",
+        household_id="home",
+        name="Rice",
+        quantity=2,
+        unit="bag",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    shopping_item = ShoppingItem(
+        shopping_item_id="milk",
+        household_id="home",
+        name="Milk",
+        quantity=1,
+        unit="bottle",
+        status="pending",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    inventory_repository = CosmosReadRepository(
+        FakeDocumentClient([CosmosDocumentMapper.to_document(item)])
+    )
+    shopping_repository = CosmosReadRepository(
+        FakeDocumentClient([CosmosDocumentMapper.to_document(shopping_item)])
+    )
+
+    assert asyncio.run(CosmosInventoryService(inventory_repository).list_items("home")) == [item]
+    assert asyncio.run(CosmosShoppingService(shopping_repository).list_items("home")) == [
+        shopping_item
+    ]

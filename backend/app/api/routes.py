@@ -12,6 +12,7 @@ from fastapi import (
     status,
 )
 
+from app.agent.read_agent import ReadAgent, get_read_agent
 from app.core.config import settings
 from app.core.dependencies import (
     get_inventory_service,
@@ -61,10 +62,22 @@ async def shopping(
     "/agent/messages",
     response_model=AgentResponse,
     tags=["provisional"],
-    responses={501: {"description": "Agent runtime intentionally unimplemented"}},
+    responses={
+        501: {"description": "Azure OpenAI not configured (backend/.env)"},
+        502: {"description": "Azure OpenAI call failed"},
+    },
 )
-async def agent_message(request: AgentRequest) -> AgentResponse:
-    raise HTTPException(501, "Agent runtime is not implemented in Skeleton v1.")
+async def agent_message(
+    request: AgentRequest,
+    agent: Annotated[ReadAgent | None, Depends(get_read_agent)],
+) -> AgentResponse:
+    """Read-only Agent (Day 5): answers inventory/shopping questions, writes nothing."""
+    if agent is None:
+        raise HTTPException(501, "Agent is not configured: set AZURE_OPENAI_* in backend/.env.")
+    try:
+        return await agent.respond(request)
+    except Exception as error:  # upstream model/network failure; nothing was written
+        raise HTTPException(502, f"Agent call failed: {type(error).__name__}") from error
 
 
 @router.post(

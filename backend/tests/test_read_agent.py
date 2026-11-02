@@ -124,3 +124,38 @@ def test_route_answers_and_writes_nothing():
         assert response.status_code == 200
         assert response.json()["message"] == "還有 2 包白米。"
         assert before == [client.get(path).json() for path in ["/inventory", "/shopping"]]
+
+
+def test_photo_is_accepted_but_not_pretended_to_be_seen():
+    model = ScriptedModel(AIMessage(content="照片辨識還沒開放，目前只能用文字查詢。"))
+    request = AgentRequest(
+        household_id=HOUSEHOLD,
+        message="幫我看看這張照片裡有什麼",
+        image_ref="blob://households/demo-household/media/photo.jpg",
+    )
+    response = asyncio.run(_agent(model).respond(request))
+
+    first_turn = model.seen[0]
+    assert any("看不到照片內容" in str(m.content) for m in first_turn)
+    assert len(model.seen) == 1  # answered directly, no tool loop
+    assert response.pending_approval is None
+
+
+def test_route_accepts_image_ref_instead_of_422():
+    model = ScriptedModel(AIMessage(content="照片辨識還沒開放。"), AIMessage(content="有。"))
+    app = create_app()
+    app.dependency_overrides[get_read_agent] = lambda: _agent(model)
+    with TestClient(app) as client:
+        response = client.post(
+            "/agent/messages",
+            json={
+                "household_id": HOUSEHOLD,
+                "message": "這是什麼？",
+                "image_ref": "blob://households/demo-household/media/photo.jpg",
+            },
+        )
+        assert response.status_code == 200
+        without_photo = client.post(
+            "/agent/messages", json={"household_id": HOUSEHOLD, "message": "還有白米嗎"}
+        )
+        assert without_photo.status_code == 200  # old clients keep working

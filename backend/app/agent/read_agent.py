@@ -24,6 +24,11 @@ from app.tools.queries import QueryTools
 
 PROMPT_PATH = Path(__file__).resolve().parents[3] / "prompts" / "agent_system.md"
 MAX_STEPS = 8  # graph steps per message; stops endless tool loops
+PHOTO_NOT_SUPPORTED = (
+    "使用者這次附了一張照片，但你目前看不到照片內容（照片辨識還沒接上）。"
+    "請先清楚告訴使用者：照片辨識還沒開放，目前只能用文字查詢；"
+    "再用文字能回答的部分回答。不要假裝看過照片，也不要猜測照片裡有什麼。"
+)
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
@@ -104,13 +109,11 @@ class ReadAgent:
         return builder.compile()
 
     async def respond(self, request: AgentRequest) -> AgentResponse:
-        start: _State = {
-            "household_id": request.household_id,
-            "messages": [
-                SystemMessage(self._system_prompt),
-                HumanMessage(request.message),
-            ],
-        }
+        messages: list[AnyMessage] = [SystemMessage(self._system_prompt)]
+        if request.image_ref:  # accepted, not read: vision is not wired yet (Day 8)
+            messages.append(SystemMessage(PHOTO_NOT_SUPPORTED))
+        messages.append(HumanMessage(request.message))
+        start: _State = {"household_id": request.household_id, "messages": messages}
         try:
             final = await self._graph.ainvoke(start, {"recursion_limit": MAX_STEPS})
         except GraphRecursionError:

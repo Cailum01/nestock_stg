@@ -28,6 +28,12 @@ class ResultKind(StrEnum):
 class AgentRequest(ContractModel):
     household_id: str
     message: str = Field(min_length=1)
+    image_ref: str | None = Field(default=None, min_length=1)
+    """Optional opaque reference from POST /api/media/upload-authorization (A2).
+
+    The Agent cannot read images yet (Day 8). Before it does, the referenced media
+    must be verified to belong to household_id.
+    """
 
 
 class AgentResult(ContractModel):

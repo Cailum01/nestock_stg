@@ -15,6 +15,7 @@ class ApprovalCard extends StatelessWidget {
   final ValueChanged<bool> onDecision;
   @override
   Widget build(BuildContext context) => Card(
+    color: Theme.of(context).colorScheme.secondaryContainer,
     child: Padding(
       padding: const EdgeInsets.all(16),
       child: Column(

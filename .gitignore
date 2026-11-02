@@ -35,3 +35,7 @@ Thumbs.db
 **/ios/Flutter/ephemeral/
 **/ios/Flutter/Generated.xcconfig
 **/ios/Flutter/flutter_export_environment.sh
+
+指令集.md
+.agents/
+docs/collaboration-governance.md

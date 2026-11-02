@@ -27,7 +27,8 @@ class MockSpeechToTextService:
     ) -> SpeechTranscribeResponse:
         effective_language = language or "zh-TW"
 
-        if len(audio_bytes) < 64:
+        # Silence, tiny audio, or explicit test failure returns empty transcript
+        if len(audio_bytes) < 64 or b"FAIL" in audio_bytes or b"ERROR" in audio_bytes:
             return SpeechTranscribeResponse(
                 transcript="",
                 detected_language=effective_language,
@@ -43,7 +44,7 @@ class MockSpeechToTextService:
 
 
 class AzureSpeechService:
-    """Azure AI Speech (Cognitive Services) STT adapter with graceful fallback."""
+    """Azure AI Speech Fast Transcription (REST API v3.2) STT adapter with graceful degradation."""
 
     def __init__(
         self,
@@ -62,45 +63,63 @@ class AzureSpeechService:
         content_type: str,
         language: str | None = None,
     ) -> SpeechTranscribeResponse:
-        # Tier 3: Safe offline degradation if no credentials are configured
+        # Offline mode: If no credentials are configured and fallback is enabled, use mock
         if not self.speech_key:
             if self.mock_fallback:
                 return await self._fallback_service.transcribe(audio_bytes, content_type, language)
             raise ValueError("AZURE_SPEECH_KEY is required but not configured.")
 
         effective_language = language or "zh-TW"
+
+        # Azure AI Speech Fast Transcription API v3.2 (Natively supports M4A, AAC, WAV, MP3)
         url = (
-            f"https://{self.service_region}.stt.speech.microsoft.com"
-            f"/speech/recognition/conversation/cognitiveservices/v1?language={effective_language}"
+            f"https://{self.service_region}.api.cognitive.microsoft.com"
+            f"/speechtotext/transcriptions:transcribe?api-version=2024-11-15"
         )
         headers = {
             "Ocp-Apim-Subscription-Key": self.speech_key,
-            "Content-Type": content_type or "audio/m4a",
             "Accept": "application/json",
         }
 
         try:
+            import json
+
             import httpx
 
+            ext = "m4a" if "m4a" in (content_type or "") else "wav"
+            files = {
+                "audio": (f"recording.{ext}", audio_bytes, content_type or "audio/m4a"),
+                "definition": (
+                    None,
+                    json.dumps({"locales": [effective_language]}),
+                    "application/json",
+                ),
+            }
+
             async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.post(url, headers=headers, content=audio_bytes)
+                res = await client.post(url, headers=headers, files=files)
                 if res.status_code == 200:
                     data = res.json()
-                    transcript = data.get("DisplayText") or data.get("RecognitionStatus", "")
+                    phrases = data.get("combinedPhrases", [])
+                    transcript = phrases[0].get("text", "") if phrases else ""
+                    duration_ms = data.get("durationInMilliseconds", len(audio_bytes) / 32)
+                    duration_s = round(max(0.1, duration_ms / 1000.0), 2)
                     return SpeechTranscribeResponse(
                         transcript=transcript,
                         detected_language=effective_language,
-                        duration_seconds=round(max(0.5, len(audio_bytes) / 32000.0), 2),
+                        duration_seconds=duration_s,
                     )
-                # Tier 2: Internal degradation on non-200 responses
-                if self.mock_fallback:
-                    return await self._fallback_service.transcribe(
-                        audio_bytes, content_type, language
-                    )
-                res.raise_for_status()
-        except Exception:
-            if self.mock_fallback:
-                return await self._fallback_service.transcribe(audio_bytes, content_type, language)
-            raise
 
-        return await self._fallback_service.transcribe(audio_bytes, content_type, language)
+                # Recognition failure or upstream error: do not disguise with mock text
+                return SpeechTranscribeResponse(
+                    transcript="",
+                    detected_language=effective_language,
+                    duration_seconds=0.0,
+                )
+        except Exception:
+            # On network/parsing failure when real key is provided, return empty transcript
+            return SpeechTranscribeResponse(
+                transcript="",
+                detected_language=effective_language,
+                duration_seconds=0.0,
+            )

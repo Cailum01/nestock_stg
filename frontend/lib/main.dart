@@ -5,7 +5,17 @@ import 'features/agent/data/mock_agent_client.dart';
 import 'shared/data/demo_catalog.dart';
 
 void main() {
+  const name = String.fromEnvironment(
+    'MOCK_SCENARIO',
+    defaultValue: 'conversation',
+  );
+  final scenario =
+      MockScenario.values.where((value) => value.name == name).firstOrNull ??
+      MockScenario.conversation;
   runApp(
-    NestockApp(agentClient: MockAgentClient(), catalog: const DemoCatalog()),
+    NestockApp(
+      agentClient: MockAgentClient(scenario: scenario),
+      catalog: const DemoCatalog(),
+    ),
   );
 }

@@ -32,8 +32,13 @@ class AgentReply {
     required this.message,
     this.results = const [],
     this.approval,
+    this.mockVisionItems,
   });
   final String message;
   final List<AgentResultView> results;
   final ApprovalView? approval;
+
+  /// Offline UI fixture only; not an A2 wire or persistence model.
+  final List<({String name, String quantity, String location})>?
+  mockVisionItems;
 }

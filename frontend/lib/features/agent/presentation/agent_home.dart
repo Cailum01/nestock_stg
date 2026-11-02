@@ -452,7 +452,8 @@ class _AgentHomeState extends State<AgentHome> {
                                     alignment: Alignment.topRight,
                                     child: ConstrainedBox(
                                       constraints: BoxConstraints(
-                                        maxHeight: constraints.maxHeight - 32,
+                                        maxHeight: (constraints.maxHeight - 32)
+                                            .clamp(0.0, double.infinity),
                                       ),
                                       child: AnimatedSwitcher(
                                         duration: const Duration(
@@ -505,7 +506,8 @@ class _AgentHomeState extends State<AgentHome> {
                                     alignment: Alignment.topLeft,
                                     child: ConstrainedBox(
                                       constraints: BoxConstraints(
-                                        maxHeight: constraints.maxHeight - 32,
+                                        maxHeight: (constraints.maxHeight - 32)
+                                            .clamp(0.0, double.infinity),
                                       ),
                                       child: AnimatedSwitcher(
                                         duration: const Duration(

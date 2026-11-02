@@ -15,8 +15,9 @@ class NormalizedItem(ContractModel):
     raw_text: str = Field(min_length=1)
     canonical_name: str = Field(min_length=1)
     brand: str | None = None
-    feature_keywords: list[str] = Field(min_length=1)
+    feature_keywords: list[str] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)
     quantity: float = Field(gt=0)
-    unit: str = Field(min_length=1)
+    unit: str | None = None
+    unit_confirmed: bool = True
     capacity_spec: str | None = None

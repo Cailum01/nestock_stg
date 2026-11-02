@@ -58,12 +58,12 @@ class ItemNormalizer:
         return re.sub(r"\s+", " ", cleaned).strip()
 
     def resolve_package_and_unit(
-        self, text: str, default_quantity: float = 1.0, default_unit: str = "個"
-    ) -> tuple[float, str, str | None, str]:
+        self, text: str, default_quantity: float = 1.0, default_unit: str | None = None
+    ) -> tuple[float, str | None, str | None, str]:
         """Extract quantity, canonical unit, capacity specification, and remaining text."""
         capacity_spec: str | None = None
         quantity: float = default_quantity
-        unit: str = default_unit
+        unit: str | None = default_unit
         working_text = text
 
         # 1. Check for multi-pack (e.g. 100抽x24包/箱)
@@ -121,12 +121,12 @@ class ItemNormalizer:
         canonical = working_text.strip() if working_text.strip() else text.strip()
         return detected_brand, canonical
 
-    def extract_feature_keywords(self, canonical_name: str, brand: str | None) -> list[str]:
-        """Extract deduplicated feature keywords snapshot for B1 storage and exact matching."""
-        keywords: list[str] = []
+    def extract_feature_keywords(self, canonical_name: str, brand: str | None = None) -> list[str]:
+        """Extract deduplicated feature keywords snapshot for B1 storage and exact matching.
 
-        if brand and brand not in keywords:
-            keywords.append(brand)
+        Note: Brand is intentionally excluded to avoid candidate set explosion per B2/A1 review.
+        """
+        keywords: list[str] = []
 
         # Segment canonical name into meaningful tokens
         common_tokens = [
@@ -157,7 +157,7 @@ class ItemNormalizer:
                 keywords.append(token)
 
         # Ensure canonical name itself or whole words are included if not present
-        if not keywords:
+        if not keywords and canonical_name:
             keywords.append(canonical_name)
 
         return keywords
@@ -177,7 +177,7 @@ class ItemNormalizer:
         return aliases
 
     def normalize(
-        self, raw_text: str, fallback_quantity: float = 1.0, fallback_unit: str = "個"
+        self, raw_text: str, fallback_quantity: float = 1.0, fallback_unit: str | None = None
     ) -> NormalizedItem:
         """Full pipeline: clean marketing noise -> resolve units -> extract brand & features."""
         if not raw_text or not raw_text.strip():
@@ -194,11 +194,13 @@ class ItemNormalizer:
         # 3. Extract brand and core canonical name
         brand, canonical = self.extract_brand_and_canonical(step2_cleaned)
 
-        # 4. Extract feature keywords snapshot
+        # 4. Extract feature keywords snapshot (brand isolated)
         features = self.extract_feature_keywords(canonical, brand)
 
         # 5. Generate search aliases
         aliases = self.generate_aliases(canonical, brand)
+
+        unit_confirmed = unit is not None
 
         return NormalizedItem(
             raw_text=raw_text.strip(),
@@ -208,5 +210,6 @@ class ItemNormalizer:
             aliases=aliases,
             quantity=quantity,
             unit=unit,
+            unit_confirmed=unit_confirmed,
             capacity_spec=capacity,
         )

@@ -1,3 +1,5 @@
+import 'fake_camera.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -39,28 +41,40 @@ Future<void> sendMessage(WidgetTester tester) async {
 }
 
 void main() {
+  late FakeCamera testCamera;
+  setUp(() => testCamera = FakeCamera());
   testWidgets('scene opens independent inventory and shopping routes', (
     tester,
   ) async {
     await tester.pumpWidget(
-      NestockApp(agentClient: MockAgentClient(), catalog: const DemoCatalog()),
+      NestockApp(
+        cameraCapture: testCamera,
+        agentClient: MockAgentClient(),
+        catalog: const DemoCatalog(),
+      ),
     );
     expect(find.text('Nestock｜窩有'), findsOneWidget);
     expect(find.byType(NavigationBar), findsNothing);
     expect(find.byType(BottomNavigationBar), findsNothing);
-    await tester.tap(find.text('打開庫存櫃'));
+    await tester.tap(find.byKey(const Key('cabinet')));
     await tester.pumpAndSettle();
     expect(find.text('白米'), findsOneWidget);
-    await tester.pageBack();
+    if (find.byTooltip('關閉庫存').evaluate().isNotEmpty) {
+      await tester.tap(find.byTooltip('關閉庫存'));
+    } else if (find.byTooltip('關閉購物清單').evaluate().isNotEmpty) {
+      await tester.tap(find.byTooltip('關閉購物清單'));
+    } else {
+      await tester.pageBack();
+    }
     await tester.pumpAndSettle();
-    await tester.tap(find.text('打開購物清單'));
+    await tester.tap(find.byKey(const Key('cart')));
     await tester.pumpAndSettle();
     expect(find.text('牛奶'), findsOneWidget);
-    await tester.pageBack();
+    await tester.tap(find.byTooltip('關閉購物清單'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('拍照／照片'));
     await tester.pumpAndSettle();
-    expect(find.text('拍照與選取照片功能尚未開放。'), findsOneWidget);
+    expect(testCamera.calls, 1);
   });
 
   for (final approved in [true, false]) {
@@ -72,7 +86,11 @@ void main() {
           .map((item) => item.detail)
           .toList();
       await tester.pumpWidget(
-        NestockApp(agentClient: MockAgentClient(), catalog: catalog),
+        NestockApp(
+          cameraCapture: testCamera,
+          agentClient: MockAgentClient(),
+          catalog: catalog,
+        ),
       );
       await sendMessage(tester);
       await tester.pumpAndSettle();
@@ -98,7 +116,11 @@ void main() {
     (tester) async {
       final client = ControlledAgent();
       await tester.pumpWidget(
-        NestockApp(agentClient: client, catalog: const DemoCatalog()),
+        NestockApp(
+          cameraCapture: testCamera,
+          agentClient: client,
+          catalog: const DemoCatalog(),
+        ),
       );
       await tester.tap(find.text('送出'));
       expect(client.messages, isEmpty);
@@ -124,7 +146,11 @@ void main() {
   ) async {
     final client = ControlledAgent();
     await tester.pumpWidget(
-      NestockApp(agentClient: client, catalog: const DemoCatalog()),
+      NestockApp(
+        cameraCapture: testCamera,
+        agentClient: client,
+        catalog: const DemoCatalog(),
+      ),
     );
     await sendMessage(tester);
     client.pending.complete(
@@ -187,7 +213,11 @@ void main() {
   testWidgets('late response after scene disposal is ignored', (tester) async {
     final client = ControlledAgent();
     await tester.pumpWidget(
-      NestockApp(agentClient: client, catalog: const DemoCatalog()),
+      NestockApp(
+        cameraCapture: testCamera,
+        agentClient: client,
+        catalog: const DemoCatalog(),
+      ),
     );
     await sendMessage(tester);
     await tester.pumpWidget(const SizedBox());

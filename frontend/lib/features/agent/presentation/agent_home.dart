@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../../../shared/widgets/async_state.dart';
@@ -5,58 +8,349 @@ import '../domain/agent_client.dart';
 import '../domain/agent_view_data.dart';
 import 'agent_result_card.dart';
 import 'approval_card.dart';
+import 'agent_state.dart';
+import 'home_scene.dart';
+import '../../inventory/inventory_overlay.dart';
+import '../../inventory/inventory_view_client.dart';
+import 'agent_work_surface.dart';
+import '../../shopping/shopping_overlay.dart';
+import '../../shopping/shopping_view_client.dart';
+import '../../photo/photo_client.dart';
+import '../../photo/camera_capture.dart';
+import '../../photo/photo_upload.dart';
+
+/// The uploaded reference stays attached to its session-only photo message.
+class PhotoMessageImage extends StatelessWidget {
+  const PhotoMessageImage({
+    super.key,
+    required this.bytes,
+    required this.imageRef,
+  });
+  final Uint8List bytes;
+  final String imageRef;
+
+  @override
+  Widget build(BuildContext context) => Image.memory(
+    bytes,
+    key: const Key('message-photo'),
+    width: 120,
+    height: 120,
+    fit: BoxFit.cover,
+  );
+}
 
 class AgentHome extends StatefulWidget {
   const AgentHome({
     super.key,
     required this.client,
-    required this.openInventory,
-    required this.openShopping,
+    required this.inventoryClient,
+    required this.shoppingClient,
+    this.photoClient = const UnavailablePhotoClient(),
+    this.cameraCapture = const DeviceCameraCapture(),
+    required this.photoUpload,
   });
   final AgentClient client;
-  final void Function(BuildContext) openInventory;
-  final void Function(BuildContext) openShopping;
+  final PhotoClient photoClient;
+  final CameraCapture cameraCapture;
+  final PhotoUpload photoUpload;
+  final InventoryViewClient inventoryClient;
+  final ShoppingViewClient shoppingClient;
   @override
   State<AgentHome> createState() => _AgentHomeState();
 }
 
 class _AgentHomeState extends State<AgentHome> {
   final _input = TextEditingController();
+  Uint8List? _photo;
+  bool _uploading = false;
+  String? _uploadError;
+  final _sceneScroll = ScrollController();
+  final _interactionScroll = ScrollController();
+  final List<
+    ({
+      bool user,
+      String text,
+      AgentReply? reply,
+      Uint8List? photo,
+      String? imageRef,
+    })
+  >
+  _messages = [];
+  int _conversationGeneration = 0;
   AgentReply? _reply;
-  bool _busy = false;
-  bool _failed = false;
+  bool _workOpen = false;
+  bool _inventoryOpen = false;
+  bool _shoppingOpen = false;
+  AgentState _state = AgentState.idle;
+  bool get _busy => _state == AgentState.loading;
   Future<AgentReply> Function()? _retry;
 
   Future<void> _perform(Future<AgentReply> Function() action) async {
     if (_busy) return;
+    final generation = _conversationGeneration;
     setState(() {
-      _busy = true;
-      _failed = false;
+      _state = AgentState.loading;
       _retry = action;
     });
     try {
       final reply = await action();
-      if (!mounted) return;
+      if (!mounted || generation != _conversationGeneration) return;
       setState(() {
+        _messages.add((
+          user: false,
+          text: reply.message,
+          reply: reply,
+          photo: null,
+          imageRef: null,
+        ));
         _reply = reply;
-        _input.clear();
+        _inventoryOpen = false;
+        _shoppingOpen = false;
+        _workOpen = true;
+        _state = reply.approval == null
+            ? AgentState.completed
+            : AgentState.waitingForApproval;
       });
+      if (reply.mockVisionItems == null) _showLatestMessage();
+    } on TimeoutException {
+      if (mounted && generation == _conversationGeneration) {
+        setState(() => _state = AgentState.timeout);
+      }
     } catch (_) {
-      if (mounted) setState(() => _failed = true);
-    } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted && generation == _conversationGeneration) {
+        setState(() => _state = AgentState.error);
+      }
     }
   }
 
-  void _send() {
-    final message = _input.text.trim();
-    if (message.isEmpty || _reply?.approval != null) return;
-    _perform(() => widget.client.send(message));
+  void _clearConversation() {
+    setState(() {
+      _conversationGeneration++;
+      _messages.clear();
+      _workOpen = false;
+      _input.clear();
+      _state = AgentState.idle;
+      _retry = null;
+      _reply = null;
+    });
   }
+
+  Future<void> _openPhoto() async {
+    _closeInventory();
+    _closeShopping();
+    try {
+      final photo = await widget.cameraCapture.capture();
+      if (!mounted) return;
+      if (photo != null) setState(() => _photo = photo);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('無法開啟相機，請稍後再試。')));
+      }
+    }
+  }
+
+  void _closeInventory() {
+    if (_inventoryOpen) setState(() => _inventoryOpen = false);
+  }
+
+  void _closeShopping() {
+    if (_shoppingOpen) setState(() => _shoppingOpen = false);
+  }
+
+  void _openShopping() {
+    setState(() {
+      _inventoryOpen = false;
+      _shoppingOpen = !_shoppingOpen;
+    });
+    if (_sceneScroll.hasClients) {
+      _sceneScroll.animateTo(
+        0,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  void _openInventory() {
+    setState(() {
+      _shoppingOpen = false;
+      _inventoryOpen = !_inventoryOpen;
+    });
+    if (_sceneScroll.hasClients) {
+      _sceneScroll.animateTo(
+        0,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  Future<void> _send() async {
+    final message = _input.text.trim();
+    if ((message.isEmpty && _photo == null) ||
+        _reply?.approval != null ||
+        _busy ||
+        _uploading) {
+      return;
+    }
+    final photo = _photo;
+    final generation = _conversationGeneration;
+    String? imageRef;
+    if (photo != null) {
+      setState(() {
+        _uploading = true;
+        _uploadError = null;
+      });
+      try {
+        imageRef = await widget.photoUpload.upload(photo);
+      } catch (_) {
+        if (mounted) {
+          setState(() {
+            _uploading = false;
+            _uploadError = '照片上傳失敗，請重試。';
+          });
+        }
+        return;
+      }
+      if (!mounted) return;
+      if (generation != _conversationGeneration) {
+        setState(() => _uploading = false);
+        return;
+      }
+    }
+    setState(() {
+      _uploading = false;
+      _messages.add((
+        user: true,
+        text: message,
+        reply: null,
+        photo: photo,
+        imageRef: imageRef,
+      ));
+      _photo = null;
+      _input.clear();
+      _workOpen = true;
+    });
+    _showLatestMessage();
+    _perform(
+      () => message.isEmpty
+          ? Future.value(const AgentReply(message: '這是對話介面示範回覆。'))
+          : widget.client.send(message),
+    );
+  }
+
+  void _showLatestMessage() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_interactionScroll.hasClients) return;
+      _interactionScroll.animateTo(
+        _interactionScroll.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  Widget _interactionSurface() => Material(
+    key: const Key('work-surface'),
+    color: Theme.of(context).colorScheme.surface,
+    borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          children: [
+            TextButton(
+              onPressed: _clearConversation,
+              child: const Text('清除對話'),
+            ),
+            const Spacer(),
+            IconButton(
+              onPressed: () => setState(() => _workOpen = false),
+              icon: const Icon(Icons.close),
+              tooltip: '關閉',
+            ),
+          ],
+        ),
+        Flexible(
+          child: SingleChildScrollView(
+            key: const Key('work-items'),
+            controller: _interactionScroll,
+            child: Column(
+              children: [
+                for (final entry in _messages) ...[
+                  Align(
+                    alignment: entry.user
+                        ? Alignment.centerRight
+                        : Alignment.centerLeft,
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 4,
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: entry.user
+                            ? Theme.of(context).colorScheme.primaryContainer
+                            : Theme.of(context)
+                                  .colorScheme
+                                  .surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          if (entry.photo != null)
+                            PhotoMessageImage(
+                              bytes: entry.photo!,
+                              imageRef: entry.imageRef!,
+                            ),
+                          if (entry.text.isNotEmpty) Text(entry.text),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (entry.reply != null) ...[
+                    for (final result in entry.reply!.results)
+                      AgentResultCard(result: result),
+                    if (entry.reply!.approval != null &&
+                        identical(entry.reply, _reply))
+                      ApprovalCard(
+                        approval: entry.reply!.approval!,
+                        busy: _busy,
+                        onDecision: (approved) => _perform(
+                          () => widget.client.resume(
+                            approvalId: entry.reply!.approval!.id,
+                            approved: approved,
+                          ),
+                        ),
+                      ),
+                    if (entry.reply!.mockVisionItems != null)
+                      AgentWorkSurface(
+                        key: ValueKey(entry.reply),
+                        items: entry.reply!.mockVisionItems!,
+                        embedded: true,
+                        onClose: () => setState(() => _workOpen = false),
+                      ),
+                  ],
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
 
   @override
   void dispose() {
     _input.dispose();
+    _sceneScroll.dispose();
+    _interactionScroll.dispose();
     super.dispose();
   }
 
@@ -66,77 +360,305 @@ class _AgentHomeState extends State<AgentHome> {
     return Scaffold(
       appBar: AppBar(title: const Text('Nestock｜窩有')),
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(16),
+        child: Column(
           children: [
-            const Text('示範模式 · 資料不會儲存'),
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Icon(
-                Icons.smart_toy_outlined,
-                size: 72,
-                semanticLabel: '窩有小幫手',
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, constraints) => SingleChildScrollView(
+                  key: const Key('scene-scroll'),
+                  controller: _sceneScroll,
+                  child: Column(
+                    children: [
+                      SizedBox(
+                        height: constraints.maxHeight,
+                        child: Stack(
+                          children: [
+                            Positioned.fill(
+                              child: HomeScene(
+                                onInventory: () => _openInventory(),
+                                onShopping: () {
+                                  _openShopping();
+                                },
+                                message: _busy ? '思考中...' : '歡迎回家',
+                              ),
+                            ),
+                            Positioned(
+                              left: 8,
+                              bottom: 4,
+                              child: Text(
+                                '示範模式 · 資料不會儲存',
+                                style: Theme.of(context).textTheme.labelSmall,
+                              ),
+                            ),
+                            if (_messages.isNotEmpty &&
+                                !_workOpen &&
+                                !_inventoryOpen &&
+                                !_shoppingOpen)
+                              Positioned(
+                                right: 8,
+                                bottom: 4,
+                                child: TextButton(
+                                  onPressed: () =>
+                                      setState(() => _workOpen = true),
+                                  child: const Text('顯示互動'),
+                                ),
+                              ),
+                            if (_messages.isNotEmpty)
+                              Positioned.fill(
+                                child: ClipRect(
+                                  key: const Key('room-work-clip'),
+                                  child: Align(
+                                    alignment: Alignment.bottomCenter,
+                                    child: ConstrainedBox(
+                                      constraints: BoxConstraints(
+                                        maxHeight: constraints.maxHeight * .72,
+                                      ),
+                                      child: IgnorePointer(
+                                        ignoring:
+                                            !_workOpen ||
+                                            _inventoryOpen ||
+                                            _shoppingOpen,
+                                        child: AnimatedSlide(
+                                          offset: _workOpen
+                                              ? Offset.zero
+                                              : const Offset(0, 1),
+                                          duration: const Duration(
+                                            milliseconds: 220,
+                                          ),
+                                          child: AnimatedOpacity(
+                                            opacity:
+                                                _workOpen &&
+                                                    !_inventoryOpen &&
+                                                    !_shoppingOpen
+                                                ? 1
+                                                : 0,
+                                            duration: const Duration(
+                                              milliseconds: 220,
+                                            ),
+                                            child: _interactionSurface(),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            Positioned.fill(
+                              child: ClipRect(
+                                key: const Key('shopping-room-clip'),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Align(
+                                    alignment: Alignment.topRight,
+                                    child: ConstrainedBox(
+                                      constraints: BoxConstraints(
+                                        maxHeight: constraints.maxHeight - 32,
+                                      ),
+                                      child: AnimatedSwitcher(
+                                        duration: const Duration(
+                                          milliseconds: 180,
+                                        ),
+                                        layoutBuilder: (current, previous) =>
+                                            Stack(
+                                              alignment: Alignment.topRight,
+                                              children: [...previous, ?current],
+                                            ),
+                                        transitionBuilder: (child, animation) =>
+                                            FadeTransition(
+                                              opacity: _inventoryOpen
+                                                  ? const AlwaysStoppedAnimation(
+                                                      0,
+                                                    )
+                                                  : animation,
+                                              child: ScaleTransition(
+                                                alignment: RoomAnchors.cart,
+                                                scale: Tween<double>(
+                                                  begin: .94,
+                                                  end: 1,
+                                                ).animate(animation),
+                                                child: child,
+                                              ),
+                                            ),
+                                        child: _shoppingOpen
+                                            ? ShoppingOverlay(
+                                                key: const Key(
+                                                  'shopping-panel',
+                                                ),
+                                                client: widget.shoppingClient,
+                                                onClose: _closeShopping,
+                                              )
+                                            : const SizedBox.shrink(
+                                                key: Key('shopping-hidden'),
+                                              ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Positioned.fill(
+                              child: ClipRect(
+                                key: const Key('inventory-room-clip'),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Align(
+                                    alignment: Alignment.topLeft,
+                                    child: ConstrainedBox(
+                                      constraints: BoxConstraints(
+                                        maxHeight: constraints.maxHeight - 32,
+                                      ),
+                                      child: AnimatedSwitcher(
+                                        duration: const Duration(
+                                          milliseconds: 180,
+                                        ),
+                                        layoutBuilder: (current, previous) =>
+                                            Stack(
+                                              alignment: Alignment.topLeft,
+                                              children: [...previous, ?current],
+                                            ),
+                                        transitionBuilder: (child, animation) =>
+                                            FadeTransition(
+                                              opacity: _shoppingOpen
+                                                  ? const AlwaysStoppedAnimation(
+                                                      0,
+                                                    )
+                                                  : animation,
+                                              child: ScaleTransition(
+                                                alignment: RoomAnchors.cabinet,
+                                                scale: Tween<double>(
+                                                  begin: .94,
+                                                  end: 1,
+                                                ).animate(animation),
+                                                child: child,
+                                              ),
+                                            ),
+                                        child: _inventoryOpen
+                                            ? InventoryOverlay(
+                                                key: const Key(
+                                                  'inventory-panel',
+                                                ),
+                                                client: widget.inventoryClient,
+                                                onClose: _closeInventory,
+                                              )
+                                            : const SizedBox.shrink(
+                                                key: Key('inventory-hidden'),
+                                              ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
-            Text(_reply?.message ?? '歡迎回家！打開櫃子看看庫存，或告訴我你想整理什麼。'),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 12,
-              runSpacing: 8,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: () => widget.openInventory(context),
-                  icon: const Icon(Icons.kitchen_outlined),
-                  label: const Text('打開庫存櫃'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () => widget.openShopping(context),
-                  icon: const Icon(Icons.shopping_cart_outlined),
-                  label: const Text('打開購物清單'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _input,
-              enabled: !_busy && approval == null,
-              decoration: const InputDecoration(
-                labelText: '告訴窩有…',
-                border: OutlineInputBorder(),
+            if (_busy) const LoadingState(),
+            if (_uploading) const LinearProgressIndicator(),
+            if (_uploadError != null) Text(_uploadError!),
+            if (_state == AgentState.error || _state == AgentState.timeout)
+              ErrorState(
+                timeout: _state == AgentState.timeout,
+                onRetry: () => _perform(_retry!),
               ),
-              onSubmitted: (_) => _send(),
+            Padding(
+              key: const Key('composer'),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_photo != null)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Stack(
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.all(4),
+                            child: Image.memory(
+                              _photo!,
+                              key: const Key('photo-attachment'),
+                              width: 64,
+                              height: 64,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                          Positioned(
+                            right: 0,
+                            top: 0,
+                            child: IconButton(
+                              tooltip: '移除照片',
+                              onPressed: _uploading
+                                  ? null
+                                  : () => setState(() => _photo = null),
+                              icon: const Icon(Icons.cancel),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _input,
+                          onTap: () {
+                            _closeInventory();
+                            _closeShopping();
+                          },
+                          enabled: !_busy && !_uploading && approval == null,
+                          decoration: const InputDecoration(
+                            hintText: '告訴窩有…',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          onSubmitted: (_) => _send(),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => ScaffoldMessenger.of(context)
+                            .showSnackBar(
+                              const SnackBar(content: Text('語音輸入尚未開放。')),
+                            ),
+                        icon: const Icon(Icons.mic_none),
+                        tooltip: '語音輸入',
+                      ),
+                      FilledButton(
+                        onPressed: _busy || _uploading || approval != null
+                            ? null
+                            : _send,
+                        child: const Text('送出'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
-            Wrap(
-              spacing: 12,
+            Row(
+              key: const Key('toolbar'),
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
                 TextButton.icon(
-                  onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('拍照與選取照片功能尚未開放。')),
-                  ),
+                  onPressed: _uploading ? null : _openPhoto,
                   icon: const Icon(Icons.camera_alt_outlined),
                   label: const Text('拍照／照片'),
                 ),
-                FilledButton(
-                  onPressed: _busy || approval != null ? null : _send,
-                  child: const Text('送出'),
+                TextButton(
+                  onPressed: () => _openInventory(),
+                  child: const Text('庫存'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    _openShopping();
+                  },
+                  child: const Text('購物清單'),
                 ),
               ],
             ),
-            if (_busy) const LoadingState(),
-            if (_failed && !_busy) ErrorState(onRetry: () => _perform(_retry!)),
-            for (final result in _reply?.results ?? <AgentResultView>[])
-              AgentResultCard(result: result),
-            if (approval != null)
-              ApprovalCard(
-                approval: approval,
-                busy: _busy,
-                onDecision: (approved) => _perform(
-                  () => widget.client.resume(
-                    approvalId: approval.id,
-                    approved: approved,
-                  ),
-                ),
-              ),
           ],
         ),
       ),

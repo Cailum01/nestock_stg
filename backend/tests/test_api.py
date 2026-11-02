@@ -2,6 +2,7 @@ import asyncio
 
 from fastapi.testclient import TestClient
 
+from app.agent.read_agent import get_read_agent
 from app.core.config import settings
 from app.core.dependencies import get_inventory_service, get_shopping_service
 from app.main import create_app
@@ -51,7 +52,9 @@ def test_dependency_injection_reaches_api():
 
 
 def test_agent_and_repeated_resume_fail_closed_without_writes():
-    with TestClient(create_app()) as client:
+    app = create_app()
+    app.dependency_overrides[get_read_agent] = lambda: None  # Azure OpenAI not configured
+    with TestClient(app) as client:
         before = [client.get(path).json() for path in ["/inventory", "/shopping"]]
         assert (
             client.post(

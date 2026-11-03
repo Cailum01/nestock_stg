@@ -20,10 +20,11 @@ Flutter -- Normal API ------------------+
 
 The current frontend uses injected offline mocks. Backend GET routes and query
 tools delegate to the same read service instances, replaceable through dependency
-injection. There are no write endpoints or mutation ports. Agent routes validate
-requests but return HTTP 501. No cloud SDK or LangGraph dependency is installed.
-LangGraph remains the agreed runtime baseline for A1's later work; Azure OpenAI and
-Cosmos DB for NoSQL remain planned providers.
+injection. There are no write endpoints or mutation ports. `POST /agent/messages`
+runs a read-only LangGraph Agent on Azure OpenAI when `backend/.env` is configured
+and returns HTTP 501 otherwise; `POST /agent/resume` still returns 501. Cosmos DB
+for NoSQL is provisioned on Azure, but the backend is not connected to it yet and
+serves read-only demo data.
 
 Pydantic models define the domain and provisional HTTP envelopes. FastAPI derives
 OpenAPI for models exposed through routes. Transaction currently has no public

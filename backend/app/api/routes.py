@@ -1,6 +1,16 @@
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 
 from app.agent.read_agent import ReadAgent, get_read_agent
 from app.core.config import settings
@@ -8,16 +18,19 @@ from app.core.dependencies import (
     get_inventory_service,
     get_media_storage_service,
     get_shopping_service,
+    get_speech_service,
 )
 from app.models.agent import AgentRequest, AgentResponse, ResumeRequest
 from app.models.base import ContractModel
 from app.models.domain import InventoryItem, ShoppingItem
+from app.models.speech import AllowedAudioContentType, SpeechTranscribeResponse
 from app.models.storage import (
     UploadAuthorizationRequest,
     UploadAuthorizationResponse,
 )
 from app.services.interfaces import InventoryService, ShoppingService
 from app.services.provisional_storage.interfaces import MediaStorageService
+from app.services.speech import SpeechToTextService
 
 router = APIRouter()
 
@@ -141,3 +154,63 @@ async def receive_staged_upload(
         ) from exc
 
     return Response(status_code=status.HTTP_201_CREATED)
+
+
+SUPPORTED_AUDIO_EXTENSIONS = {".m4a", ".aac", ".mp4", ".wav", ".mp3", ".webm"}
+
+
+@router.post(
+    "/api/speech/transcribe",
+    response_model=SpeechTranscribeResponse,
+    tags=["speech"],
+    summary="Transcribe audio recording to text via STT service",
+    responses={
+        200: {"description": "Successful transcription with language and duration"},
+        400: {"description": "Empty or corrupted audio payload"},
+        413: {"description": "Audio payload exceeds maximum 5MB size limit"},
+        415: {"description": "Unsupported audio media type"},
+    },
+)
+async def transcribe_speech(
+    file: UploadFile = File(...),
+    language: str | None = Form(None),
+    speech_service: Annotated[SpeechToTextService, Depends(get_speech_service)] = None,
+) -> SpeechTranscribeResponse:
+    payload_bytes = await file.read()
+
+    # 1. Zero-byte check (400)
+    if not payload_bytes or len(payload_bytes) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Empty audio payload",
+        )
+
+    # 2. Size limit check (413) - Max 5MB
+    if len(payload_bytes) > 5 * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Audio payload exceeds maximum 5MB size limit",
+        )
+
+    # 3. Content type and extension validation (415)
+    content_type = file.content_type or ""
+    filename = file.filename or ""
+    import os
+
+    ext = os.path.splitext(filename)[1].lower()
+
+    valid_type = (
+        content_type in [v.value for v in AllowedAudioContentType]
+        or ext in SUPPORTED_AUDIO_EXTENSIONS
+    )
+    if not valid_type:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Unsupported audio content type '{content_type}' or extension '{ext}'",
+        )
+
+    return await speech_service.transcribe(
+        audio_bytes=payload_bytes,
+        content_type=content_type,
+        language=language,
+    )

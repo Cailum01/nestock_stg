@@ -98,8 +98,11 @@ Open `http://127.0.0.1:8000/health` for `{"status":"ok"}` and
 | `GET /health` | 200; process health, no cloud connectivity check |
 | `GET /inventory` | read-only demo inventory, fixed household scope |
 | `GET /shopping` | read-only demo shopping list, fixed household scope |
-| `POST /agent/messages` | validates provisional request, then 501 |
+| `POST /agent/messages` | read-only Agent via Azure OpenAI when `backend/.env` is set; otherwise 501 |
 | `POST /agent/resume` | validates provisional request, then 501; no writes |
+| `POST /api/media/upload-authorization` | provisional photo upload authorization (A2, PR #5) |
+| `PUT /staging/upload/{upload_token}` | provisional local photo staging upload (A2, PR #5) |
+| `POST /api/speech/transcribe` | speech-to-text; returns demo text until a provider is connected (A2, PR #12) |
 
 ```sh
 uv run ruff check .
@@ -107,9 +110,11 @@ uv run ruff format --check .
 uv run pytest
 ```
 
-No environment variables, secrets or external services are required. Change local
-demo configuration in `backend/app/core/config.py`. Keep development endpoints
-local; authentication and deployment are outside this skeleton.
+The backend starts without any secrets. To enable the read-only Agent, copy
+`backend/.env.example` to `backend/.env` and fill in the three Azure OpenAI values;
+never commit `backend/.env`. Change local demo configuration in
+`backend/app/core/config.py`. Keep development endpoints local; authentication and
+deployment are outside this skeleton.
 
 ## Where each owner extends
 

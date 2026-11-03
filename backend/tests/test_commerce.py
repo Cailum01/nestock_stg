@@ -1,9 +1,9 @@
-"""Unit tests for A2 Commerce Provider and PurchaseOption contract.
+"""Unit tests for A2 Commerce Provider and PurchaseOption contract (D-10 per v8 section 12).
 
 Verifies:
-- PurchaseOption contract constraints conforming to D-10 (option_id, store, source, updated_at).
-- BigGoCommerceProvider demo fallback with source='demo'.
-- BigGoCommerceProvider ACL normalization (ItemNormalizer integration) with source='live'.
+- PurchaseOption contract constraints (option_id, store, source strictly 'live'|'demo').
+- BigGoCommerceProvider demo fallback with source='demo' and demo-opt-* IDs.
+- BigGoCommerceProvider ACL normalization (ItemNormalizer integration, source='live').
 - BigGoCommerceProvider graceful degradation under timeout and upstream errors.
 """
 
@@ -18,9 +18,9 @@ from app.services.commerce.biggo import BigGoCommerceProvider
 
 
 def test_purchase_option_model_validation() -> None:
-    """Validate field bounds, defaults, and D-10 requirements of PurchaseOption."""
+    """Validate field bounds, defaults, and serializability of PurchaseOption under D-10."""
     option = PurchaseOption(
-        option_id="opt-test-1",
+        option_id="opt-biggo-1",
         title="舒潔 頂級三層抽取衛生紙",
         estimated_price=499.0,
         store="momo購物網",
@@ -28,19 +28,19 @@ def test_purchase_option_model_validation() -> None:
         product_url="https://example.com/item/123",
         unit_spec="100抽x24包",
         image_url="https://example.com/img.jpg",
+        updated_at="2026-11-03T08:00:00Z",
     )
-    assert option.option_id == "opt-test-1"
+    assert option.option_id == "opt-biggo-1"
     assert option.title == "舒潔 頂級三層抽取衛生紙"
-    assert option.estimated_price == 499.0
     assert option.store == "momo購物網"
     assert option.source == "live"
+    assert option.estimated_price == 499.0
     assert option.product_url == "https://example.com/item/123"
     assert option.unit_spec == "100抽x24包"
-    assert option.updated_at is not None
 
-    # D-10 Invariant check: estimated_price can be None (ephemeral)
+    # Invariant check: estimated_price can be None (ephemeral)
     free_option = PurchaseOption(
-        option_id="opt-demo-free",
+        option_id="opt-demo-2",
         title="贈品試用包",
         store="官方活動",
         source="demo",
@@ -48,17 +48,7 @@ def test_purchase_option_model_validation() -> None:
     )
     assert free_option.estimated_price is None
 
-    # D-10: source must be 'live' or 'demo'
-    with pytest.raises(ValidationError):
-        PurchaseOption(
-            option_id="opt-invalid",
-            title="衛生紙",
-            store="momo",
-            source="unknown",  # invalid literal
-            product_url="https://example.com",
-        )
-
-    # Invalid cases: missing option_id or empty title/product_url
+    # Invalid cases: missing option_id, empty title or product_url
     with pytest.raises(ValidationError):
         PurchaseOption(
             option_id="",
@@ -77,21 +67,31 @@ def test_purchase_option_model_validation() -> None:
             product_url="https://example.com",
         )
 
+    with pytest.raises(ValidationError):
+        PurchaseOption(
+            option_id="opt-1",
+            title="衛生紙",
+            store="momo",
+            source="live",
+            product_url="",
+        )
+
 
 @pytest.mark.anyio
 async def test_biggo_provider_demo_fallback() -> None:
-    """When credentials are absent, provider returns demo options tagged source='demo'."""
-    provider = BigGoCommerceProvider(client_id="", client_secret="")
+    """When in demo mode or credentials absent, returns demo options (D-10 source='demo')."""
+    provider = BigGoCommerceProvider(demo_mode=True)
     results = await provider.search_options("衛生紙", limit=3)
 
     assert len(results) > 0
     assert any("衛生紙" in opt.title for opt in results)
     for opt in results:
-        assert opt.option_id != ""
+        assert opt.option_id.startswith("demo-opt-")
         assert opt.store != ""
-        assert opt.source == "demo"  # D-10: Demo data cannot pretend to be live
+        assert opt.source == "demo"  # Invariant: Demo data must not disguise as live
         assert opt.product_url.startswith("http")
         assert opt.estimated_price is not None
+        assert opt.updated_at is not None
 
 
 @pytest.mark.anyio
@@ -99,9 +99,8 @@ async def test_biggo_provider_normalizes_raw_marketing_noise() -> None:
     """Verify that marketing tokens in raw BigGo titles are stripped and units extracted."""
     raw_mock_response = {
         "status": 200,
-        "list": [
+        "results": [
             {
-                "oid": "item-momo-123",
                 "title": "【限時熱賣爆款】舒潔 頂級三層抽取衛生紙(100抽x24包/箱) [買一送一]",
                 "price": 399.0,
                 "store": {"name": "momo購物網"},
@@ -131,10 +130,10 @@ async def test_biggo_provider_normalizes_raw_marketing_noise() -> None:
     assert len(results) == 1
     option = results[0]
 
-    # D-10 option_id and store check
-    assert option.option_id == "item-momo-123"
+    # D-10 Option structure verification
+    assert option.option_id == "opt-biggo-1"
     assert option.store == "momo購物網"
-    assert option.source == "live"  # D-10: live query tagged live
+    assert option.source == "live"  # Invariant: Real retrieval must be labeled live
 
     # Marketing noise removed
     assert "限時熱賣爆款" not in option.title

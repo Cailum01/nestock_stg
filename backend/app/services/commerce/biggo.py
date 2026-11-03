@@ -1,6 +1,7 @@
 import base64
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,13 +20,12 @@ load_dotenv(BACKEND_DIR / ".env", override=False)
 class BigGoCommerceProvider:
     """A2 Commerce Provider Adapter for BigGo Search & Price Comparison.
 
-    Invariants & D-10 Compliance:
-    - [D-10: SINGLE_OPERATION_ID] Each card has one operation_id; each option has its
-      own option_id. User selection returns selected_option_id.
-    - [D-10: STORE_AND_FRESHNESS] Merchant is captured in 'store'; data freshness is
-      tagged in 'source' ('live' or 'demo'). Demo data never pretends to be live.
+    Invariants:
+    - [D-10 / v8 Section 12] Comparison card shares one operation_id; each option
+      has a distinct option_id.
+    - [D-10] source explicitly distinguishes 'live' vs 'demo'; demo data must not disguise as live.
     - [INVARIANT-A2-2: ZERO_PRICE_PERSISTENCE] Outputs ephemeral PurchaseOption DTOs;
-      price is displayed for comparison, never persisted to ShoppingItem.
+      never mutates domain inventory or ShoppingItem price.
     - [INVARIANT-A2-3: CANONICAL_NORMALIZATION] Cleans marketing noise and extracts
       standard units via ItemNormalizer.
     - [INVARIANT-A2-4: FAULT_TOLERANT_DEGRADATION] Degrades safely to empty list on
@@ -38,7 +38,9 @@ class BigGoCommerceProvider:
         client_secret: str | None = None,
         normalizer: ItemNormalizer | None = None,
         timeout_seconds: float = 10.0,
+        demo_mode: bool = False,
     ) -> None:
+        self.demo_mode = demo_mode
         self.client_id = client_id if client_id is not None else os.getenv("BIGGO_CLIENT_ID")
         self.client_secret = (
             client_secret if client_secret is not None else os.getenv("BIGGO_CLIENT_SECRET")
@@ -90,8 +92,8 @@ class BigGoCommerceProvider:
         if not clean_keyword:
             return []
 
-        # Demo fallback when credentials are not configured
-        if not self.client_id or not self.client_secret:
+        # Demo fallback when demo_mode is True or credentials are not configured
+        if self.demo_mode or not self.client_id or not self.client_secret:
             return self._get_demo_fallback_options(clean_keyword, limit)
 
         search_url = f"https://api.biggo.com/api/v1/spa/search/{clean_keyword}/product"
@@ -129,8 +131,9 @@ class BigGoCommerceProvider:
     ) -> list[PurchaseOption]:
         """Apply ItemNormalizer to raw provider items to build PurchaseOption DTOs."""
         options: list[PurchaseOption] = []
+        now_iso = datetime.now(timezone.utc).isoformat()
 
-        for item in raw_items:
+        for idx, item in enumerate(raw_items, 1):
             if len(options) >= limit:
                 break
 
@@ -176,24 +179,18 @@ class BigGoCommerceProvider:
             else:
                 store_name = str(store_field or item.get("mall_name") or "BigGo")
 
-            option_id = str(
-                item.get("oid")
-                or item.get("nindex")
-                or item.get("item_id")
-                or f"opt-biggo-{len(options) + 1}"
-            )
-
             options.append(
                 PurchaseOption(
-                    option_id=option_id,
+                    option_id=f"opt-biggo-{idx}",
                     title=clean_title or raw_title,
                     raw_title=raw_title,
-                    estimated_price=price_val,
                     store=store_name,
                     source="live",
+                    estimated_price=price_val,
                     product_url=product_url,
                     unit_spec=unit_spec,
                     image_url=item.get("image"),
+                    updated_at=now_iso,
                 )
             )
 
@@ -204,75 +201,77 @@ class BigGoCommerceProvider:
         keyword: str,
         limit: int,
     ) -> list[PurchaseOption]:
-        """Provide deterministic demo recommendations matching household scenarios.
-
-        Per D-10: Demo options are explicitly tagged with source="demo" to prevent
-        pretending to be live data.
-        """
+        """Provide deterministic demo recommendations matching household scenarios."""
         options: list[PurchaseOption] = []
+        now_iso = datetime.now(timezone.utc).isoformat()
 
         if "衛生紙" in keyword:
             options.append(
                 PurchaseOption(
-                    option_id="demo-opt-tissue-1",
+                    option_id="demo-opt-1",
                     title="舒潔 頂級三層抽取衛生紙",
                     raw_title="舒潔 頂級三層抽取衛生紙 100抽x24包",
-                    estimated_price=389.0,
                     store="momo購物網",
                     source="demo",
+                    estimated_price=389.0,
                     product_url="https://www.momoshop.com.tw/goods/GoodsDetail.jsp?i_code=demo1",
                     unit_spec="100抽x24包",
                     image_url="https://img.biggo.com.tw/demo_tissue.jpg",
+                    updated_at=now_iso,
                 )
             )
             options.append(
                 PurchaseOption(
-                    option_id="demo-opt-tissue-2",
+                    option_id="demo-opt-2",
                     title="五月花 蓬厚柔抽取式衛生紙",
                     raw_title="五月花 蓬厚柔抽取式衛生紙 100抽x24包",
-                    estimated_price=339.0,
                     store="PChome 24h",
                     source="demo",
+                    estimated_price=339.0,
                     product_url="https://24h.pchome.com.tw/prod/demo2",
                     unit_spec="100抽x24包",
+                    updated_at=now_iso,
                 )
             )
         elif "牛奶" in keyword or "鮮奶" in keyword or "乳" in keyword:
             options.append(
                 PurchaseOption(
-                    option_id="demo-opt-milk-1",
+                    option_id="demo-opt-1",
                     title="光泉 全脂鮮乳",
                     raw_title="光泉 全脂鮮乳 936ml x 2瓶",
-                    estimated_price=185.0,
                     store="家樂福線上購物",
                     source="demo",
+                    estimated_price=185.0,
                     product_url="https://online.carrefour.com.tw/goods/demo3",
                     unit_spec="936ml x 2瓶",
+                    updated_at=now_iso,
                 )
             )
             options.append(
                 PurchaseOption(
-                    option_id="demo-opt-milk-2",
+                    option_id="demo-opt-2",
                     title="義美 全脂鮮乳",
                     raw_title="義美 全脂鮮乳 1000ml",
-                    estimated_price=98.0,
                     store="momo購物網",
                     source="demo",
+                    estimated_price=98.0,
                     product_url="https://www.momoshop.com.tw/goods/GoodsDetail.jsp?i_code=demo4",
                     unit_spec="1000ml",
+                    updated_at=now_iso,
                 )
             )
         else:
             options.append(
                 PurchaseOption(
-                    option_id=f"demo-opt-{keyword}-1",
+                    option_id="demo-opt-1",
                     title=f"精選推薦 {keyword}",
                     raw_title=f"精選特惠 {keyword} 1件裝",
-                    estimated_price=199.0,
                     store="momo購物網",
                     source="demo",
+                    estimated_price=199.0,
                     product_url=f"https://biggo.com.tw/search/{keyword}",
                     unit_spec="1件",
+                    updated_at=now_iso,
                 )
             )
 

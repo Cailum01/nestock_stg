@@ -3,6 +3,7 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
+from app.core.dependencies import _create_vision_service, get_vision_service
 from app.models.domain import InventoryItem
 from app.models.vision import (
     CandidateMatch,
@@ -11,7 +12,14 @@ from app.models.vision import (
     SceneType,
     VisionAnalysisResult,
 )
-from app.services.vision import MockVisionService, VisionService
+from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
+from app.services.vision import (
+    AzureOpenAIVisionService,
+    MockVisionService,
+    VisionOpenAISettings,
+    VisionService,
+    load_vision_azure_settings,
+)
 
 
 class DummyInventoryService:
@@ -199,3 +207,79 @@ async def test_vision_service_rejects_empty_image_ref():
             image_ref="   ",
             scene_type=SceneType.SINGLE_ITEM,
         )
+
+
+def test_load_vision_azure_settings_fallback_to_brain_config():
+    env = {
+        "AZURE_OPENAI_ENDPOINT": "https://test.openai.azure.com/",
+        "AZURE_OPENAI_API_KEY": "brain-key-123",
+        "AZURE_OPENAI_DEPLOYMENT": "gpt-4o",
+    }
+    settings = load_vision_azure_settings(environment=env)
+    assert settings is not None
+    assert settings.endpoint == "https://test.openai.azure.com/"
+    assert settings.api_key == "brain-key-123"
+    assert settings.deployment == "gpt-4o"
+    assert settings.base_url == "https://test.openai.azure.com/openai/v1/"
+
+
+def test_load_vision_azure_settings_dedicated_vision_config():
+    env = {
+        "AZURE_OPENAI_ENDPOINT": "https://brain.openai.azure.com/",
+        "AZURE_OPENAI_API_KEY": "brain-key",
+        "AZURE_OPENAI_VISION_ENDPOINT": "https://vision.openai.azure.com/",
+        "AZURE_OPENAI_VISION_API_KEY": "vision-key",
+        "AZURE_OPENAI_VISION_DEPLOYMENT": "Phi-4-multimodal-instruct",
+    }
+    settings = load_vision_azure_settings(environment=env)
+    assert settings is not None
+    assert settings.endpoint == "https://vision.openai.azure.com/"
+    assert settings.api_key == "vision-key"
+    assert settings.deployment == "Phi-4-multimodal-instruct"
+
+
+def test_load_vision_azure_settings_returns_none_when_empty():
+    assert load_vision_azure_settings(environment={}) is None
+
+
+def test_create_vision_service_falls_back_to_mock():
+    inventory = DummyInventoryService([])
+    media = LocalStagingMediaStorage()
+    service = _create_vision_service(inventory, media, environment={})
+    assert isinstance(service, MockVisionService)
+
+
+def test_create_vision_service_creates_azure_adapter_when_configured():
+    inventory = DummyInventoryService([])
+    media = LocalStagingMediaStorage()
+    env = {
+        "AZURE_OPENAI_ENDPOINT": "https://test.openai.azure.com/",
+        "AZURE_OPENAI_API_KEY": "secret",
+    }
+    service = _create_vision_service(inventory, media, environment=env)
+    assert isinstance(service, AzureOpenAIVisionService)
+
+
+def test_dependencies_get_vision_service():
+    service = get_vision_service()
+    assert isinstance(service, VisionService)
+
+
+@pytest.mark.anyio
+async def test_azure_vision_service_offline_fallback():
+    settings = VisionOpenAISettings(
+        endpoint="https://fake.openai.azure.com/",
+        api_key="",
+        deployment="Phi-4-multimodal-instruct",
+    )
+    inventory = DummyInventoryService([])
+    media = LocalStagingMediaStorage()
+    service = AzureOpenAIVisionService(settings, inventory, media, mock_fallback=True)
+
+    result = await service.analyze_image(
+        household_id="demo-household",
+        image_ref="blob://demo/test.jpg",
+    )
+    assert result.scene_type == SceneType.SINGLE_ITEM
+    assert len(result.detected_items) >= 1
+    assert result.detected_items[0].canonical_name == "高纖無糖豆漿"

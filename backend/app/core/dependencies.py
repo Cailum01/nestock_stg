@@ -9,6 +9,12 @@ from app.services.interfaces import InventoryService, ShoppingService
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
 from app.services.speech import MockSpeechToTextService, SpeechToTextService
+from app.services.vision import (
+    AzureOpenAIVisionService,
+    MockVisionService,
+    VisionService,
+    load_vision_azure_settings,
+)
 
 
 def _create_domain_read_services(
@@ -42,9 +48,27 @@ def _create_domain_read_services(
     return CosmosInventoryService(repository), CosmosShoppingService(repository)
 
 
+def _create_vision_service(
+    inventory: InventoryService,
+    media: MediaStorageService,
+    environment: Mapping[str, str] | None = None,
+) -> VisionService:
+    settings = load_vision_azure_settings(environment=environment)
+    if settings is not None:
+        return AzureOpenAIVisionService(
+            settings=settings,
+            inventory_service=inventory,
+            media_storage=media,
+        )
+    return MockVisionService(inventory_service=inventory)
+
+
 inventory_service, shopping_service = _create_domain_read_services()
 media_storage_service: MediaStorageService = LocalStagingMediaStorage()
 speech_service: SpeechToTextService = MockSpeechToTextService()
+vision_service: VisionService = _create_vision_service(
+    inventory_service, media_storage_service
+)
 
 
 def get_inventory_service() -> InventoryService:
@@ -61,3 +85,7 @@ def get_media_storage_service() -> MediaStorageService:
 
 def get_speech_service() -> SpeechToTextService:
     return speech_service
+
+
+def get_vision_service() -> VisionService:
+    return vision_service

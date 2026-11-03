@@ -18,6 +18,7 @@
 | D-3 | 一張確認卡上有好幾件東西 | 待決定（有提案） | 2026-11-05 |
 | D-4 | 語音輸入 | 已定案（PR #12） | — |
 | D-5 | 照片編號交給 Agent | 已定案（PR #9） | — |
+| D-10 | 比價確認卡的格式 | 已定案（照 v8 第 12 節） | — |
 
 ---
 
@@ -82,3 +83,23 @@
   會告訴使用者照片辨識還沒開放。
 - **後續**：Day 8 讀取照片之前，A1 必須先檢查 `image_ref` 是否屬於該家庭，
   避免拿別家的照片編號來查。
+
+## D-10 比價確認卡的格式
+
+- **狀態**：已定案（照 v8 第 12 節「Purchase Options — Workflow D」，2026-11-03）
+- **要誰照做**：A1 Jason（確認卡與 resume 檢查）、A2 宗逸（比價選項）、C2 兔毛（卡片畫面）、
+  C1 Judy（加進待購清單）
+- **決定**
+  1. 一張比價卡只比一樣東西，整張卡一個 `operation_id`；每個選項有自己的 `option_id`。
+  2. 每個選項的欄位：店家（`store`）、商品、價格、網址、更新時間，以及 `source`
+     （`live` 或 `demo`）。示範資料不可以假裝成即時資料。價格只顯示，不存。
+  3. 卡片本身就是確認畫面。使用者選一個選項並確認一次，不再跳第二個確認視窗。
+  4. 選了選項就回傳 `selected_option_id`（必填）。按取消就是 `approved=false`，
+     什麼都不寫，也不看 `selected_option_id`。
+  5. 三種確認卡共用同一個回傳格式：`approval_id`、`approved`、
+     `approved_operation_ids`（只有勾選好幾件的卡用，見 D-3）、`selected_option_id`
+     （只有比價卡用）。
+  6. 確認後沿用卡片的 `operation_id` 加進待購清單；重試時不會重複加。
+  7. MVP 只接一個比價來源，來源可以替換；不做全網爬蟲或多電商爬蟲（v8 第 1、6 節）。
+- **後續**：`ResumeRequest` 目前只有 `approved`，要新增 `approved_operation_ids` 和
+  `selected_option_id`。由 A1 修改 `backend/app/models/agent.py`，並和 C2 對齊。

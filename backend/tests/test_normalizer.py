@@ -57,9 +57,11 @@ def test_item_normalizer_resolves_single_package_and_capacity():
     assert res.canonical_name == "全脂鮮乳"
     assert res.quantity == 2.0
     assert res.unit == "瓶"
+    assert res.unit_confirmed is True
     assert res.capacity_spec == "936ml"
     assert "鮮乳" in res.feature_keywords
-    assert "義美" in res.feature_keywords
+    # Brand must NOT leak into feature keywords per B2/A1 review
+    assert "義美" not in res.feature_keywords
 
 
 def test_item_normalizer_resolves_multi_piece_box():
@@ -70,7 +72,9 @@ def test_item_normalizer_resolves_multi_piece_box():
     assert "衛生紙" in res.canonical_name
     assert res.quantity == 24.0
     assert res.unit == "包"
+    assert res.unit_confirmed is True
     assert res.capacity_spec == "100抽"
+    assert "舒潔" not in res.feature_keywords
 
 
 def test_item_normalizer_resolves_coca_cola_pack():
@@ -79,16 +83,39 @@ def test_item_normalizer_resolves_coca_cola_pack():
     assert res.brand == "可口可樂"
     assert res.quantity == 6.0
     assert res.unit == "入"
+    assert res.unit_confirmed is True
     assert res.capacity_spec == "330ml"
+    assert "可口可樂" not in res.feature_keywords
 
 
-def test_item_normalizer_fallback_defaults():
+def test_item_normalizer_fallback_defaults_leaves_unit_unconfirmed():
     normalizer = ItemNormalizer()
+    # 當品名中無可解析量詞或規格時，不強加「個」，回傳 None 並標記 unit_confirmed=False
     res = normalizer.normalize("蘋果")
     assert res.canonical_name == "蘋果"
     assert res.quantity == 1.0
-    assert res.unit == "個"
+    assert res.unit is None
+    assert res.unit_confirmed is False
     assert "蘋果" in res.feature_keywords
+
+
+def test_item_normalizer_explicit_fallback_unit():
+    normalizer = ItemNormalizer()
+    res = normalizer.normalize("蘋果", fallback_unit="個")
+    assert res.unit == "個"
+    assert res.unit_confirmed is True
+
+
+def test_normalized_item_unconfirmed_unit_model():
+    item = NormalizedItem(
+        raw_text="醬油",
+        canonical_name="醬油",
+        quantity=1.0,
+        unit=None,
+        unit_confirmed=False,
+    )
+    assert item.unit is None
+    assert item.unit_confirmed is False
 
 
 def test_item_normalizer_rejects_empty_input():

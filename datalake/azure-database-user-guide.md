@@ -2,8 +2,9 @@
 
 **Audience:** Nestock developers and their AI coding assistants
 **Environment:** Shared development resources in the school Azure subscription
-**Status:** Infrastructure is provisioned; production data model and application
-integration are not implemented.
+**Status:** Development infrastructure is provisioned. The backend has an
+opt-in, read-only Cosmos integration; production data model and write integration
+are not implemented.
 
 ## 1. What is ready
 
@@ -31,9 +32,9 @@ The following development resources have been created and verified:
 
 The account, database, container, and private media container exist. This does
 **not** mean the production schema, complete indexing policy for every approved
-query, seed data, application repository, or cloud integration is complete.
-Setup did not insert domain or sample records; check the environment before
-assuming it remains empty. The dev container has the composite index required
+query, seed data, or write integration is complete. Setup did not insert domain
+or sample records; check the environment before assuming it remains empty. The
+dev container has the composite index required
 by the current Transaction ordering query, defined in
 [cosmos-indexing-policy.json](./cosmos-indexing-policy.json); a future approved
 feature-keyword query may require another index after its query plan is verified.
@@ -44,13 +45,47 @@ create a separate group. Do not change or delete unrelated resources in
 
 ## 2. Important project boundary
 
-The repository is still an offline Skeleton v1:
+The Flutter app remains offline and uses mocks. The backend has an optional,
+read-only Cosmos adapter for Inventory and Shopping. It is disabled by default;
+without the explicit environment configuration below, the backend continues to
+serve demo data. The adapter does not enable writes, approval persistence,
+transaction-history endpoints, or Blob access.
 
-- The Flutter app uses mocks; it does not call Azure.
-- The FastAPI backend has no Cosmos or Blob integration.
-- Do not add Azure SDK connections to the app or backend as part of ordinary
-  feature work. Follow the existing architecture and obtain B1/affected-owner
-  agreement before starting a persistence implementation.
+Do not treat this read adapter as authorization. The current API uses the fixed
+`demo-household` scope; the Cosmos partition key is not a security boundary.
+Obtain affected-owner agreement before adding any write path or changing domain
+contracts.
+
+### Optional read-only Cosmos connection
+
+Use the signed-in Entra identity through `DefaultAzureCredential`; do not use
+account keys or connection strings. The current account is serverless, so
+queries consume billable request units even though the container has no
+provisioned throughput.
+
+In PowerShell, after `az login` and selecting the Nestock development
+subscription, configure all three values to enable the adapter:
+
+```powershell
+$env:NESTOCK_COSMOS_ENDPOINT = "https://nestock-cosmos-dev-20261101.documents.azure.com:443/"
+$env:NESTOCK_COSMOS_DATABASE = "nestock"
+$env:NESTOCK_COSMOS_CONTAINER = "household-data"
+```
+
+Restart the backend after setting these variables. Clear them to return to the
+offline demo services. A partial configuration is an error; the application
+does not silently fall back to demo data. The identity needs a Cosmos SQL
+data-plane role scoped to the `household-data` container. The adapter executes
+parameterized queries with the `/household_id` partition key and performs no
+Cosmos mutations.
+
+- Cosmos DB records are shared development data; use synthetic data only.
+- Confirm the active Azure subscription before running the backend.
+- Do not create another Cosmos account, database, container, or Storage account;
+  the shared development resources already exist.
+- Blob/ADLS integration and lake tables are not configured by this adapter.
+  Keep the existing private `media` container. Any Data Lake table format,
+  catalog, or analytics workload must follow the pending D-7 decision.
 - Pydantic models remain the domain/API contract source of truth. This guide and
   the data-platform design are not a replacement schema.
 - Cosmos records are shared development data. The `/household_id` partition key
@@ -209,13 +244,13 @@ resource owner to check the assignment; never switch to a shared key.
 > This is the shared Nestock development Azure environment. Read
 > `README.md`, `AGENTS.md`, `docs/architecture.md`,
 > `contracts/README.md`, and `datalake/azure-data-platform-user-guide.md`.
-> Follow owner boundaries. The app/backend must remain offline in Skeleton v1.
-> Use Entra ID, never account keys. Begin with scoped, read-only inspection;
-> use only synthetic data. Cosmos queries must filter and set the
-> `/household_id` partition. Do not mutate, delete, change infrastructure, or
-> add cloud integration without explicit owner approval and the required
-> human-approval/domain-service flow. Do not print or transmit document
-> contents, blob names, or credentials.
+> Follow owner boundaries. Flutter remains offline; backend Cosmos reads are
+> opt-in and read-only. Use Entra ID, never account keys. Begin with scoped,
+> read-only inspection; use only synthetic data. Cosmos queries must filter and
+> set the `/household_id` partition. Do not mutate, delete, create resources,
+> change infrastructure, or add write integration without explicit owner
+> approval and the required human-approval/domain-service flow. Do not print or
+> transmit document contents, blob names, or credentials.
 
 ## 7. Data model and query status
 

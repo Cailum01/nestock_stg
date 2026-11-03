@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import pytest
 
@@ -15,7 +16,7 @@ class FakeContainer:
         self.documents = documents
         self.calls = []
 
-    def query_items(self, *, query, parameters, partition_key):
+    def query_items(self, *, query, parameters, partition_key, response_hook):
         self.calls.append(
             {
                 "query": query,
@@ -23,6 +24,8 @@ class FakeContainer:
                 "partition_key": partition_key,
             }
         )
+        response_hook({"x-ms-request-charge": "1.25"}, {})
+        response_hook({"X-MS-REQUEST-CHARGE": "0.75"}, {})
         return iter(self.documents)
 
 
@@ -47,6 +50,26 @@ def test_sdk_query_client_uses_household_partition_and_returns_documents():
             "partition_key": "home",
         }
     ]
+
+
+def test_sdk_query_client_logs_aggregate_charge_without_query_scope_or_document_data(caplog):
+    container = FakeContainer([{"id": "inventory_item:rice", "household_id": "home"}])
+    client = AzureCosmosDocumentQueryClient(container)
+
+    with caplog.at_level(logging.INFO, logger="app.services.cosmos_sdk"):
+        asyncio.run(
+            client.query_items(
+                query="SELECT * FROM c WHERE c.household_id = @household_id",
+                parameters=({"name": "@household_id", "value": "private-household"},),
+                partition_key="private-household",
+            )
+        )
+
+    assert "request_charge=2.0" in caplog.text
+    assert "result_count=1" in caplog.text
+    assert "duration_ms=" in caplog.text
+    assert "private-household" not in caplog.text
+    assert "inventory_item:rice" not in caplog.text
 
 
 def test_sdk_query_client_propagates_sdk_errors():

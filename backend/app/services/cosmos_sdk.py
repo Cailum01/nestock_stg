@@ -1,6 +1,8 @@
 """Azure Cosmos SDK adapter for the B1 read-only repository."""
 
 import asyncio
+import logging
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Callable, Protocol
 
@@ -8,6 +10,8 @@ from azure.cosmos import CosmosClient
 from azure.identity import DefaultAzureCredential
 
 from app.services.cosmos_read import CosmosReadRepository
+
+logger = logging.getLogger(__name__)
 
 
 class CosmosContainer(Protocol):
@@ -17,6 +21,7 @@ class CosmosContainer(Protocol):
         query: str,
         parameters: Sequence[Mapping[str, object]],
         partition_key: str,
+        response_hook: Callable[[Mapping[str, str], Mapping[str, object]], None],
     ) -> Iterable[Mapping[str, object]]: ...
 
 
@@ -47,12 +52,37 @@ class AzureCosmosDocumentQueryClient:
         parameters: Sequence[Mapping[str, object]],
         partition_key: str,
     ) -> list[Mapping[str, object]]:
+        request_charges: list[float] = []
+
+        def capture_response(
+            headers: Mapping[str, str],
+            response: Mapping[str, object],
+        ) -> None:
+            del response
+            charge_header = next(
+                (value for key, value in headers.items() if key.lower() == "x-ms-request-charge"),
+                None,
+            )
+            if charge_header is not None:
+                request_charges.append(float(charge_header))
+
+        started_at = time.perf_counter()
         documents = self._container.query_items(
             query=query,
             parameters=[dict(parameter) for parameter in parameters],
             partition_key=partition_key,
+            response_hook=capture_response,
         )
-        return [dict(document) for document in documents]
+        results = [dict(document) for document in documents]
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        total_request_charge = sum(request_charges) if request_charges else None
+        logger.info(
+            "Cosmos read query completed: request_charge=%s result_count=%d duration_ms=%.1f",
+            total_request_charge,
+            len(results),
+            duration_ms,
+        )
+        return results
 
 
 def create_azure_cosmos_read_repository(

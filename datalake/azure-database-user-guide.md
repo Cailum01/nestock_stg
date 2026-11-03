@@ -285,6 +285,12 @@ a hard spending cap or automatically stop services when credits are exhausted.
 Check Azure Cost Management regularly and coordinate before changing capacity,
 regions, replication, or retention.
 
+When the opt-in backend Cosmos adapter is enabled, each successful Inventory or
+Shopping query logs aggregate Cosmos request charge, result count, and elapsed
+time. These diagnostics omit household IDs and document contents. Use request
+charge as per-query telemetry; it does not include storage, backup, or other
+subscription costs and is not a spending cap.
+
 Do not use the resources for production workloads. Keep the existing private
 Blob access and avoid widening Azure role scopes. If a team member leaves,
 notify the resource owner so both their GitHub access and Azure guest/data-role

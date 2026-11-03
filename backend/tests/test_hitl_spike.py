@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from app.agent.fakes import FakeWriteExecutor
+from app.agent.fakes import FakeInventoryService, FakeWriteExecutor
 from app.agent.hitl_spike import ApprovalNotFoundError, HitlSpikeRuntime
 from app.models.agent import (
     AgentRequest,
@@ -25,7 +25,7 @@ MESSAGE = "我買了 2 瓶牛奶"
 
 def _new() -> tuple[HitlSpikeRuntime, FakeWriteExecutor]:
     executor = FakeWriteExecutor()
-    return HitlSpikeRuntime(executor), executor
+    return HitlSpikeRuntime(executor, FakeInventoryService()), executor
 
 
 async def _propose(runtime: HitlSpikeRuntime) -> AgentResponse:
@@ -48,7 +48,12 @@ def test_approve_writes_once():
         proposed = await _propose(runtime)
         pending = proposed.pending_approval
         assert pending.presentation == ApprovalPresentation.SINGLE_ACTION
-        assert pending.operations[0].values == {"name": "牛奶", "quantity": 2, "unit": "瓶"}
+        assert pending.operations[0].values == {
+            "item_id": "fake-milk",
+            "name": "牛奶",
+            "quantity": 2,
+            "unit": "瓶",
+        }
         assert executor.call_count == 0  # paused BEFORE any write
 
         done = await runtime.resume(_resume(pending.approval_id, approved=True))
@@ -166,5 +171,54 @@ def test_fake_executor_dedupes_by_operation():
         await executor(HOUSEHOLD, operation)
         assert executor.call_count == 2
         assert executor.write_count == 1
+
+    asyncio.run(scenario())
+
+
+async def _ask(runtime: HitlSpikeRuntime, message: str) -> AgentResponse:
+    return await runtime.respond(AgentRequest(household_id=HOUSEHOLD, message=message))
+
+
+def test_unit_comes_from_inventory_when_sentence_has_none():
+    async def scenario():
+        runtime, executor = _new()
+        response = await _ask(runtime, "我買了 2 牛奶")
+        assert response.pending_approval is not None
+        assert response.pending_approval.operations[0].values["unit"] == "瓶"
+        assert executor.call_count == 0
+
+    asyncio.run(scenario())
+
+
+def test_alias_uses_item_name_and_unit():
+    async def scenario():
+        runtime, _ = _new()
+        response = await _ask(runtime, "我買了 3 米")
+        values = response.pending_approval.operations[0].values
+        assert values["item_id"] == "fake-rice"
+        assert values["name"] == "白米"
+        assert values["unit"] == "包"
+
+    asyncio.run(scenario())
+
+
+def test_different_unit_asks_instead_of_card():
+    async def scenario():
+        runtime, executor = _new()
+        response = await _ask(runtime, "我買了 1 箱牛奶")
+        assert response.pending_approval is None  # no card until converted
+        assert "瓶" in response.message and "1 箱" in response.message
+        assert executor.call_count == 0
+
+    asyncio.run(scenario())
+
+
+def test_item_not_in_inventory_asks_for_unit():
+    async def scenario():
+        runtime, executor = _new()
+        response = await _ask(runtime, "我買了 2 包薯片")
+        assert response.pending_approval is None
+        assert "薯片" in response.message and "單位" in response.message
+        assert executor.call_count == 0
 
     asyncio.run(scenario())

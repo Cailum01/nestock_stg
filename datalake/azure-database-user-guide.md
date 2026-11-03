@@ -49,7 +49,9 @@ The Flutter app remains offline and uses mocks. The backend has an optional,
 read-only Cosmos adapter for Inventory and Shopping. It is disabled by default;
 without the explicit environment configuration below, the backend continues to
 serve demo data. The adapter does not enable writes, approval persistence,
-transaction-history endpoints, or Blob access.
+transaction-history endpoints, or Blob access. Its internal repository supports
+household-partition-scoped lists and stable-ID point reads for Inventory and
+Shopping; no new public route is added for point reads.
 
 Do not treat this read adapter as authorization. The current API uses the fixed
 `demo-household` scope; the Cosmos partition key is not a security boundary.

@@ -175,7 +175,7 @@ def build_transaction_query(spec: TransactionQuery) -> CosmosQuery:
 
 
 class DocumentQueryClient(Protocol):
-    """Minimal async query port implemented by a future Cosmos SDK adapter."""
+    """Household-scoped async read port implemented by the Cosmos SDK adapter."""
 
     async def query_items(
         self,
@@ -184,6 +184,13 @@ class DocumentQueryClient(Protocol):
         parameters: Sequence[Mapping[str, object]],
         partition_key: str,
     ) -> Sequence[Mapping[str, object]]: ...
+
+    async def read_item(
+        self,
+        *,
+        item_id: str,
+        partition_key: str,
+    ) -> Mapping[str, object] | None: ...
 
 
 class CosmosReadRepository:
@@ -206,6 +213,34 @@ class CosmosReadRepository:
             household_id=household_id,
         )
 
+    async def read_inventory_item(
+        self,
+        *,
+        household_id: str,
+        item_id: str,
+    ) -> InventoryItem | None:
+        return await self._read_record(
+            InventoryItem,
+            record_type="inventory_item",
+            identity=item_id,
+            identity_field="item_id",
+            household_id=household_id,
+        )
+
+    async def read_shopping_item(
+        self,
+        *,
+        household_id: str,
+        shopping_item_id: str,
+    ) -> ShoppingItem | None:
+        return await self._read_record(
+            ShoppingItem,
+            record_type="shopping_item",
+            identity=shopping_item_id,
+            identity_field="shopping_item_id",
+            household_id=household_id,
+        )
+
     async def list_transactions(self, query: TransactionQuery) -> list[Transaction]:
         cosmos_query = build_transaction_query(query)
         documents = await self._client.query_items(
@@ -221,6 +256,31 @@ class CosmosReadRepository:
             )
             for document in documents
         ]
+
+    async def _read_record(
+        self,
+        model_type: type[RecordT],
+        *,
+        record_type: str,
+        identity: str,
+        identity_field: str,
+        household_id: str,
+    ) -> RecordT | None:
+        if not household_id:
+            raise ValueError("household_id must not be empty.")
+        if not identity:
+            raise ValueError(f"{identity_field} must not be empty.")
+        document = await self._client.read_item(
+            item_id=_expected_id(record_type, identity),
+            partition_key=household_id,
+        )
+        if document is None:
+            return None
+        return CosmosDocumentMapper.from_document(
+            model_type,
+            document,
+            household_id=household_id,
+        )
 
     async def _list_records(
         self,

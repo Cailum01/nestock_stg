@@ -10,6 +10,9 @@ from app.agent.read_agent import ReadAgent, get_read_agent, load_system_prompt
 from app.core.dependencies import get_inventory_service, get_shopping_service
 from app.main import create_app
 from app.models.agent import AgentRequest, ResultKind
+from app.models.vision import SceneType
+from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
+from app.services.vision import MockVisionService
 from app.tools.queries import QueryTools
 
 HOUSEHOLD = "demo-household"
@@ -55,7 +58,7 @@ def test_only_read_tools_are_offered():
     model = ScriptedModel(AIMessage(content="你好"))
     _agent(model)
     names = {tool["function"]["name"] for tool in model.bound_tools}
-    assert names == {"list_inventory", "list_shopping"}
+    assert names == {"list_inventory", "list_shopping", "analyze_photo"}
 
 
 def test_inventory_question_looks_then_answers():
@@ -159,3 +162,109 @@ def test_route_accepts_image_ref_instead_of_422():
             "/agent/messages", json={"household_id": HOUSEHOLD, "message": "還有白米嗎"}
         )
         assert without_photo.status_code == 200  # old clients keep working
+
+
+# --- Day 8: reading photos -------------------------------------------------
+
+PHOTO = "img-milk-001"
+
+
+class RecordingVision(MockVisionService):
+    """A2's mock vision, recording what the Agent asked for."""
+
+    def __init__(self) -> None:
+        super().__init__(get_inventory_service())
+        self.calls: list[tuple[str, str, SceneType | None]] = []
+
+    async def analyze_image(self, household_id, image_ref, scene_type=None):
+        self.calls.append((household_id, image_ref, scene_type))
+        return await super().analyze_image(household_id, image_ref, scene_type)
+
+
+def _photo_agent(model: ScriptedModel, *, staged_for: str | None = HOUSEHOLD):
+    vision = RecordingVision()
+    media = LocalStagingMediaStorage()
+    if staged_for is not None:
+        asyncio.run(media.simulate_client_upload(staged_for, PHOTO, b"jpeg-bytes"))
+    tools = QueryTools(get_inventory_service(), get_shopping_service())
+    agent = ReadAgent(model, tools, load_system_prompt(), vision=vision, media=media)
+    return agent, vision
+
+
+def _ask_photo(agent: ReadAgent, message: str = "幫我看看這是什麼", household_id=HOUSEHOLD):
+    request = AgentRequest(household_id=household_id, message=message, image_ref=PHOTO)
+    return asyncio.run(agent.respond(request))
+
+
+def test_photo_is_read_and_shown_without_writing():
+    model = ScriptedModel(_call("analyze_photo"), AIMessage(content="看到 1 瓶高纖無糖豆漿。"))
+    agent, vision = _photo_agent(model)
+    response = _ask_photo(agent)
+
+    assert vision.calls == [(HOUSEHOLD, PHOTO, None)]  # no hint: A2 decides the scene
+    seen = json.loads([m for m in model.seen[-1] if isinstance(m, ToolMessage)][-1].content)
+    assert seen["items"][0]["name"] == "高纖無糖豆漿"
+    assert response.results[-1].kind == ResultKind.VISION
+    assert response.results[-1].data["image_ref"] == PHOTO
+    assert response.pending_approval is None  # display only, nothing to approve or write
+
+
+def test_photo_of_another_household_is_refused_before_the_model():
+    model = ScriptedModel(AIMessage(content="不應該被呼叫"))
+    agent, vision = _photo_agent(model, staged_for="another-household")
+    response = _ask_photo(agent)
+
+    assert "找不到這張照片" in response.message
+    assert model.seen == []  # refused before any model call
+    assert vision.calls == []
+
+
+def test_unknown_photo_is_refused():
+    model = ScriptedModel(AIMessage(content="不應該被呼叫"))
+    agent, vision = _photo_agent(model, staged_for=None)
+    response = _ask_photo(agent)
+
+    assert "找不到這張照片" in response.message
+    assert vision.calls == []
+
+
+def test_user_hint_is_passed_as_scene_type():
+    model = ScriptedModel(
+        _call("analyze_photo", scene_type="receipt"), AIMessage(content="發票上有豆漿。")
+    )
+    agent, vision = _photo_agent(model)
+    _ask_photo(agent, "這是今天的發票")
+
+    assert vision.calls == [(HOUSEHOLD, PHOTO, SceneType.RECEIPT)]
+
+
+def test_invalid_scene_type_lets_a2_decide():
+    model = ScriptedModel(
+        _call("analyze_photo", scene_type="selfie"), AIMessage(content="看到豆漿。")
+    )
+    agent, vision = _photo_agent(model)
+    _ask_photo(agent)
+
+    assert vision.calls == [(HOUSEHOLD, PHOTO, None)]
+
+
+def test_photo_ref_and_household_come_from_request_not_model():
+    model = ScriptedModel(
+        _call("analyze_photo", image_ref="someone-elses-photo", household_id="x"),
+        AIMessage(content="看到豆漿。"),
+    )
+    agent, vision = _photo_agent(model)
+    _ask_photo(agent)
+
+    assert vision.calls == [(HOUSEHOLD, PHOTO, None)]
+
+
+def test_analyze_photo_without_a_photo_reads_nothing():
+    model = ScriptedModel(_call("analyze_photo"), AIMessage(content="這次沒有附照片。"))
+    agent, vision = _photo_agent(model)
+    response = _ask(agent, "幫我看照片")
+
+    tool_message = [m for m in model.seen[-1] if isinstance(m, ToolMessage)][-1]
+    assert "沒有附照片" in tool_message.content
+    assert vision.calls == []
+    assert response.results == []

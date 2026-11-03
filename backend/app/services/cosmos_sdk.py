@@ -105,7 +105,9 @@ class AzureCosmosDocumentQueryClient:
                 partition_key=partition_key,
                 response_hook=self._request_charge_callback(request_charges),
             )
-        except CosmosResourceNotFoundError:
+        except CosmosResourceNotFoundError as error:
+            if not request_charges:
+                self._append_request_charge(error.headers, request_charges)
             self._log_read_metrics(
                 operation="point_read",
                 request_charges=request_charges,
@@ -131,14 +133,21 @@ class AzureCosmosDocumentQueryClient:
             response: Mapping[str, object],
         ) -> None:
             del response
-            charge_header = next(
-                (value for key, value in headers.items() if key.lower() == "x-ms-request-charge"),
-                None,
-            )
-            if charge_header is not None:
-                request_charges.append(float(charge_header))
+            AzureCosmosDocumentQueryClient._append_request_charge(headers, request_charges)
 
         return capture_response
+
+    @staticmethod
+    def _append_request_charge(
+        headers: Mapping[str, str],
+        request_charges: list[float],
+    ) -> None:
+        charge_header = next(
+            (value for key, value in headers.items() if key.lower() == "x-ms-request-charge"),
+            None,
+        )
+        if charge_header is not None:
+            request_charges.append(float(charge_header))
 
     @staticmethod
     def _log_read_metrics(
@@ -148,7 +157,7 @@ class AzureCosmosDocumentQueryClient:
         result_count: int,
         started_at: float,
     ) -> None:
-        total_request_charge = sum(request_charges) if request_charges else None
+        total_request_charge = str(sum(request_charges)) if request_charges else "unavailable"
         duration_ms = (time.perf_counter() - started_at) * 1000
         logger.info(
             "Cosmos read %s completed: request_charge=%s result_count=%d duration_ms=%.1f",

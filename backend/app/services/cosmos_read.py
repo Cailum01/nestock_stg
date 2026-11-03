@@ -1,7 +1,7 @@
 """Offline-testable Cosmos document mapping and read repository.
 
-This module deliberately has no Azure SDK dependency and is not wired into the
-application. It prepares the B1 read boundary without enabling persistence.
+The Azure SDK adapter is kept separate; application composition enables this
+repository only when its opt-in Cosmos settings are configured.
 """
 
 from collections.abc import Mapping, Sequence
@@ -14,7 +14,9 @@ from app.models.domain import InventoryItem, ShoppingItem, Transaction
 DomainRecord = InventoryItem | ShoppingItem | Transaction
 RecordT = TypeVar("RecordT", InventoryItem, ShoppingItem, Transaction)
 
-_RECORD_METADATA = frozenset({"id", "record_type", "_rid", "_self", "_etag", "_attachments", "_ts"})
+_RECORD_METADATA = frozenset(
+    {"id", "record_type", "deleted_at", "_rid", "_self", "_etag", "_attachments", "_ts"}
+)
 _RECORD_IDENTITIES: dict[type[DomainRecord], tuple[str, str]] = {
     InventoryItem: ("inventory_item", "item_id"),
     ShoppingItem: ("shopping_item", "shopping_item_id"),
@@ -291,10 +293,16 @@ class CosmosReadRepository:
     ) -> list[RecordT]:
         if not household_id:
             raise ValueError("household_id must not be empty.")
+        active_inventory_clause = (
+            "AND (NOT IS_DEFINED(c.deleted_at) OR IS_NULL(c.deleted_at)) "
+            if model_type is InventoryItem
+            else ""
+        )
         query = CosmosQuery(
             query=(
                 "SELECT * FROM c WHERE c.record_type = @record_type "
-                "AND c.household_id = @household_id"
+                "AND c.household_id = @household_id "
+                f"{active_inventory_clause}"
             ),
             parameters=(
                 {"name": "@record_type", "value": record_type},
@@ -307,13 +315,18 @@ class CosmosReadRepository:
             parameters=query.parameters,
             partition_key=query.partition_key,
         )
+        active_documents = (
+            document
+            for document in documents
+            if model_type is not InventoryItem or document.get("deleted_at") is None
+        )
         return [
             CosmosDocumentMapper.from_document(
                 model_type,
                 document,
                 household_id=household_id,
             )
-            for document in documents
+            for document in active_documents
         ]
 
 

@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 import pytest
+from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
 from app.core.dependencies import _create_domain_read_services
 from app.models.domain import InventoryItem, ShoppingItem
@@ -35,12 +36,10 @@ class FakeContainer:
 
     def read_item(self, *, item, partition_key, response_hook):
         self.point_read_calls.append({"item": item, "partition_key": partition_key})
-        response_hook({"x-ms-request-charge": "0.9"}, {})
         for document in self.documents:
             if document["id"] == item and document["household_id"] == partition_key:
+                response_hook({"x-ms-request-charge": "0.9"}, {})
                 return document
-        from azure.cosmos.exceptions import CosmosResourceNotFoundError
-
         raise CosmosResourceNotFoundError(status_code=404)
 
 
@@ -142,6 +141,37 @@ def test_repository_reads_shopping_item_and_returns_none_for_missing_or_other_ho
         {"item": "shopping_item:unknown", "partition_key": "home"},
         {"item": "shopping_item:milk", "partition_key": "other"},
     ]
+
+
+def test_sdk_point_read_logs_not_found_request_charge_from_exception_headers(caplog):
+    class NotFoundContainer:
+        def read_item(self, **kwargs):
+            error = CosmosResourceNotFoundError(status_code=404)
+            error.headers = {"x-ms-request-charge": "1.1"}
+            raise error
+
+    client = AzureCosmosDocumentQueryClient(NotFoundContainer())
+
+    with caplog.at_level(logging.INFO, logger="app.services.cosmos_sdk"):
+        result = asyncio.run(
+            client.read_item(item_id="inventory_item:missing", partition_key="home")
+        )
+
+    assert result is None
+    assert "request_charge=1.1 result_count=0" in caplog.text
+
+
+def test_sdk_point_read_marks_missing_not_found_request_charge_unavailable(caplog):
+    container = FakeContainer([])
+    client = AzureCosmosDocumentQueryClient(container)
+
+    with caplog.at_level(logging.INFO, logger="app.services.cosmos_sdk"):
+        result = asyncio.run(
+            client.read_item(item_id="inventory_item:missing", partition_key="home")
+        )
+
+    assert result is None
+    assert "request_charge=unavailable result_count=0" in caplog.text
 
 
 def test_sdk_point_read_propagates_non_not_found_errors():

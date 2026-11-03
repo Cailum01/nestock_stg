@@ -81,6 +81,10 @@ data-plane role scoped to the `household-data` container. The adapter executes
 parameterized queries with the `/household_id` partition key and performs no
 Cosmos mutations.
 
+Inventory list queries omit records with a non-null, persistence-only
+`deleted_at` marker, as specified by the platform design. This read behavior does
+not add a delete/restore operation or change the `InventoryItem` API model.
+
 - Cosmos DB records are shared development data; use synthetic data only.
 - Confirm the active Azure subscription before running the backend.
 - Do not create another Cosmos account, database, container, or Storage account;
@@ -287,11 +291,14 @@ a hard spending cap or automatically stop services when credits are exhausted.
 Check Azure Cost Management regularly and coordinate before changing capacity,
 regions, replication, or retention.
 
-When the opt-in backend Cosmos adapter is enabled, each successful Inventory or
-Shopping query logs aggregate Cosmos request charge, result count, and elapsed
-time. These diagnostics omit household IDs and document contents. Use request
-charge as per-query telemetry; it does not include storage, backup, or other
-subscription costs and is not a spending cap.
+When the opt-in backend Cosmos adapter is enabled, each Inventory or Shopping
+read logs Cosmos request charge, result count, and elapsed time. List reads
+aggregate request charge across pages; point reads use the single response
+charge. Not-found point reads log `result_count=0` and use the charge from the
+exception response header when available, otherwise `request_charge=unavailable`.
+These diagnostics omit household IDs and document contents. Use request charge
+as per-read telemetry; it does not include storage, backup, or other subscription
+costs and is not a spending cap.
 
 Do not use the resources for production workloads. Keep the existing private
 Blob access and avoid widening Azure role scopes. If a team member leaves,

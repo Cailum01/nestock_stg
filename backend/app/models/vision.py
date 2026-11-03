@@ -19,6 +19,14 @@ class SceneType(StrEnum):
     RECEIPT = "receipt"
 
 
+class CandidateMatch(ContractModel):
+    """Candidate inventory item for fuzzy matching in HITL loop."""
+
+    item_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    score: float = Field(ge=0.0, le=1.0)
+
+
 class DetectedItem(ContractModel):
     """Inferred observation from vision processing.
 
@@ -31,10 +39,12 @@ class DetectedItem(ContractModel):
     canonical_name: str = Field(min_length=1)
     feature_keywords: list[str] = Field(default_factory=list)
     quantity: float = Field(gt=0)
-    unit: str = Field(min_length=1)
+    unit: str | None = None
+    unit_confirmed: bool = True
     confidence: float = Field(ge=0.0, le=1.0)
     expiry_date: date | None = None
     matched_inventory_id: str | None = None
+    candidate_matches: list[CandidateMatch] = Field(default_factory=list)
     match_status: MatchStatus
 
 

@@ -1,20 +1,17 @@
 import base64
 import logging
 import os
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
-from dotenv import load_dotenv
 
 from app.models.commerce import PurchaseOption
 from app.services.normalizer import ItemNormalizer
 
 logger = logging.getLogger(__name__)
-
-BACKEND_DIR = Path(__file__).resolve().parents[3]
-load_dotenv(BACKEND_DIR / ".env", override=False)
 
 
 class BigGoCommerceProvider:
@@ -28,8 +25,8 @@ class BigGoCommerceProvider:
       never mutates domain inventory or ShoppingItem price.
     - [INVARIANT-A2-3: CANONICAL_NORMALIZATION] Cleans marketing noise and extracts
       standard units via ItemNormalizer.
-    - [INVARIANT-A2-4: FAULT_TOLERANT_DEGRADATION] Degrades safely to empty list on
-      upstream timeout or HTTP errors, avoiding unhandled 500 exceptions.
+    - [INVARIANT-A2-4: FAULT_TOLERANT_DEGRADATION] Degrades safely to demo dataset on
+      upstream timeout or HTTP errors, avoiding unhandled 500 exceptions (v8 Section 6).
     """
 
     def __init__(
@@ -39,11 +36,13 @@ class BigGoCommerceProvider:
         normalizer: ItemNormalizer | None = None,
         timeout_seconds: float = 10.0,
         demo_mode: bool = False,
+        environment: Mapping[str, str] | None = None,
     ) -> None:
+        env = os.environ if environment is None else environment
         self.demo_mode = demo_mode
-        self.client_id = client_id if client_id is not None else os.getenv("BIGGO_CLIENT_ID")
+        self.client_id = client_id if client_id is not None else env.get("BIGGO_CLIENT_ID")
         self.client_secret = (
-            client_secret if client_secret is not None else os.getenv("BIGGO_CLIENT_SECRET")
+            client_secret if client_secret is not None else env.get("BIGGO_CLIENT_SECRET")
         )
         self.normalizer = normalizer or ItemNormalizer()
         self.timeout_seconds = timeout_seconds
@@ -53,9 +52,11 @@ class BigGoCommerceProvider:
         """Factory for async HTTP client, isolated for test patching."""
         return httpx.AsyncClient(timeout=self.timeout_seconds)
 
-    async def _fetch_access_token(self, client: httpx.AsyncClient) -> str | None:
+    async def _fetch_access_token(
+        self, client: httpx.AsyncClient, force_refresh: bool = False
+    ) -> str | None:
         """Fetch bearer token from BigGo OAuth2 client_credentials endpoint."""
-        if self._cached_token:
+        if self._cached_token and not force_refresh:
             return self._cached_token
 
         if not self.client_id or not self.client_secret:
@@ -96,7 +97,8 @@ class BigGoCommerceProvider:
         if self.demo_mode or not self.client_id or not self.client_secret:
             return self._get_demo_fallback_options(clean_keyword, limit)
 
-        search_url = f"https://api.biggo.com/api/v1/spa/search/{clean_keyword}/product"
+        encoded_keyword = quote(clean_keyword, safe="")
+        search_url = f"https://api.biggo.com/api/v1/spa/search/{encoded_keyword}/product"
 
         try:
             client = self._get_http_client()
@@ -111,14 +113,33 @@ class BigGoCommerceProvider:
                     headers["Authorization"] = f"Bearer {token}"
 
                 response = await client.get(search_url, headers=headers)
+
+                # Token expiration defense: on 401, invalidate cached token and retry once
+                if response.status_code == 401 and token:
+                    logger.info(
+                        "[BIGGO_AUTH] Token rejected (401), refreshing token and retrying..."
+                    )
+                    self._cached_token = None
+                    token = await self._fetch_access_token(client, force_refresh=True)
+                    if token:
+                        headers["Authorization"] = f"Bearer {token}"
+                    else:
+                        headers.pop("Authorization", None)
+                    response = await client.get(search_url, headers=headers)
+
                 response.raise_for_status()
                 data = response.json()
         except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError) as exc:
-            logger.warning("[BIGGO_DEGRADE] BigGo query failed gracefully: %s", exc)
-            return []
+            logger.warning(
+                "[BIGGO_DEGRADE] BigGo query failed gracefully, falling back to demo: %s", exc
+            )
+            return self._get_demo_fallback_options(clean_keyword, limit)
         except Exception as exc:  # Defensive catch-all for parsing or unexpected socket errors
-            logger.warning("[BIGGO_DEGRADE] Unexpected error during BigGo retrieval: %s", exc)
-            return []
+            logger.warning(
+                "[BIGGO_DEGRADE] Unexpected error during BigGo retrieval, falling back to demo: %s",
+                exc,
+            )
+            return self._get_demo_fallback_options(clean_keyword, limit)
 
         # BigGo returns products under 'list' or 'results'
         raw_results = data.get("list") or data.get("results") or []
@@ -157,7 +178,8 @@ class BigGoCommerceProvider:
             raw_price = item.get("price")
             if raw_price is not None:
                 try:
-                    parsed_price = float(raw_price)
+                    clean_price = str(raw_price).replace(",", "").strip()
+                    parsed_price = float(clean_price)
                     if parsed_price >= 0.0:
                         price_val = parsed_price
                 except (ValueError, TypeError):
@@ -206,6 +228,7 @@ class BigGoCommerceProvider:
         now_iso = datetime.now(timezone.utc).isoformat()
 
         if "衛生紙" in keyword:
+            url_1 = f"https://biggo.com.tw/s/?q={quote('舒潔 頂級三層抽取衛生紙', safe='')}"
             options.append(
                 PurchaseOption(
                     option_id="demo-opt-1",
@@ -214,12 +237,13 @@ class BigGoCommerceProvider:
                     store="momo購物網",
                     source="demo",
                     estimated_price=389.0,
-                    product_url="https://www.momoshop.com.tw/goods/GoodsDetail.jsp?i_code=demo1",
+                    product_url=url_1,
                     unit_spec="100抽x24包",
                     image_url="https://img.biggo.com.tw/demo_tissue.jpg",
                     updated_at=now_iso,
                 )
             )
+            url_2 = f"https://biggo.com.tw/s/?q={quote('五月花 蓬厚柔抽取式衛生紙', safe='')}"
             options.append(
                 PurchaseOption(
                     option_id="demo-opt-2",
@@ -228,12 +252,13 @@ class BigGoCommerceProvider:
                     store="PChome 24h",
                     source="demo",
                     estimated_price=339.0,
-                    product_url="https://24h.pchome.com.tw/prod/demo2",
+                    product_url=url_2,
                     unit_spec="100抽x24包",
                     updated_at=now_iso,
                 )
             )
         elif "牛奶" in keyword or "鮮奶" in keyword or "乳" in keyword:
+            url_3 = f"https://biggo.com.tw/s/?q={quote('光泉 全脂鮮乳', safe='')}"
             options.append(
                 PurchaseOption(
                     option_id="demo-opt-1",
@@ -242,11 +267,12 @@ class BigGoCommerceProvider:
                     store="家樂福線上購物",
                     source="demo",
                     estimated_price=185.0,
-                    product_url="https://online.carrefour.com.tw/goods/demo3",
+                    product_url=url_3,
                     unit_spec="936ml x 2瓶",
                     updated_at=now_iso,
                 )
             )
+            url_4 = f"https://biggo.com.tw/s/?q={quote('義美 全脂鮮乳', safe='')}"
             options.append(
                 PurchaseOption(
                     option_id="demo-opt-2",
@@ -255,7 +281,7 @@ class BigGoCommerceProvider:
                     store="momo購物網",
                     source="demo",
                     estimated_price=98.0,
-                    product_url="https://www.momoshop.com.tw/goods/GoodsDetail.jsp?i_code=demo4",
+                    product_url=url_4,
                     unit_spec="1000ml",
                     updated_at=now_iso,
                 )
@@ -269,7 +295,7 @@ class BigGoCommerceProvider:
                     store="momo購物網",
                     source="demo",
                     estimated_price=199.0,
-                    product_url=f"https://biggo.com.tw/search/{keyword}",
+                    product_url=f"https://biggo.com.tw/s/?q={quote(keyword, safe='')}",
                     unit_spec="1件",
                     updated_at=now_iso,
                 )

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field
 
 from app.models.base import ContractModel
@@ -16,7 +18,9 @@ class PurchaseOption(ContractModel):
     title: str = Field(min_length=1, description="Normalized product title without noise")
     raw_title: str | None = Field(default=None, description="Original raw provider title")
     store: str = Field(min_length=1, description="Store/merchant name (e.g. momo, Coupang)")
-    source: str = Field(min_length=1, description="Data source nature: strictly 'live' or 'demo'")
+    source: Literal["live", "demo"] = Field(
+        description="Data source nature: strictly 'live' or 'demo'"
+    )
     estimated_price: float | None = Field(
         default=None, ge=0.0, description="Current market price in TWD"
     )

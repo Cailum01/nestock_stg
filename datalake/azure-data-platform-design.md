@@ -452,6 +452,56 @@ Shopping operations and `complete_purchase` need C1's decision on which records
 belong in the same atomic batch. Do not claim cross-container, cross-partition,
 or cross-service atomicity.
 
+#### C1 purchase workflow integration (provisional)
+
+C1's response to [Issue #27](https://github.com/nestock-app/nestock/issues/27)
+proposes the following boundary for a purchase already resolved to an existing
+inventory item:
+
+- Read the pending `ShoppingItem`, its resolved `InventoryItem`, and the current
+  server-side approval state. Use only the user-reported, approved purchase
+  quantity; transaction history does not infer the current purchase amount.
+- In one same-container, same-household-partition batch, update the Shopping
+  remainder/status and confirmed Inventory quantity, append the purchase
+  `Transaction`, and create the applicable operation receipt and change event.
+  Reject before writing if the operation cannot fit that boundary; do not split
+  it into partially successful writes.
+- Keep each operation's server-issued identity and approved selection stable on
+  retry. A matching receipt returns the prior outcome; a reused identity with
+  different content conflicts. A timeout is not proof of failure.
+- Manual removal is a separate Shopping operation; it does not change Inventory
+  or create/reverse a purchase Transaction.
+
+These are C1 workflow requirements, not approval to implement writes. The
+Shopping quantity meaning after completion, removal persistence semantics,
+approval-state participation, multi-operation behavior, and recovery when a
+batch has an unexpected partial receipt state still require B1/C1/C2/A1
+coordination. Multi-item behavior remains **provisional per D-3**; do not
+silently assign a new operation identity to work whose prior outcome is unknown.
+
+#### C2 confirmation UI integration boundary
+
+C2's response to [Issue #32](https://github.com/nestock-app/nestock/issues/32)
+distinguishes presentation state from approval and server truth:
+
+- Field edits are local drafts until the user submits a correction. A correction
+  is sent to the Agent to resolve a new proposal; it is not approval and does
+  not authorize a write.
+- Partial selection expresses which displayed operations the user intends to
+  approve. The backend must validate those identities against the stored
+  proposal; the UI control and local selection state are not authorization.
+- A pending card may retain its view/draft state while navigating within the
+  active app session. This alone does not require restoring an approval after
+  process restart; server-side approval persistence remains governed by D-2.
+- On an ambiguous confirmation timeout, the UI retains the proposal and retries
+  with the original approval/operation identities. Only an authoritative server
+  outcome can show the operation as completed; client state cannot infer whether
+  a write committed.
+
+This records C2's presentation requirements, not an authoritative wire model.
+Correction, partial-approval, and resume fields still require A1/C2 agreement;
+the persistence and atomicity rules remain subject to D-2/D-3.
+
 #### Linking a feature-only transaction to an inventory item
 
 The proposed Transaction contract allows an absent `item_id` when a normalized
@@ -699,6 +749,14 @@ include:
 The exact model and API shape remain provisional. Do not add a generic “all
 possible fields” model to the domain contract before the owners agree on it.
 
+In its response to [Issue #30](https://github.com/nestock-app/nestock/issues/30),
+A2 proposed `user_input` and `derived_artifact` records and an input-processing
+lifecycle. These field lists and transitions are not an approved storage or
+public contract. In particular, reconcile the proposed server allocation of
+`input_id` with the current upload API, which reserves an opaque `image_ref` and
+does not currently expose an `input_id`, before designing a persisted mapping.
+A1 must own and confirm task/approval lifecycle semantics.
+
 ### 8.2 Processing boundaries
 
 Treat media processing as potentially slow and failure-prone. Video and longer
@@ -722,6 +780,14 @@ received -> processing -> awaiting_user / awaiting_approval
 This is not a committed A1 protocol. Every transition must be validated and
 observable. Retries reuse stable task and operation identities; a failed task
 must not imply that a business mutation happened.
+
+A2's proposed artifact fields, feature-keyword normalization, unit whitelist,
+producer/version format, and retention classes also require the relevant owner
+and policy agreement before becoming storage rules. An A2 reply proposed storing
+complete Vision reasoning JSON as a Blob artifact; do not persist hidden
+model reasoning. Store only bounded, approved extraction/summary data and
+references needed by the agreed workflow. Raw media and any approved large
+derived artifacts remain separate from Cosmos documents.
 
 ### 8.3 Provenance
 

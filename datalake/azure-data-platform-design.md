@@ -241,6 +241,8 @@ The following are proposed storage concepts, not final public models:
 | `pending_approval` | Server-side confirmation proposal and state; A1 owns lifecycle semantics | Conditional state transition; expiry/TTL follows D-1 |
 | `operation_receipt` | Idempotency and stored operation outcome | Immutable after successful commit |
 | `change_event` | Business change provenance and future export source | Append-only |
+| `forecast_snapshot` | Proposed B2 point-in-time forecast input/output for later evaluation | Append-only; schema and write policy require B2/A1/B1 agreement |
+| `sufficiency_check` | Proposed record of a user's answer to a “still enough?” prompt | Append-only; schema and write policy require B2/A1/B1 agreement |
 | `forecast_evaluation` | Internal B2 prediction and later outcome for P0 accuracy evaluation | Append-only prediction/evaluation snapshots; B2 owns schema |
 
 Use namespaced IDs to avoid collisions, for example
@@ -606,6 +608,19 @@ Also support non-B2 household-scoped reads for listing active inventory, loading
 records by stable ID, loading notes explicitly linked to a known record, and
 loading task/input metadata by stable task or input ID.
 
+B2's response to [Issue #31](https://github.com/nestock-app/nestock/issues/31)
+confirms its current forecast adapter reads household Transaction history through
+B1's `TransactionQuery` and `CosmosReadRepository`; the current B2 adapter
+composition opens a second read-only Cosmos client to the same configured
+container. **B1's composition decision is to share one repository/client instance**
+when the B2 service is wired into the backend dependency composition. The
+`TransactionHistory` service remains a separate domain port, but its Cosmos
+adapter should receive the already-created repository rather than create another
+client or credential. This avoids duplicate connections and duplicate lifecycle
+management while preserving B1's query boundary. It does not expose a new public
+Transaction route or change the current read-only scope. The wiring change should
+be coordinated with B2 when integrating PR #16.
+
 Use the partition key and record type in queries. Add composite/range indexes only
 when a concrete query and measured workload justify them. Keep indexing policy in
 one reviewed configuration. The household Transaction query's
@@ -658,6 +673,42 @@ they provide a quantity, it still requires a confirmation card before any write.
 Forecast output never replaces confirmed inventory. Any reminder to report a
 missed purchase occurs only while the user is using the app; do not add a
 scheduler or push notification for this behavior.
+
+#### B2 forecast and sufficiency records (provisional per Issue #31)
+
+B2 proposed two household-scoped records for later evaluation and user feedback.
+These are proposals, not approved persistence contracts or authorization to add
+write paths:
+
+- **`forecast_snapshot`**: append an internal snapshot only when a forecast is
+  requested, at most once per household/item/day. The proposed fields are
+  `snapshot_id`, `household_id`, `item_id`, `generated_at`,
+  `algorithm_version`, `history_as_of`, `status`, `method`, `suggested_action`,
+  `confirmed_quantity`, `unit`, `daily_consumption`, `days_until_empty`,
+  `estimated_empty_at`, `household_factor`, `usage_days_min`,
+  `usage_days_max`, `next_purchase_from`, `next_purchase_to`,
+  `consumption_event_count`, and `purchase_event_count`. B2 proposes excluding
+  item names, prices, and user identity. The snapshot is for offline accuracy
+  evaluation, not a user-facing dashboard, and must not mutate
+  `InventoryItem.quantity`.
+- **`sufficiency_check`**: record the user's answer to a “still enough?” prompt
+  with proposed fields `check_id`, `household_id`, `item_id`, `answer`
+  (`enough` / `not_enough`), `answered_at`, a stable `operation_id` for retry
+  identity, and optional `snapshot_id`. B2 proposes that this answer never
+  stores a quantity or changes `InventoryItem.quantity`; a quantity update, if
+  requested, follows the separate applicable approval flow.
+
+B2 proposes household-partition reads for snapshots, optionally filtered by
+item and time range, and sufficiency-check reads ordered by `answered_at`. B2
+proposes that neither record requires a second confirmation card, but this
+write behavior requires explicit A1 and B1 agreement before implementation.
+Required decisions still include the authoritative field/schema definitions,
+stable-ID and idempotency semantics, retention, validation, and whether/how a
+sufficiency answer is bound to the server-side user interaction. Do not write
+these records or add indexes until those decisions are made and the concrete
+queries are verified. B2 owns the forecast/evaluation schema and logic; B1 owns
+the storage mapping, partition-scoped repository primitives, and persistence
+policy once the contract is agreed.
 
 #### Soft-deleted inventory
 

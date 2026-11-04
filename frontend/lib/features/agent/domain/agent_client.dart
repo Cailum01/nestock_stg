@@ -11,3 +11,8 @@ abstract interface class AgentClient {
     required bool approved,
   });
 }
+
+/// Optional capability for sending an uploaded, opaque photo reference.
+abstract interface class PhotoAwareAgentClient implements AgentClient {
+  Future<AgentReply> sendWithPhoto(String message, String imageRef);
+}

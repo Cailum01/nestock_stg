@@ -74,6 +74,9 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tapAt(Offset(room.right - 2, room.bottom - 2));
       await tester.pumpAndSettle();
+      expect(find.text('我的庫存'), findsNothing);
+      await tester.tap(find.text('庫存'));
+      await tester.pumpAndSettle();
       expect(find.text('我的庫存'), findsOneWidget);
       await tester.tap(find.text('庫存'));
       await tester.pump(const Duration(milliseconds: 60));

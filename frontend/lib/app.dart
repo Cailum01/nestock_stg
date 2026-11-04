@@ -9,6 +9,7 @@ import 'shared/theme/app_theme.dart';
 import 'features/photo/photo_client.dart';
 import 'features/photo/camera_capture.dart';
 import 'features/photo/photo_upload.dart';
+import 'features/speech/speech_client.dart';
 
 import 'package:flutter/foundation.dart';
 
@@ -20,6 +21,8 @@ class NestockApp extends StatelessWidget {
     this.photoClient = const UnavailablePhotoClient(),
     this.cameraCapture = const DeviceCameraCapture(),
     this.photoUpload,
+    this.speechRecorder,
+    this.speechClient,
     this.inventoryClient = const DemoInventoryViewClient(),
     this.shoppingClient = const DemoShoppingViewClient(),
   });
@@ -28,6 +31,8 @@ class NestockApp extends StatelessWidget {
   final PhotoClient photoClient;
   final CameraCapture cameraCapture;
   final PhotoUpload? photoUpload;
+  final SpeechRecorder? speechRecorder;
+  final SpeechClient? speechClient;
   final InventoryViewClient inventoryClient;
   final ShoppingViewClient shoppingClient;
 
@@ -39,6 +44,17 @@ class NestockApp extends StatelessWidget {
       client: agentClient,
       photoClient: photoClient,
       cameraCapture: cameraCapture,
+      speechRecorder: speechRecorder ?? DeviceSpeechRecorder(),
+      speechClient:
+          speechClient ??
+          HttpSpeechClient(
+            Uri.parse(
+              const String.fromEnvironment(
+                'MEDIA_API_BASE',
+                defaultValue: 'http://10.0.2.2:8000',
+              ),
+            ),
+          ),
       photoUpload:
           photoUpload ??
           HttpPhotoUpload(

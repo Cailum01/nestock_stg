@@ -29,7 +29,7 @@ Stable operation identity is necessary for future durable idempotency.
 | AgentResult | kind, display summary, provisional structured data |
 | PendingApproval | identity, presentation, proposed operation group |
 | ProposedOperation | stable identity, description, resolved values for display |
-| ResumeRequest | scope, approval identity, approve/reject decision |
+| ResumeRequest | scope, approval identity, approve/reject decision, and the user's selection (`approved_operation_ids` for batch, `selected_option_id` for purchase options; D-10) |
 
 Result kinds: inventory, vision, forecast, purchase_options, action_result.
 Approval presentations: single_action, batch_action, purchase_options.
@@ -55,6 +55,15 @@ currently return 501. Example resume:
 
 ```json
 {"household_id":"demo-household","approval_id":"demo-approval-1","approved":true}
+```
+
+The same envelope carries the user's selection for the other two presentations
+(v8 section 12, `contracts/open-decisions.md` D-10). Selection fields are
+ignored when `approved` is false:
+
+```json
+{"household_id":"demo-household","approval_id":"demo-approval-2","approved":true,"approved_operation_ids":["op-101"]}
+{"household_id":"demo-household","approval_id":"demo-approval-3","approved":true,"selected_option_id":"option-001"}
 ```
 
 Never execute generic `values` or trust `approved` alone. Future implementation

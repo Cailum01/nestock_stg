@@ -717,10 +717,10 @@ mapping, partition-scoped repository primitives, or indexes.
 #### Soft-deleted inventory
 
 Removing an item sets a persistence-level deletion marker such as `deleted_at`;
-it does not physically delete the item or its Transactions/links. Default
-inventory lists omit soft-deleted items, while authorized history and feature
-resolution can still find them. A later confirmed match may restore the same
-`item_id`, preserving history for forecasting.
+it does not physically delete the item or its Transactions/links. Default active
+inventory reads, including lists and point reads, omit soft-deleted items, while
+authorized history and feature resolution can still find them. A later confirmed
+match may restore the same `item_id`, preserving history for forecasting.
 
 Reusing an old identity does not make its old on-hand quantity current. Require a
 fresh user-confirmed quantity or apply only a later, approved, not-yet-counted

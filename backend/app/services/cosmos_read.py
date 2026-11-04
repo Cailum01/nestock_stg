@@ -278,11 +278,14 @@ class CosmosReadRepository:
         )
         if document is None:
             return None
-        return CosmosDocumentMapper.from_document(
+        record = CosmosDocumentMapper.from_document(
             model_type,
             document,
             household_id=household_id,
         )
+        if model_type is InventoryItem and document.get("deleted_at") is not None:
+            return None
+        return record
 
     async def _list_records(
         self,

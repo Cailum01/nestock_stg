@@ -110,6 +110,28 @@ def test_repository_reads_inventory_item_by_namespaced_id_and_household_partitio
     assert "inventory_item:rice" not in caplog.text
 
 
+def test_repository_treats_soft_deleted_inventory_point_read_as_missing():
+    item = InventoryItem(
+        item_id="rice",
+        household_id="home",
+        name="Rice",
+        quantity=2,
+        unit="bag",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    deleted_document = CosmosDocumentMapper.to_document(item) | {
+        "deleted_at": "2026-01-02T00:00:00.000000Z"
+    }
+    container = FakeContainer([deleted_document])
+    repository = CosmosReadRepository(AzureCosmosDocumentQueryClient(container))
+
+    result = asyncio.run(repository.read_inventory_item(household_id="home", item_id="rice"))
+
+    assert result is None
+    assert container.point_read_calls == [{"item": "inventory_item:rice", "partition_key": "home"}]
+
+
 def test_repository_reads_shopping_item_and_returns_none_for_missing_or_other_household():
     item = ShoppingItem(
         shopping_item_id="milk",

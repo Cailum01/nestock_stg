@@ -2,7 +2,11 @@ import atexit
 import os
 from collections.abc import Mapping
 
-from app.services.cosmos_read import CosmosInventoryService, CosmosShoppingService
+from app.services.cosmos_read import (
+    CosmosInventoryService,
+    CosmosReadRepository,
+    CosmosShoppingService,
+)
 from app.services.cosmos_sdk import create_azure_cosmos_read_repository
 from app.services.demo import DemoInventoryService, DemoShoppingService
 from app.services.interfaces import InventoryService, ShoppingService
@@ -14,6 +18,13 @@ from app.services.speech import MockSpeechToTextService, SpeechToTextService
 def _create_domain_read_services(
     environment: Mapping[str, str] | None = None,
 ) -> tuple[InventoryService, ShoppingService]:
+    inventory, shopping, _ = _create_read_composition(environment)
+    return inventory, shopping
+
+
+def _create_read_composition(
+    environment: Mapping[str, str] | None = None,
+) -> tuple[InventoryService, ShoppingService, CosmosReadRepository | None]:
     environment = os.environ if environment is None else environment
     settings = {
         "endpoint": environment.get("NESTOCK_COSMOS_ENDPOINT"),
@@ -22,7 +33,7 @@ def _create_domain_read_services(
     }
     configured = {key: value for key, value in settings.items() if value is not None}
     if not configured:
-        return DemoInventoryService(), DemoShoppingService()
+        return DemoInventoryService(), DemoShoppingService(), None
     if len(configured) != len(settings):
         missing = sorted(set(settings) - configured.keys())
         raise RuntimeError(
@@ -39,10 +50,10 @@ def _create_domain_read_services(
         container_name=settings["container"] or "",
     )
     atexit.register(close_client)
-    return CosmosInventoryService(repository), CosmosShoppingService(repository)
+    return CosmosInventoryService(repository), CosmosShoppingService(repository), repository
 
 
-inventory_service, shopping_service = _create_domain_read_services()
+inventory_service, shopping_service, cosmos_read_repository = _create_read_composition()
 media_storage_service: MediaStorageService = LocalStagingMediaStorage()
 speech_service: SpeechToTextService = MockSpeechToTextService()
 
@@ -53,6 +64,10 @@ def get_inventory_service() -> InventoryService:
 
 def get_shopping_service() -> ShoppingService:
     return shopping_service
+
+
+def get_cosmos_read_repository() -> CosmosReadRepository | None:
+    return cosmos_read_repository
 
 
 def get_media_storage_service() -> MediaStorageService:

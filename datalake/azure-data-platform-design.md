@@ -241,9 +241,9 @@ The following are proposed storage concepts, not final public models:
 | `pending_approval` | Server-side confirmation proposal and state; A1 owns lifecycle semantics | Conditional state transition; expiry/TTL follows D-1 |
 | `operation_receipt` | Idempotency and stored operation outcome | Immutable after successful commit |
 | `change_event` | Business change provenance and future export source | Append-only |
-| `forecast_snapshot` | Proposed B2 point-in-time forecast input/output for later evaluation | Append-only; schema and write policy require B2/A1/B1 agreement |
+| `forecast_snapshot` | Withdrawn B2 P0 proposal for point-in-time forecast persistence | Not used in P0; B2 uses read-only historical backtesting |
 | `sufficiency_check` | P1 proposal for a user's answer to a “still enough?” prompt | Out of current B1 scope; schema and write policy require B2/A1/B1 agreement |
-| `forecast_evaluation` | Internal B2 prediction and later outcome for P0 accuracy evaluation | Append-only; B2 owns schema and must align it with the proposed `forecast_snapshot` |
+| `forecast_evaluation` | Possible future evaluation record if a later product need requires persisted outcomes | Not used in P0; any future write requires a new B2 proposal and agreement on authorization and read-only API boundaries |
 
 Use namespaced IDs to avoid collisions, for example
 `inventory:<item_id>`, `transaction:<transaction_id>`,
@@ -623,14 +623,15 @@ B2's response to [Issue #31](https://github.com/nestock-app/nestock/issues/31)
 confirms its current forecast adapter reads household Transaction history through
 B1's `TransactionQuery` and `CosmosReadRepository`; the current B2 adapter
 composition opens a second read-only Cosmos client to the same configured
-container. **B1's composition decision is to share one repository/client instance**
-when the B2 service is wired into the backend dependency composition. The
-`TransactionHistory` service remains a separate domain port, but its Cosmos
-adapter should receive the already-created repository rather than create another
-client or credential. This avoids duplicate connections and duplicate lifecycle
-management while preserving B1's query boundary. It does not expose a new public
-Transaction route or change the current read-only scope. The wiring change should
-be coordinated with B2 when integrating PR #16.
+container. **B1's composition decision is to share one repository/client instance.**
+The B1 dependency composition now retains the repository and exposes it through
+`get_cosmos_read_repository()`; Inventory and Shopping continue using that same
+instance. When integrating B2's service, its `TransactionHistory` Cosmos adapter
+should receive this repository rather than create another client or credential.
+This avoids duplicate connections and duplicate lifecycle management while
+preserving B1's query boundary. The B2 wiring still needs coordination when
+integrating PR #16. This does not expose a new public Transaction route or change
+the current read-only scope.
 
 Use the partition key and record type in queries. Add composite/range indexes only
 when a concrete query and measured workload justify them. Keep indexing policy in
@@ -685,39 +686,33 @@ Forecast output never replaces confirmed inventory. Any reminder to report a
 missed purchase occurs only while the user is using the app; do not add a
 scheduler or push notification for this behavior.
 
-#### B2 forecast records (provisional per Issue #31)
+#### B2 forecast evaluation (P0 uses read-only backtesting)
 
-B2 proposed household-scoped forecast/evaluation records. The proposal is not an
-approved persistence contract or authorization to add write paths:
+Per B2's follow-up on [Issue #31](https://github.com/nestock-app/nestock/issues/31),
+`forecast_snapshot` and the previously described `forecast_evaluation` are the
+same proposed persistence concept. B2 withdrew that proposal for P0. Instead,
+B2 will evaluate its rule-based forecast offline by replaying historical
+household Transactions as of past dates and comparing computed consumption with
+subsequent purchase/consumption records. This requires only the existing
+household-scoped, read-only Transaction history; B1 does not add a record type,
+write, index, or forecast-specific repository method for this P0 approach.
 
-- **`forecast_snapshot`**: append an internal snapshot only when a forecast is
-  requested, at most once per household/item/day. The proposed fields are
-  `snapshot_id`, `household_id`, `item_id`, `generated_at`,
-  `algorithm_version`, `history_as_of`, `status`, `method`, `suggested_action`,
-  `confirmed_quantity`, `unit`, `daily_consumption`, `days_until_empty`,
-  `estimated_empty_at`, `household_factor`, `usage_days_min`,
-  `usage_days_max`, `next_purchase_from`, `next_purchase_to`,
-  `consumption_event_count`, and `purchase_event_count`. B2 proposes excluding
-  item names, prices, and user identity. The snapshot is for offline accuracy
-  evaluation, not a user-facing dashboard, and must not mutate
-  `InventoryItem.quantity`. B2 has not specified whether this snapshot replaces
-  or feeds the separately described `forecast_evaluation` record; B2 must resolve
-  that schema relationship before implementation.
-
-B2 proposes household-partition reads for snapshots, optionally filtered by
-item and time range.
+The backtest can evaluate daily consumption, but Transactions do not record the
+historical confirmed inventory quantity needed to fully evaluate the date stock
+ran out. If B2 later needs that outcome or a user-facing accuracy view, it must
+submit a new proposal covering required data, retention, authorization, and how
+any writes coexist with read-only forecast/API behavior. Do not silently restore
+the withdrawn P0 proposal.
 
 The proposed `sufficiency_check` record and “no second confirmation” answer
 write are now P1 and out of current B1 scope per B2's follow-up on Issue #31.
 Do not implement its schema, reads, or writes as part of the current B1 work.
 
-Required decisions still include the authoritative field/schema definitions,
-stable-ID and idempotency semantics, retention, validation, and how snapshot
-creation is authorized by the forecast request. B2 owns the forecast/evaluation
-schema and logic; A1 and B1 must agree on any writes, while B1 owns storage
-mapping, partition-scoped repository primitives, and persistence policy once the
-contract is agreed. Do not write snapshots or add indexes until those decisions
-are made and the concrete queries are verified.
+No forecast persistence schema, stable-ID policy, retention rule, or write
+authorization is needed for this P0 backtest. If a later B2 requirement adds
+persisted evaluation outcomes, B2 owns the schema and scoring logic; A1 and B1
+must agree on authorization and read-only API boundaries before B1 adds storage
+mapping, partition-scoped repository primitives, or indexes.
 
 #### Soft-deleted inventory
 
@@ -732,19 +727,6 @@ fresh user-confirmed quantity or apply only a later, approved, not-yet-counted
 Transaction under the §6.5 rule. Keep soft deletion distinct from privacy-driven
 personal-data erasure in §7.3; an erasure request follows a separately approved
 retention/legal workflow.
-
-#### Forecast evaluation records
-
-For P0, the platform design allows B2 to append an internal `forecast_evaluation`
-record to Cosmos for measuring prediction accuracy. Store a stable evaluation
-ID, household/item reference, prediction timestamp and horizon/result, algorithm
-version, relevant input window or source Transaction IDs, and a later observed
-outcome when available. Do not expose these records in user-facing API responses
-or treat predictions as confirmed stock. Apply the domain-record retention
-policy rather than the short raw-media TTL. B2 owns the evaluation schema and
-scoring logic; B1 provides household-scoped persistence only. Before
-implementation, B2 must reconcile this existing concept with the
-`forecast_snapshot` proposal in Issue #31.
 
 ## 7. Original media and derived artifacts in Blob Storage
 
@@ -993,7 +975,8 @@ Phases are independent gates, not a commitment to deploy every Azure service.
 - Unanimous approval of the Transaction contract change and `created_at` event-time
   semantics, plus the active-link/correction rules and quantity-confirmation
   timestamp needed for late transaction resolution.
-- B2's forecast algorithm and evaluation-record schema; query behavior is
+- B2's forecast algorithm and read-only backtest assumptions; any future
+  persisted evaluation outcome requires a new proposal. Query behavior is
   specified in §6.6 and B1 does not pre-aggregate its input.
 - C1's shopping and `complete_purchase` atomicity requirements.
 - Whether Data Lake activation criteria are met, plus event schema, lake

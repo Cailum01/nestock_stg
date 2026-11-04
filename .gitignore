@@ -26,6 +26,9 @@ coverage/
 Thumbs.db
 *.log
 
+# Personal B1 follow-up tracker
+/datalake/B1-follow-up-todos.md
+
 # Native local build state
 **/android/local.properties
 **/android/.gradle/

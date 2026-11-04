@@ -4,7 +4,8 @@ import logging
 import pytest
 from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
-from app.core.dependencies import _create_domain_read_services
+from app.core import dependencies
+from app.core.dependencies import _create_domain_read_services, _create_read_composition
 from app.models.domain import InventoryItem, ShoppingItem
 from app.services.cosmos_read import CosmosDocumentMapper, CosmosReadRepository
 from app.services.cosmos_sdk import (
@@ -226,6 +227,28 @@ def test_missing_cosmos_configuration_keeps_offline_demo_services():
 
     assert isinstance(inventory, DemoInventoryService)
     assert isinstance(shopping, DemoShoppingService)
+    assert _create_read_composition({})[2] is None
+
+
+def test_cosmos_read_services_share_repository_with_composition(monkeypatch):
+    repository = CosmosReadRepository(FakeContainer([]))
+    monkeypatch.setattr(
+        dependencies,
+        "create_azure_cosmos_read_repository",
+        lambda **kwargs: (repository, lambda: None),
+    )
+
+    inventory, shopping, shared_repository = _create_read_composition(
+        {
+            "NESTOCK_COSMOS_ENDPOINT": "https://example.documents.azure.com",
+            "NESTOCK_COSMOS_DATABASE": "nestock",
+            "NESTOCK_COSMOS_CONTAINER": "household-data",
+        }
+    )
+
+    assert shared_repository is repository
+    assert inventory._repository is repository
+    assert shopping._repository is repository
 
 
 def test_partial_cosmos_configuration_fails_explicitly():

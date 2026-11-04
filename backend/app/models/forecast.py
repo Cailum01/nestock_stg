@@ -47,9 +47,10 @@ class ItemForecast(ContractModel):
     """B2 estimate for one item. PROVISIONAL; never a confirmed quantity.
 
     `confirmed_quantity` echoes InventoryItem.quantity as read; the forecast never
-    writes it. CHECK_SUFFICIENCY means the Agent shows a card asking whether the
-    item is still enough; it never asks for household size, and any resulting
-    quantity change still needs HITL approval. REFERENCE_SCALED estimates come
+    writes it. CHECK_SUFFICIENCY, SUFFICIENCY_CHECK and REFERENCE_SCALED are P1 and
+    off by default (`ForecastSettings`). CHECK_SUFFICIENCY means the Agent shows a
+    card asking whether the item is still enough; it never asks for household size,
+    and any resulting quantity change still needs HITL approval. REFERENCE_SCALED estimates come
     from a reference rate times `household_factor`, not from the item's records.
     SUFFICIENCY_CHECK estimates bound how many days the last purchase lasted and
     give the window in which the next purchase is likely.

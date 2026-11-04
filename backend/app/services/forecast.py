@@ -10,8 +10,11 @@ filter/sum/min/max, so the same rule can run as a grouped SQL query over a lake
 table. Storage stays behind `TransactionHistory`; a lake or warehouse source is
 another adapter, and its engine and table format are B1/team decisions.
 
-When records are insufficient, the order is: the user's "still enough?" answers,
-then a household factor (see forecast_reference), then a CHECK_SUFFICIENCY card.
+When records are insufficient the default result is `insufficient_data` with no
+guess (v8 §3.4). Two P1 extensions are kept behind `ForecastSettings` switches,
+off by default per A1's review of PR #16: the user's "still enough?" answers and
+a CHECK_SUFFICIENCY card (`use_sufficiency_check`, waiting for the card decision),
+then a household factor (`use_household_reference`, see forecast_reference).
 The household's own information always takes priority, no head count is inferred,
 and the user is never asked about household size.
 
@@ -52,6 +55,9 @@ class ForecastSettings:
     reorder_days: float = 7.0
     # After an "enough" answer, do not show the card again for this many days.
     check_cooldown_days: float = 7.0
+    # P1, off by default: v8 §3.4 returns insufficient_data without guessing.
+    use_sufficiency_check: bool = False
+    use_household_reference: bool = False
 
 
 class SufficiencyCheckHistory(Protocol):
@@ -115,7 +121,7 @@ def estimate(
     checks: list[SufficiencyCheck] | None = None,
 ) -> ItemForecast:
     """Prefer recorded consumption; fall back to purchase intervals, which users log
-    far more often, then to "still enough?" answers; otherwise insufficient data."""
+    far more often, then (P1) to "still enough?" answers; otherwise insufficient data."""
     consumed = _events(
         item, transactions, TransactionReason.CONSUMPTION, settings.consumption_window_days, now
     )
@@ -140,10 +146,16 @@ def estimate(
     insufficient = ItemForecast(
         **base,
         status=ForecastStatus.INSUFFICIENT_DATA,
-        suggested_action=SuggestedAction.CHECK_SUFFICIENCY,
+        suggested_action=(
+            SuggestedAction.CHECK_SUFFICIENCY
+            if settings.use_sufficiency_check
+            else SuggestedAction.NONE
+        ),
     )
     if daily is not None:
         return _with_rate(insufficient, method, daily, settings)
+    if not settings.use_sufficiency_check:
+        return insufficient
 
     answers = sorted(
         (
@@ -267,8 +279,12 @@ def apply_household_reference(
     factor: float | None,
     settings: ForecastSettings = ForecastSettings(),
 ) -> ItemForecast:
-    """Own records always win; the reference fills in only insufficient items."""
-    if forecast.status != ForecastStatus.INSUFFICIENT_DATA or factor is None:
+    """Own records always win; the reference fills in only insufficient items (P1)."""
+    if (
+        not settings.use_household_reference
+        or forecast.status != ForecastStatus.INSUFFICIENT_DATA
+        or factor is None
+    ):
         return forecast
     reference = match_reference(item)
     if reference is None:

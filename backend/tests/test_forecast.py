@@ -21,6 +21,8 @@ from app.services.forecast import (
 )
 
 NOW = datetime(2026, 3, 1, tzinfo=UTC)
+# P1 extensions, off by default; tests of those paths opt in explicitly.
+P1 = ForecastSettings(use_sufficiency_check=True, use_household_reference=True)
 
 
 def item(quantity=10.0, item_id="soy-sauce", household_id="demo"):
@@ -70,7 +72,7 @@ def test_one_purchase_and_no_consumption_is_insufficient_data():
     result = estimate(item(), [tx(3, 1, reason=TransactionReason.PURCHASE)], NOW)
 
     assert result.status == ForecastStatus.INSUFFICIENT_DATA
-    assert result.suggested_action == SuggestedAction.CHECK_SUFFICIENCY
+    assert result.suggested_action == SuggestedAction.NONE
     assert result.daily_consumption is None
     assert result.days_until_empty is None
     assert result.estimated_empty_at is None
@@ -148,7 +150,7 @@ def test_same_day_purchases_are_insufficient_data():
     result = estimate(item(), [purchase(5, 2), purchase(5, 1)], NOW)
 
     assert result.status == ForecastStatus.INSUFFICIENT_DATA
-    assert result.suggested_action == SuggestedAction.CHECK_SUFFICIENCY
+    assert result.suggested_action == SuggestedAction.NONE
 
 
 def test_zero_quantity_is_empty_now():
@@ -242,7 +244,7 @@ def test_household_factor_scales_reference_for_insufficient_same_unit_item():
     shampoo = named("shampoo", "洗髮精", "ml")
     body_wash = named("body-wash", "沐浴乳", "ml", quantity=240)
     records = [item_purchase("shampoo", 60, 600), item_purchase("shampoo", 0, 600)]
-    service = ForecastService(FakeInventory([shampoo, body_wash]), FakeHistory(records))
+    service = ForecastService(FakeInventory([shampoo, body_wash]), FakeHistory(records), P1)
 
     results = asyncio.run(service.forecast_household("demo", NOW))
 
@@ -257,7 +259,7 @@ def test_reference_is_skipped_when_units_do_not_match():
     shampoo = named("shampoo", "洗髮精", "ml")
     bottled = named("body-wash", "沐浴乳", "瓶", quantity=1)
     records = [item_purchase("shampoo", 60, 600), item_purchase("shampoo", 0, 600)]
-    service = ForecastService(FakeInventory([shampoo, bottled]), FakeHistory(records))
+    service = ForecastService(FakeInventory([shampoo, bottled]), FakeHistory(records), P1)
 
     results = asyncio.run(service.forecast_household("demo", NOW))
 
@@ -267,7 +269,9 @@ def test_reference_is_skipped_when_units_do_not_match():
 
 
 def test_no_factor_without_own_same_unit_records_means_card():
-    service = ForecastService(FakeInventory([named("body-wash", "沐浴乳", "ml")]), FakeHistory([]))
+    service = ForecastService(
+        FakeInventory([named("body-wash", "沐浴乳", "ml")]), FakeHistory([]), P1
+    )
 
     result = asyncio.run(service.forecast_household("demo", NOW))[0]
 
@@ -288,11 +292,11 @@ def check(days_ago, answer, item_id="soy-sauce"):
 def test_enough_answer_is_kept_and_pauses_the_card():
     answers = [check(3, SufficiencyAnswer.ENOUGH)]
 
-    result = estimate(item(), [purchase(40, 2)], NOW, checks=answers)
+    result = estimate(item(), [purchase(40, 2)], NOW, P1, checks=answers)
 
     assert result.status == ForecastStatus.INSUFFICIENT_DATA
     assert result.suggested_action == SuggestedAction.NONE
-    later = estimate(item(), [purchase(40, 2)], NOW + timedelta(days=10), checks=answers)
+    later = estimate(item(), [purchase(40, 2)], NOW + timedelta(days=10), P1, checks=answers)
     assert later.suggested_action == SuggestedAction.CHECK_SUFFICIENCY
 
 
@@ -300,7 +304,7 @@ def test_not_enough_bounds_usage_days_and_suggests_restock():
     # Bought 2 on day 40; still enough on day 20 (20 days in); not enough on day 10 (30 days in).
     answers = [check(20, SufficiencyAnswer.ENOUGH), check(10, SufficiencyAnswer.NOT_ENOUGH)]
 
-    result = estimate(item(quantity=1), [purchase(40, 2)], NOW, checks=answers)
+    result = estimate(item(quantity=1), [purchase(40, 2)], NOW, P1, checks=answers)
 
     assert result.method == ForecastMethod.SUFFICIENCY_CHECK
     assert result.suggested_action == SuggestedAction.CONSIDER_RESTOCK
@@ -314,7 +318,7 @@ def test_not_enough_bounds_usage_days_and_suggests_restock():
 def test_window_moves_to_the_restock_after_not_enough():
     answers = [check(10, SufficiencyAnswer.NOT_ENOUGH)]
     # Two purchases would normally use the purchase interval; require three here.
-    settings = ForecastSettings(min_purchase_events=3)
+    settings = ForecastSettings(min_purchase_events=3, use_sufficiency_check=True)
 
     result = estimate(
         item(quantity=2), [purchase(40, 2), purchase(8, 2)], NOW, settings, checks=answers
@@ -330,7 +334,7 @@ def test_window_moves_to_the_restock_after_not_enough():
 def test_own_records_win_over_answers():
     answers = [check(10, SufficiencyAnswer.NOT_ENOUGH)]
 
-    result = estimate(item(quantity=10), [tx(10, -2), tx(5, -3)], NOW, checks=answers)
+    result = estimate(item(quantity=10), [tx(10, -2), tx(5, -3)], NOW, P1, checks=answers)
 
     assert result.method == ForecastMethod.CONSUMPTION
 
@@ -347,9 +351,43 @@ def test_service_reads_answers_through_port():
     service = ForecastService(
         FakeInventory([item(quantity=1)]),
         FakeHistory([purchase(40, 2)]),
+        P1,
         checks=FakeChecks([check(10, SufficiencyAnswer.NOT_ENOUGH)]),
     )
 
     result = asyncio.run(service.forecast_item("demo", "soy-sauce", NOW))
 
     assert result.method == ForecastMethod.SUFFICIENCY_CHECK
+
+
+def test_p1_extensions_are_off_by_default():
+    settings = ForecastSettings()
+
+    assert not settings.use_sufficiency_check
+    assert not settings.use_household_reference
+
+
+def test_default_ignores_answers_and_shows_no_card():
+    answers = [check(20, SufficiencyAnswer.ENOUGH), check(10, SufficiencyAnswer.NOT_ENOUGH)]
+
+    result = estimate(item(quantity=1), [purchase(40, 2)], NOW, checks=answers)
+
+    assert result.status == ForecastStatus.INSUFFICIENT_DATA
+    assert result.suggested_action == SuggestedAction.NONE
+    assert result.method is None
+    assert result.usage_days_min is None
+
+
+def test_default_does_not_scale_reference_for_insufficient_items():
+    shampoo = named("shampoo", "洗髮精", "ml")
+    body_wash = named("body-wash", "沐浴乳", "ml", quantity=240)
+    records = [item_purchase("shampoo", 60, 600), item_purchase("shampoo", 0, 600)]
+    service = ForecastService(FakeInventory([shampoo, body_wash]), FakeHistory(records))
+
+    results = asyncio.run(service.forecast_household("demo", NOW))
+
+    assert results[0].method == ForecastMethod.PURCHASE_INTERVAL
+    assert results[1].status == ForecastStatus.INSUFFICIENT_DATA
+    assert results[1].method is None
+    assert results[1].household_factor is None
+    assert results[1].daily_consumption is None

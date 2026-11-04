@@ -232,7 +232,7 @@ The following are proposed storage concepts, not final public models:
 | `inventory_item` | Confirmed inventory state | Updated only by validated confirmed operations |
 | `shopping_item` | Shopping state; C1 owns service behavior | Updated only by validated domain operations |
 | `transaction` | Purchase, consumption, or adjustment fact; proposed `item_id` / `feature_keywords` alternative is pending unanimous contract approval | Append-only |
-| `transaction_item_link` | Approved attribution of a previously feature-only transaction to an item | Append-only |
+| `transaction_item_link` | Proposed attribution of a previously feature-only transaction to an item | Append-only; requires shared contract approval |
 | `household_membership` | Future association between a stable member identity and a household | Membership lifecycle is not implemented; identity and roles require a separate owner-approved design |
 | `item_preference` | A member's preference for a shared inventory item | One current preference per member/item; omit the record for the default `normal` |
 | `user_input` | Text or reference to original media | Metadata may change for processing/deletion |
@@ -242,8 +242,8 @@ The following are proposed storage concepts, not final public models:
 | `operation_receipt` | Idempotency and stored operation outcome | Immutable after successful commit |
 | `change_event` | Business change provenance and future export source | Append-only |
 | `forecast_snapshot` | Proposed B2 point-in-time forecast input/output for later evaluation | Append-only; schema and write policy require B2/A1/B1 agreement |
-| `sufficiency_check` | Proposed record of a user's answer to a “still enough?” prompt | Append-only; schema and write policy require B2/A1/B1 agreement |
-| `forecast_evaluation` | Internal B2 prediction and later outcome for P0 accuracy evaluation | Append-only prediction/evaluation snapshots; B2 owns schema |
+| `sufficiency_check` | P1 proposal for a user's answer to a “still enough?” prompt | Out of current B1 scope; schema and write policy require B2/A1/B1 agreement |
+| `forecast_evaluation` | Internal B2 prediction and later outcome for P0 accuracy evaluation | Append-only; B2 owns schema and must align it with the proposed `forecast_snapshot` |
 
 Use namespaced IDs to avoid collisions, for example
 `inventory:<item_id>`, `transaction:<transaction_id>`,
@@ -265,11 +265,13 @@ Cosmos TTL from the D-1 expiry setting; do not hard-code an expiry duration whil
 D-1 is open. This is a storage proposal, not approval to add resume endpoints or
 write tools to Skeleton v1.
 
-#### Transaction contract change (B2 agrees; unanimous approval pending)
+#### Transaction contract change (B2 proposal; unanimous approval pending)
 
-The current model requires `item_id`. B2 agrees to make `item_id` optional and
-add a `feature_keywords` snapshot, subject to unanimous approval of this shared
-domain/API contract. Validation must require at least one of:
+The current model requires `item_id` and has no `feature_keywords` or
+`recorded_at`. B2 proposes making `item_id` optional, adding a
+`feature_keywords` snapshot, and recording a separate `recorded_at`. These
+changes require unanimous approval of the shared domain/API contract. Validation
+would require at least one of:
 
 - a non-empty `item_id`; or
 - a non-empty `feature_keywords` snapshot.
@@ -280,19 +282,22 @@ duplicate keywords in backend validation. B2's P0 feature lookup supplies one
 keyword and uses exact equality; no fuzzy, synonym, AND, or OR matching is part
 of this query.
 
-This is a B2-approved proposal, not yet unanimous approval of the shared
-contract. Do not change the Pydantic model, OpenAPI contract, or existing
-contract documentation until all owners approve the schema and migration.
+This is a B2 proposal, not an approved shared contract. A1 must decide whether
+the Agent can record an unresolved-item Transaction with keywords or must always
+clarify the item with the user before recording it. If A1 requires clarification
+first, the existing required `item_id` contract remains sufficient and the
+feature-only Transaction/link work below is not needed. If the feature-only path
+is selected, all owners must approve the schema, link lifecycle, and migration
+before changing the Pydantic model, OpenAPI contract, or persistence behavior.
 
-B2 agrees that `created_at` represents the UTC business occurrence time (such as
-the purchase date), even when reported later; persist a separate storage-only
-`recorded_at` for when the system accepts the transaction. B2 filters and orders
-by `created_at`, and late-link reconciliation compares it with the item's
-quantity-confirmation timestamp. Validate that `created_at` is not later than
-`recorded_at`, allowing a small clock-skew tolerance that must be configurable
-and agreed before enforcement. The timestamp semantics remain part of the shared
-contract and must not be silently applied to existing records before owner
-approval and a migration plan.
+B2 proposes that `created_at` represent the UTC business occurrence time (such
+as the purchase date), even when reported later, and that storage-only
+`recorded_at` represent when the system accepts the Transaction. B2 would filter
+and order by `created_at`; late-link reconciliation would compare it with the
+item's quantity-confirmation timestamp. The proposal would reject a
+`created_at` later than `recorded_at`, with configurable clock-skew tolerance.
+These timestamp semantics and how to populate `recorded_at` on existing records
+remain subject to shared approval and a migration plan; do not enforce them yet.
 
 ### 6.3 Notes and relationships
 
@@ -535,8 +540,8 @@ Use optimistic concurrency. If the item's quantity or confirmation time changes
 after the user saw the preview, do not silently recompute and apply a different
 quantity; resolve again and obtain fresh approval.
 
-B2 confirms that resolving a feature-only transaction and applying any eligible
-quantity delta are one user confirmation: show the selected item, system-unit
+B2 proposes that resolving a feature-only transaction and applying any eligible
+quantity delta be one user confirmation: show the selected item, system-unit
 quantity, and resulting confirmed quantity together. This follows the multi-item
 approval approach in D-3 and remains **provisional per D-3** until its owners
 decide the approval-group and batch semantics.
@@ -599,6 +604,12 @@ excluded from item history and appear only in feature history.
 
 These are B2's proposed link-resolution semantics. Keep them provisional until
 the affected owners approve the append-only link contract and D-3 batch behavior.
+The proposal, including its alternative of clarifying the item with the user
+before recording a Transaction, is tracked in
+[Issue #31](https://github.com/nestock-app/nestock/issues/31). Until that choice
+and the shared schema are approved, the current B1 repository continues to
+require `item_id`; do not implement feature-only writes, link records, or
+quantity reconciliation.
 For attribution, B2 reads link records along with Transactions; it does not read
 `change_event`. Links are metadata, not additional quantity transactions. B1
 does not calculate consumption, aggregate history, or materialize B2's
@@ -674,11 +685,10 @@ Forecast output never replaces confirmed inventory. Any reminder to report a
 missed purchase occurs only while the user is using the app; do not add a
 scheduler or push notification for this behavior.
 
-#### B2 forecast and sufficiency records (provisional per Issue #31)
+#### B2 forecast records (provisional per Issue #31)
 
-B2 proposed two household-scoped records for later evaluation and user feedback.
-These are proposals, not approved persistence contracts or authorization to add
-write paths:
+B2 proposed household-scoped forecast/evaluation records. The proposal is not an
+approved persistence contract or authorization to add write paths:
 
 - **`forecast_snapshot`**: append an internal snapshot only when a forecast is
   requested, at most once per household/item/day. The proposed fields are
@@ -690,25 +700,24 @@ write paths:
   `consumption_event_count`, and `purchase_event_count`. B2 proposes excluding
   item names, prices, and user identity. The snapshot is for offline accuracy
   evaluation, not a user-facing dashboard, and must not mutate
-  `InventoryItem.quantity`.
-- **`sufficiency_check`**: record the user's answer to a “still enough?” prompt
-  with proposed fields `check_id`, `household_id`, `item_id`, `answer`
-  (`enough` / `not_enough`), `answered_at`, a stable `operation_id` for retry
-  identity, and optional `snapshot_id`. B2 proposes that this answer never
-  stores a quantity or changes `InventoryItem.quantity`; a quantity update, if
-  requested, follows the separate applicable approval flow.
+  `InventoryItem.quantity`. B2 has not specified whether this snapshot replaces
+  or feeds the separately described `forecast_evaluation` record; B2 must resolve
+  that schema relationship before implementation.
 
 B2 proposes household-partition reads for snapshots, optionally filtered by
-item and time range, and sufficiency-check reads ordered by `answered_at`. B2
-proposes that neither record requires a second confirmation card, but this
-write behavior requires explicit A1 and B1 agreement before implementation.
+item and time range.
+
+The proposed `sufficiency_check` record and “no second confirmation” answer
+write are now P1 and out of current B1 scope per B2's follow-up on Issue #31.
+Do not implement its schema, reads, or writes as part of the current B1 work.
+
 Required decisions still include the authoritative field/schema definitions,
-stable-ID and idempotency semantics, retention, validation, and whether/how a
-sufficiency answer is bound to the server-side user interaction. Do not write
-these records or add indexes until those decisions are made and the concrete
-queries are verified. B2 owns the forecast/evaluation schema and logic; B1 owns
-the storage mapping, partition-scoped repository primitives, and persistence
-policy once the contract is agreed.
+stable-ID and idempotency semantics, retention, validation, and how snapshot
+creation is authorized by the forecast request. B2 owns the forecast/evaluation
+schema and logic; A1 and B1 must agree on any writes, while B1 owns storage
+mapping, partition-scoped repository primitives, and persistence policy once the
+contract is agreed. Do not write snapshots or add indexes until those decisions
+are made and the concrete queries are verified.
 
 #### Soft-deleted inventory
 
@@ -726,14 +735,16 @@ retention/legal workflow.
 
 #### Forecast evaluation records
 
-For P0, B2 may append an internal `forecast_evaluation` record to Cosmos for
-measuring prediction accuracy. Store a stable evaluation ID, household/item
-reference, prediction timestamp and horizon/result, algorithm version, relevant
-input window or source Transaction IDs, and a later observed outcome when
-available. Do not expose these records in user-facing API responses or treat
-predictions as confirmed stock. Apply the domain-record retention policy rather
-than the short raw-media TTL. B2 owns the evaluation schema and scoring logic;
-B1 provides household-scoped persistence only.
+For P0, the platform design allows B2 to append an internal `forecast_evaluation`
+record to Cosmos for measuring prediction accuracy. Store a stable evaluation
+ID, household/item reference, prediction timestamp and horizon/result, algorithm
+version, relevant input window or source Transaction IDs, and a later observed
+outcome when available. Do not expose these records in user-facing API responses
+or treat predictions as confirmed stock. Apply the domain-record retention
+policy rather than the short raw-media TTL. B2 owns the evaluation schema and
+scoring logic; B1 provides household-scoped persistence only. Before
+implementation, B2 must reconcile this existing concept with the
+`forecast_snapshot` proposal in Issue #31.
 
 ## 7. Original media and derived artifacts in Blob Storage
 
@@ -875,6 +886,14 @@ ADLS Gen2 is optional and should be activated only when one or more are approved
 If none applies, keep events in Cosmos according to the agreed operational policy
 and do not duplicate them into a lake. When activated, export only event records
 and approved fields, not raw files or unrestricted Cosmos documents.
+
+For the current forecast workload, B2 has stated in
+[Issue #31](https://github.com/nestock-app/nestock/issues/31) that it has no
+approved analytics consumer, lake query, long-term replay, or separate audit
+retention need: forecasts and accuracy checks read Cosmos on demand, with an
+estimated 700–3,000 Transactions per household per year. This workload does not
+trigger Data Lake activation. Do not build a B2 lake pipeline unless an approved
+consumer or other Section 9.2 criterion emerges.
 
 ### 9.3 Future export behavior
 

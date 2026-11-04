@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show SystemUiOverlayStyle;
 
 import '../../../shared/widgets/async_state.dart';
 import '../domain/agent_client.dart';
@@ -447,374 +448,401 @@ class _AgentHomeState extends State<AgentHome> {
   @override
   Widget build(BuildContext context) {
     final approval = _reply?.approval;
-    return Stack(
-      children: [
-        Positioned.fill(
-          child: Image.asset(
-            'assets/images/room/background.png',
-            fit: BoxFit.contain,
-            alignment: Alignment.center,
-            excludeFromSemantics: true,
-          ),
-        ),
-        Scaffold(
-          backgroundColor: Colors.transparent,
-          appBar: AppBar(
-            title: const Text('Nestock｜窩有', style: TextStyle(fontSize: 18)),
-            backgroundColor: Colors.transparent,
-            surfaceTintColor: Colors.transparent,
-          ),
-          body: SafeArea(
-            child: Column(
-              children: [
-                Expanded(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) => SingleChildScrollView(
-                      key: const Key('scene-scroll'),
-                      controller: _sceneScroll,
-                      child: Column(
-                        children: [
-                          SizedBox(
-                            height: constraints.maxHeight,
-                            child: Stack(
-                              children: [
-                                Positioned.fill(
-                                  child: HomeScene(
-                                    onBackgroundTap: _dismissRoomTransientUi,
-                                    onInventory: () => _openInventory(),
-                                    onShopping: () {
-                                      _openShopping();
-                                    },
-                                    message: _busy ? '思考中...' : '歡迎回家',
-                                  ),
-                                ),
-                                Positioned(
-                                  left: 8,
-                                  bottom: 4,
-                                  child: Text(
-                                    '示範模式 · 資料不會儲存',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .labelSmall,
-                                  ),
-                                ),
-                                if (_messages.isNotEmpty &&
-                                    !_workOpen &&
-                                    !_inventoryOpen &&
-                                    !_shoppingOpen)
-                                  Positioned(
-                                    right: 8,
-                                    bottom: 4,
-                                    child: TextButton(
-                                      onPressed: () =>
-                                          setState(() => _workOpen = true),
-                                      child: const Text('顯示互動'),
-                                    ),
-                                  ),
-                                if (_messages.isNotEmpty)
-                                  Positioned.fill(
-                                    key: const Key('room-work-layer'),
-                                    child: ClipRect(
-                                      key: const Key('room-work-clip'),
-                                      child: Align(
-                                        alignment: Alignment.bottomCenter,
-                                        child: ConstrainedBox(
-                                          constraints: BoxConstraints(
-                                            maxHeight:
-                                                constraints.maxHeight * .72,
-                                          ),
-                                          child: IgnorePointer(
-                                            ignoring:
-                                                !_workOpen ||
-                                                _inventoryOpen ||
-                                                _shoppingOpen,
-                                            child: AnimatedSlide(
-                                              offset: _workOpen
-                                                  ? Offset.zero
-                                                  : const Offset(0, 1),
-                                              duration: const Duration(
-                                                milliseconds: 220,
-                                              ),
-                                              child: AnimatedOpacity(
-                                                opacity:
-                                                    _workOpen &&
-                                                        !_inventoryOpen &&
-                                                        !_shoppingOpen
-                                                    ? 1
-                                                    : 0,
-                                                duration: const Duration(
-                                                  milliseconds: 220,
-                                                ),
-                                                child: _interactionSurface(),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                Positioned.fill(
-                                  child: ClipRect(
-                                    key: const Key('shopping-room-clip'),
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(16),
-                                      child: Align(
-                                        alignment: Alignment.topRight,
-                                        child: ConstrainedBox(
-                                          constraints: BoxConstraints(
-                                            maxHeight:
-                                                (constraints.maxHeight - 32)
-                                                    .clamp(
-                                                      0.0,
-                                                      double.infinity,
-                                                    ),
-                                          ),
-                                          child: AnimatedSwitcher(
-                                            duration: const Duration(
-                                              milliseconds: 180,
-                                            ),
-                                            layoutBuilder:
-                                                (current, previous) => Stack(
-                                                  alignment: Alignment.topRight,
-                                                  children: [
-                                                    ...previous,
-                                                    ?current,
-                                                  ],
-                                                ),
-                                            transitionBuilder:
-                                                (
-                                                  child,
-                                                  animation,
-                                                ) => FadeTransition(
-                                                  opacity: _inventoryOpen
-                                                      ? const AlwaysStoppedAnimation(
-                                                          0,
-                                                        )
-                                                      : animation,
-                                                  child: ScaleTransition(
-                                                    alignment: RoomAnchors.cart,
-                                                    scale: Tween<double>(
-                                                      begin: .94,
-                                                      end: 1,
-                                                    ).animate(animation),
-                                                    child: child,
-                                                  ),
-                                                ),
-                                            child: _shoppingOpen
-                                                ? ShoppingOverlay(
-                                                    key: const Key(
-                                                      'shopping-panel',
-                                                    ),
-                                                    client:
-                                                        widget.shoppingClient,
-                                                    onClose: _closeShopping,
-                                                  )
-                                                : const SizedBox.shrink(
-                                                    key: Key('shopping-hidden'),
-                                                  ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                Positioned.fill(
-                                  child: ClipRect(
-                                    key: const Key('inventory-room-clip'),
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(16),
-                                      child: Align(
-                                        alignment: Alignment.topLeft,
-                                        child: ConstrainedBox(
-                                          constraints: BoxConstraints(
-                                            maxHeight:
-                                                (constraints.maxHeight - 32)
-                                                    .clamp(
-                                                      0.0,
-                                                      double.infinity,
-                                                    ),
-                                          ),
-                                          child: AnimatedSwitcher(
-                                            duration: const Duration(
-                                              milliseconds: 180,
-                                            ),
-                                            layoutBuilder:
-                                                (current, previous) => Stack(
-                                                  alignment: Alignment.topLeft,
-                                                  children: [
-                                                    ...previous,
-                                                    ?current,
-                                                  ],
-                                                ),
-                                            transitionBuilder:
-                                                (
-                                                  child,
-                                                  animation,
-                                                ) => FadeTransition(
-                                                  opacity: _shoppingOpen
-                                                      ? const AlwaysStoppedAnimation(
-                                                          0,
-                                                        )
-                                                      : animation,
-                                                  child: ScaleTransition(
-                                                    alignment:
-                                                        RoomAnchors.cabinet,
-                                                    scale: Tween<double>(
-                                                      begin: .94,
-                                                      end: 1,
-                                                    ).animate(animation),
-                                                    child: child,
-                                                  ),
-                                                ),
-                                            child: _inventoryOpen
-                                                ? InventoryOverlay(
-                                                    key: const Key(
-                                                      'inventory-panel',
-                                                    ),
-                                                    client:
-                                                        widget.inventoryClient,
-                                                    onClose: _closeInventory,
-                                                  )
-                                                : const SizedBox.shrink(
-                                                    key: Key(
-                                                      'inventory-hidden',
-                                                    ),
-                                                  ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                if (_busy) const LoadingState(),
-                if (_uploading) const LinearProgressIndicator(),
-                if (_uploadError != null) Text(_uploadError!),
-                if (_state == AgentState.error || _state == AgentState.timeout)
-                  ErrorState(
-                    timeout: _state == AgentState.timeout,
-                    onRetry: () => _perform(_retry!),
-                  ),
-                Padding(
-                  key: const Key('composer'),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (_photo != null)
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: Stack(
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.black,
+        statusBarIconBrightness: Brightness.light,
+        systemNavigationBarColor: Colors.black,
+        systemNavigationBarIconBrightness: Brightness.light,
+      ),
+      child: SafeArea(
+        key: const Key('home-safe-area'),
+        child: Stack(
+          key: const Key('home-viewport'),
+          children: [
+            Positioned.fill(
+              child: Image.asset(
+                'assets/images/room/background.png',
+                fit: BoxFit.contain,
+                alignment: Alignment.center,
+                excludeFromSemantics: true,
+              ),
+            ),
+            Scaffold(
+              backgroundColor: Colors.transparent,
+              appBar: AppBar(
+                title: const Text('Nestock｜窩有', style: TextStyle(fontSize: 18)),
+                backgroundColor: Colors.transparent,
+                surfaceTintColor: Colors.transparent,
+              ),
+              body: SafeArea(
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: LayoutBuilder(
+                        builder: (context, constraints) => SingleChildScrollView(
+                          key: const Key('scene-scroll'),
+                          controller: _sceneScroll,
+                          child: Column(
                             children: [
-                              Padding(
-                                padding: const EdgeInsets.all(4),
-                                child: Image.memory(
-                                  _photo!,
-                                  key: const Key('photo-attachment'),
-                                  width: 64,
-                                  height: 64,
-                                  fit: BoxFit.cover,
-                                ),
-                              ),
-                              Positioned(
-                                right: 0,
-                                top: 0,
-                                child: IconButton(
-                                  tooltip: '移除照片',
-                                  onPressed: _uploading
-                                      ? null
-                                      : () => setState(() => _photo = null),
-                                  icon: const Icon(Icons.cancel),
-                                  visualDensity: VisualDensity.compact,
+                              SizedBox(
+                                height: constraints.maxHeight,
+                                child: Stack(
+                                  children: [
+                                    Positioned.fill(
+                                      child: HomeScene(
+                                        workSurfaceOpen:
+                                            _workOpen &&
+                                            !_inventoryOpen &&
+                                            !_shoppingOpen,
+                                        onBackgroundTap:
+                                            _dismissRoomTransientUi,
+                                        onInventory: () => _openInventory(),
+                                        onShopping: () {
+                                          _openShopping();
+                                        },
+                                        message: _busy ? '思考中...' : '歡迎回家',
+                                      ),
+                                    ),
+                                    Positioned(
+                                      left: 8,
+                                      bottom: 4,
+                                      child: Text(
+                                        '示範模式 · 資料不會儲存',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .labelSmall,
+                                      ),
+                                    ),
+                                    if (_messages.isNotEmpty &&
+                                        !_workOpen &&
+                                        !_inventoryOpen &&
+                                        !_shoppingOpen)
+                                      Positioned(
+                                        right: 8,
+                                        bottom: 4,
+                                        child: TextButton(
+                                          onPressed: () =>
+                                              setState(() => _workOpen = true),
+                                          child: const Text('顯示互動'),
+                                        ),
+                                      ),
+                                    if (_messages.isNotEmpty)
+                                      Positioned.fill(
+                                        key: const Key('room-work-layer'),
+                                        child: ClipRect(
+                                          key: const Key('room-work-clip'),
+                                          child: Align(
+                                            alignment: Alignment.bottomCenter,
+                                            child: ConstrainedBox(
+                                              constraints: BoxConstraints(
+                                                maxHeight:
+                                                    constraints.maxHeight * .72,
+                                              ),
+                                              child: IgnorePointer(
+                                                ignoring:
+                                                    !_workOpen ||
+                                                    _inventoryOpen ||
+                                                    _shoppingOpen,
+                                                child: AnimatedSlide(
+                                                  offset: _workOpen
+                                                      ? Offset.zero
+                                                      : const Offset(0, 1),
+                                                  duration: const Duration(
+                                                    milliseconds: 220,
+                                                  ),
+                                                  child: AnimatedOpacity(
+                                                    opacity:
+                                                        _workOpen &&
+                                                            !_inventoryOpen &&
+                                                            !_shoppingOpen
+                                                        ? 1
+                                                        : 0,
+                                                    duration: const Duration(
+                                                      milliseconds: 220,
+                                                    ),
+                                                    child:
+                                                        _interactionSurface(),
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    Positioned.fill(
+                                      child: ClipRect(
+                                        key: const Key('shopping-room-clip'),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(16),
+                                          child: Align(
+                                            alignment: Alignment.topRight,
+                                            child: ConstrainedBox(
+                                              constraints: BoxConstraints(
+                                                maxHeight:
+                                                    (constraints.maxHeight - 32)
+                                                        .clamp(
+                                                          0.0,
+                                                          double.infinity,
+                                                        ),
+                                              ),
+                                              child: AnimatedSwitcher(
+                                                duration: const Duration(
+                                                  milliseconds: 180,
+                                                ),
+                                                layoutBuilder:
+                                                    (current, previous) =>
+                                                        Stack(
+                                                          alignment: Alignment
+                                                              .topRight,
+                                                          children: [
+                                                            ...previous,
+                                                            ?current,
+                                                          ],
+                                                        ),
+                                                transitionBuilder:
+                                                    (
+                                                      child,
+                                                      animation,
+                                                    ) => FadeTransition(
+                                                      opacity: _inventoryOpen
+                                                          ? const AlwaysStoppedAnimation(
+                                                              0,
+                                                            )
+                                                          : animation,
+                                                      child: ScaleTransition(
+                                                        alignment:
+                                                            RoomAnchors.cart,
+                                                        scale: Tween<double>(
+                                                          begin: .94,
+                                                          end: 1,
+                                                        ).animate(animation),
+                                                        child: child,
+                                                      ),
+                                                    ),
+                                                child: _shoppingOpen
+                                                    ? ShoppingOverlay(
+                                                        key: const Key(
+                                                          'shopping-panel',
+                                                        ),
+                                                        client: widget
+                                                            .shoppingClient,
+                                                        onClose: _closeShopping,
+                                                      )
+                                                    : const SizedBox.shrink(
+                                                        key: Key(
+                                                          'shopping-hidden',
+                                                        ),
+                                                      ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    Positioned.fill(
+                                      child: ClipRect(
+                                        key: const Key('inventory-room-clip'),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(16),
+                                          child: Align(
+                                            alignment: Alignment.topLeft,
+                                            child: ConstrainedBox(
+                                              constraints: BoxConstraints(
+                                                maxHeight:
+                                                    (constraints.maxHeight - 32)
+                                                        .clamp(
+                                                          0.0,
+                                                          double.infinity,
+                                                        ),
+                                              ),
+                                              child: AnimatedSwitcher(
+                                                duration: const Duration(
+                                                  milliseconds: 180,
+                                                ),
+                                                layoutBuilder:
+                                                    (current, previous) =>
+                                                        Stack(
+                                                          alignment:
+                                                              Alignment.topLeft,
+                                                          children: [
+                                                            ...previous,
+                                                            ?current,
+                                                          ],
+                                                        ),
+                                                transitionBuilder:
+                                                    (
+                                                      child,
+                                                      animation,
+                                                    ) => FadeTransition(
+                                                      opacity: _shoppingOpen
+                                                          ? const AlwaysStoppedAnimation(
+                                                              0,
+                                                            )
+                                                          : animation,
+                                                      child: ScaleTransition(
+                                                        alignment:
+                                                            RoomAnchors.cabinet,
+                                                        scale: Tween<double>(
+                                                          begin: .94,
+                                                          end: 1,
+                                                        ).animate(animation),
+                                                        child: child,
+                                                      ),
+                                                    ),
+                                                child: _inventoryOpen
+                                                    ? InventoryOverlay(
+                                                        key: const Key(
+                                                          'inventory-panel',
+                                                        ),
+                                                        client: widget
+                                                            .inventoryClient,
+                                                        onClose:
+                                                            _closeInventory,
+                                                      )
+                                                    : const SizedBox.shrink(
+                                                        key: Key(
+                                                          'inventory-hidden',
+                                                        ),
+                                                      ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
                             ],
                           ),
                         ),
-                      Row(
+                      ),
+                    ),
+                    if (_busy) const LoadingState(),
+                    if (_uploading) const LinearProgressIndicator(),
+                    if (_uploadError != null) Text(_uploadError!),
+                    if (_state == AgentState.error ||
+                        _state == AgentState.timeout)
+                      ErrorState(
+                        timeout: _state == AgentState.timeout,
+                        onRetry: () => _perform(_retry!),
+                      ),
+                    Padding(
+                      key: const Key('composer'),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _input,
-                              onTap: () {
-                                _closeInventory();
-                                _closeShopping();
-                              },
-                              enabled:
-                                  !_busy && !_uploading && approval == null,
-                              decoration: const InputDecoration(
-                                hintText: '告訴Noki...',
-                                border: OutlineInputBorder(),
-                                isDense: true,
+                          if (_photo != null)
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: Stack(
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.all(4),
+                                    child: Image.memory(
+                                      _photo!,
+                                      key: const Key('photo-attachment'),
+                                      width: 64,
+                                      height: 64,
+                                      fit: BoxFit.cover,
+                                    ),
+                                  ),
+                                  Positioned(
+                                    right: 0,
+                                    top: 0,
+                                    child: IconButton(
+                                      tooltip: '移除照片',
+                                      onPressed: _uploading
+                                          ? null
+                                          : () => setState(() => _photo = null),
+                                      icon: const Icon(Icons.cancel),
+                                      visualDensity: VisualDensity.compact,
+                                    ),
+                                  ),
+                                ],
                               ),
-                              onSubmitted: (_) => _send(),
                             ),
-                          ),
-                          GestureDetector(
-                            onTapDown: (_) => _startRecording(),
-                            onTapUp: (_) => _stopRecording(),
-                            onTapCancel: _stopRecording,
-                            child: Tooltip(
-                              message: '語音輸入',
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Icon(
-                                  _recording ? Icons.mic : Icons.mic_none,
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextField(
+                                  controller: _input,
+                                  onTap: () {
+                                    _closeInventory();
+                                    _closeShopping();
+                                  },
+                                  enabled:
+                                      !_busy && !_uploading && approval == null,
+                                  decoration: const InputDecoration(
+                                    hintText: '告訴Noki...',
+                                    border: OutlineInputBorder(),
+                                    isDense: true,
+                                  ),
+                                  onSubmitted: (_) => _send(),
                                 ),
                               ),
-                            ),
-                          ),
-                          FilledButton(
-                            onPressed:
-                                _busy ||
-                                    _uploading ||
-                                    _speechBusy ||
-                                    approval != null
-                                ? null
-                                : _send,
-                            child: const Text('送出'),
+                              GestureDetector(
+                                onTapDown: (_) => _startRecording(),
+                                onTapUp: (_) => _stopRecording(),
+                                onTapCancel: _stopRecording,
+                                child: Tooltip(
+                                  message: '語音輸入',
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(12),
+                                    child: Icon(
+                                      _recording ? Icons.mic : Icons.mic_none,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              FilledButton(
+                                onPressed:
+                                    _busy ||
+                                        _uploading ||
+                                        _speechBusy ||
+                                        approval != null
+                                    ? null
+                                    : _send,
+                                child: const Text('送出'),
+                              ),
+                            ],
                           ),
                         ],
                       ),
-                    ],
-                  ),
-                ),
-                Row(
-                  key: const Key('toolbar'),
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    TextButton.icon(
-                      onPressed: _uploading ? null : _openPhoto,
-                      icon: const Icon(Icons.camera_alt_outlined),
-                      label: const Text('拍照／照片'),
                     ),
-                    TextButton(
-                      onPressed: () => _openInventory(),
-                      child: const Text('庫存'),
-                    ),
-                    TextButton(
-                      onPressed: () {
-                        _openShopping();
-                      },
-                      child: const Text('購物清單'),
+                    Row(
+                      key: const Key('toolbar'),
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        TextButton.icon(
+                          onPressed: _uploading ? null : _openPhoto,
+                          icon: const Icon(Icons.camera_alt_outlined),
+                          label: const Text('拍照／照片'),
+                        ),
+                        TextButton(
+                          onPressed: () => _openInventory(),
+                          child: const Text('庫存'),
+                        ),
+                        TextButton(
+                          onPressed: () {
+                            _openShopping();
+                          },
+                          child: const Text('購物清單'),
+                        ),
+                      ],
                     ),
                   ],
                 ),
-              ],
+              ),
             ),
-          ),
+          ],
         ),
-      ],
+      ),
     );
   }
 }

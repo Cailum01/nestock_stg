@@ -23,7 +23,26 @@ class AgentResultCard extends StatelessWidget {
         ResultKind.purchaseOptions => '購買選項',
         ResultKind.actionResult => '操作結果',
       }, style: Theme.of(context).textTheme.labelLarge),
-      subtitle: Text(result.summary),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(result.summary),
+          if (result.kind == ResultKind.inventory &&
+              result.data['items'] is List)
+            for (final item in result.data['items'] as List)
+              if (item is Map && item['name'] is String)
+                Text(
+                  [
+                        item['name'],
+                        item['quantity'],
+                        item['unit'],
+                        item['location'],
+                      ]
+                      .where((v) => v != null && v.toString().isNotEmpty)
+                      .join(' '),
+                ),
+        ],
+      ),
     ),
   );
 }

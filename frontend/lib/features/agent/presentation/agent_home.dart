@@ -234,7 +234,12 @@ class _AgentHomeState extends State<AgentHome> {
     });
     _showLatestMessage();
     _perform(
-      () => message.isEmpty
+      () => imageRef != null && widget.client is PhotoAwareAgentClient
+          ? (widget.client as PhotoAwareAgentClient).sendWithPhoto(
+              message.isEmpty ? '照片' : message,
+              imageRef,
+            )
+          : message.isEmpty
           ? Future.value(const AgentReply(message: '這是對話介面示範回覆。'))
           : widget.client.send(message),
     );

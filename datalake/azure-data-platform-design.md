@@ -79,8 +79,13 @@ Agent adapters.
 
 ### Out of scope for Skeleton v1
 
-- Connecting to Cosmos DB, Blob Storage, ADLS Gen2, Azure AI services, queues, or
-  any other cloud service.
+- Connecting to cloud services for writes or media/analytics processing.
+  Exception: the explicitly approved, opt-in, Entra-authenticated, read-only
+  Cosmos adapter for Inventory and Shopping may be used for development
+  validation; it is disabled by default and does not authorize users or enable
+  transaction-history reads.
+- Connecting the backend to Blob Storage, ADLS Gen2, Azure AI services, queues,
+  or any other cloud service beyond that read-only Cosmos exception.
 - Implementing authentication, accounts, household membership, member
   preferences, real uploads, real Agent execution, task resume, approval
   persistence, or domain mutations.
@@ -823,7 +828,7 @@ When an AI agent implements a task from this document:
 
 | Phase | Deliverable | Gate |
 | --- | --- | --- |
-| 0. Design | Review this proposal and settle cross-owner boundaries | No cloud connection |
+| 0. Design | Review this proposal and settle cross-owner boundaries | No write-capable cloud connection; the approved opt-in read-only Cosmos adapter is limited to Inventory and Shopping development reads |
 | 1. Local persistence boundary | Repository/service interfaces and tests against a local fake | Existing API/tool behavior remains shared and read-only until writes are approved |
 | 2. Cosmos pilot | Household-scoped records, transactional inventory operation, receipt, transaction, and change event | Security, cost, recovery, and owner approvals complete |
 | 3. Blob pilot | Private original-media upload, validation, metadata, retention and deletion | A2 input/processing contract agreed |

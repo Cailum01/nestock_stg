@@ -3,6 +3,10 @@
 Scope of this spike:
 - Minimal LangGraph flow: propose -> approve (interrupt) -> execute.
 - Rule-based planner only ("我買了 2 瓶牛奶"); no Azure OpenAI yet.
+- Units are system-defined (B1 design §6.7): the unit always comes from the
+  inventory item, never from the user's sentence. A different unit in the
+  sentence (for example "1 箱") or an item not yet in inventory gets a follow-up
+  question instead of a confirmation card, and nothing is written.
 - In-memory checkpoints; paused state is lost on restart.
 - Not wired to HTTP routes; /agent/messages and /agent/resume still return 501.
 
@@ -36,8 +40,10 @@ from app.models.agent import (
     ResultKind,
     ResumeRequest,
 )
+from app.models.domain import InventoryItem
+from app.services.interfaces import InventoryService
 
-_UNITS = "瓶|罐|包|盒|個|條|支|袋|顆|片|卷|件"
+_UNITS = "瓶|罐|包|盒|個|條|支|袋|顆|片|卷|件|箱|打|串|組"
 _PURCHASE = re.compile(rf"買了\s*(\d+)\s*({_UNITS})?\s*(\S.*)")
 
 
@@ -56,6 +62,7 @@ class _State(TypedDict, total=False):
     approval_id: str
     message: str
     operation: dict[str, Any]
+    reply: str
     approved: bool
     executed: bool
 
@@ -68,24 +75,57 @@ class _ApprovalRecord:
     failed: bool = False  # last attempt raised; next approval retries
 
 
-def _plan(message: str) -> dict[str, Any] | None:
-    """Rule-based stand-in for the LLM: turn a purchase sentence into one operation."""
+def _find_item(items: list[InventoryItem], name: str) -> InventoryItem | None:
+    """Exact match on the item name or one of its aliases."""
+    for item in items:
+        if item.name == name or name in (item.aliases or []):
+            return item
+    return None
+
+
+def _plan(message: str, items: list[InventoryItem]) -> _State:
+    """Rule-based stand-in for the LLM.
+
+    Returns {"operation": ...} for a confirmation card, {"reply": ...} for a
+    follow-up question, or {} when the sentence is not understood.
+    """
     match = _PURCHASE.search(message)
     if not match:
-        return None
-    quantity, unit, name = int(match.group(1)), match.group(2) or "", match.group(3).strip()
+        return {}
+    quantity, said_unit, name = int(match.group(1)), match.group(2) or "", match.group(3).strip()
+
+    item = _find_item(items, name)
+    if item is None:
+        return {"reply": f"庫存裡還沒有「{name}」。請問{name}要用什麼單位記錄？"}
+    if said_unit and said_unit != item.unit:
+        return {
+            "reply": (
+                f"{item.name}在庫存裡是用「{item.unit}」記錄。"
+                f"請問 {quantity} {said_unit}是幾{item.unit}？"
+            )
+        }
+
+    unit = item.unit  # system-defined unit, never copied from the sentence
     return {
-        "operation_id": uuid.uuid4().hex,
-        "description": f"新增 {quantity} {unit}{name} 到庫存",
-        "values": {"name": name, "quantity": quantity, "unit": unit},
+        "operation": {
+            "operation_id": uuid.uuid4().hex,
+            "description": f"新增 {quantity} {unit}{item.name} 到庫存",
+            "values": {
+                "item_id": item.item_id,
+                "name": item.name,
+                "quantity": quantity,
+                "unit": unit,
+            },
+        }
     }
 
 
 class HitlSpikeRuntime:
     """Implements the provisional AgentRuntime port (respond / resume)."""
 
-    def __init__(self, executor: WriteExecutor) -> None:
+    def __init__(self, executor: WriteExecutor, inventory: InventoryService) -> None:
         self._executor = executor
+        self._inventory = inventory
         self._approvals: dict[str, _ApprovalRecord] = {}
         self._lock = asyncio.Lock()
         self._graph = self._build_graph()
@@ -93,7 +133,8 @@ class HitlSpikeRuntime:
     def _build_graph(self):
         async def propose(state: _State) -> _State:
             # No side effects here: only resolve what would be written.
-            return {"operation": _plan(state["message"])}
+            items = await self._inventory.list_items(state["household_id"])
+            return _plan(state["message"], items)
 
         async def approve(state: _State) -> _State:
             # Pause. Execution resumes here with the user's decision.
@@ -137,7 +178,8 @@ class HitlSpikeRuntime:
         )
         snapshot = await self._graph.aget_state(config)
         if not snapshot.next:  # finished without pausing: nothing to write
-            return AgentResponse(message="（實驗）目前只處理「我買了 2 瓶牛奶」這類句子。")
+            reply = snapshot.values.get("reply")
+            return AgentResponse(message=reply or "（實驗）目前只處理「我買了 2 瓶牛奶」這類句子。")
 
         operation = ProposedOperation(**snapshot.values["operation"])
         self._approvals[approval_id] = _ApprovalRecord(request.household_id, operation)

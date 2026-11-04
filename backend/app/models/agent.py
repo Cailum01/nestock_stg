@@ -31,8 +31,9 @@ class AgentRequest(ContractModel):
     image_ref: str | None = Field(default=None, min_length=1)
     """Optional opaque reference from POST /api/media/upload-authorization (A2).
 
-    The Agent cannot read images yet (Day 8). Before it does, the referenced media
-    must be verified to belong to household_id.
+    The Agent verifies the referenced media belongs to household_id before A2's
+    recognition reads it (open-decisions D-5); an unknown or foreign reference is
+    refused. Recognition results are display-only and write nothing.
     """
 
 

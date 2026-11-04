@@ -44,7 +44,11 @@ class RemovalPreview:
 def _quantity(value: float, label: str, *, positive: bool = True) -> Decimal:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ShoppingPreviewError(f"{label} must be a finite number.")
-    if not math.isfinite(value) or (value <= 0 if positive else value < 0):
+    try:
+        finite = math.isfinite(value)
+    except OverflowError as error:
+        raise ShoppingPreviewError(f"{label} is outside the supported quantity range.") from error
+    if not finite or (value <= 0 if positive else value < 0):
         raise ShoppingPreviewError(f"{label} is outside the supported quantity range.")
     # Avoid binary subtraction leaving a spurious remainder (e.g. 0.3 - 0.1).
     # This is local preview arithmetic, not a shared persistence precision policy.

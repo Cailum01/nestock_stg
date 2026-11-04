@@ -87,6 +87,15 @@ def test_invalid_reported_quantities_rejected(quantity):
         preview(*items(), purchased=quantity)
 
 
+@pytest.mark.parametrize("sign", [1, -1], ids=["positive", "negative"])
+def test_oversized_integer_purchase_raises_validation_error_without_mutation(sign):
+    shopping, inventory = items()
+    before = (shopping.model_dump(), inventory.model_dump())
+    with pytest.raises(ShoppingPreviewError, match="outside the supported quantity range"):
+        preview(shopping, inventory, purchased=sign * 10**10000)
+    assert (shopping.model_dump(), inventory.model_dump()) == before
+
+
 @pytest.mark.parametrize("changes", [{"status": "completed"}, {"household_id": "other"}])
 def test_invalid_shopping_scope_or_state_rejected(changes):
     with pytest.raises(ShoppingPreviewError):

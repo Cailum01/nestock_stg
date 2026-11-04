@@ -283,7 +283,7 @@ def test_repository_always_uses_partition_key_and_validates_returned_scope():
     )
 
 
-def test_inventory_repository_maps_only_requested_household_records():
+def test_inventory_repository_omits_soft_deleted_records_from_default_list():
     item = InventoryItem(
         item_id="rice",
         household_id="home",
@@ -293,15 +293,50 @@ def test_inventory_repository_maps_only_requested_household_records():
         created_at=NOW,
         updated_at=NOW,
     )
-    client = FakeDocumentClient([CosmosDocumentMapper.to_document(item)])
+    deleted_item = InventoryItem(
+        item_id="beans",
+        household_id="home",
+        name="Beans",
+        quantity=1,
+        unit="bag",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    deleted_document = CosmosDocumentMapper.to_document(deleted_item) | {
+        "deleted_at": "2026-01-02T00:00:00.000000Z"
+    }
+    item_with_null_marker = InventoryItem(
+        item_id="flour",
+        household_id="home",
+        name="Flour",
+        quantity=1,
+        unit="bag",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    null_marker_document = CosmosDocumentMapper.to_document(item_with_null_marker) | {
+        "deleted_at": None
+    }
+    client = FakeDocumentClient(
+        [CosmosDocumentMapper.to_document(item), deleted_document, null_marker_document]
+    )
     repository = CosmosReadRepository(client)
 
     result = asyncio.run(repository.list_inventory("home"))
 
-    assert result == [item]
+    assert result == [item, item_with_null_marker]
     assert client.calls[0]["partition_key"] == "home"
     assert "c.record_type = @record_type" in client.calls[0]["query"]
     assert "c.household_id = @household_id" in client.calls[0]["query"]
+    assert "NOT IS_DEFINED(c.deleted_at) OR IS_NULL(c.deleted_at)" in client.calls[0]["query"]
+    assert (
+        CosmosDocumentMapper.from_document(
+            InventoryItem,
+            deleted_document,
+            household_id="home",
+        )
+        == deleted_item
+    )
 
 
 def test_service_adapters_match_shared_list_items_interfaces():

@@ -2,7 +2,8 @@
 
 Routes and Agent tools share ForecastService. Responses are estimates and never
 change confirmed inventory. The history source sits behind `get_transaction_history`
-so a Cosmos or lake adapter can replace the demo without changing these routes.
+so the Cosmos adapter (or a later lake adapter) replaces the demo without changing
+these routes.
 """
 
 from collections.abc import Callable
@@ -14,13 +15,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.core.config import settings
 from app.core.dependencies import get_inventory_service
 from app.models.forecast import ItemForecast
+from app.services.cosmos_transaction_history import create_transaction_history
 from app.services.forecast import ForecastService, ItemNotFoundError
 from app.services.interfaces import InventoryService, TransactionHistory
-from app.services.transaction_history import DemoTransactionHistory
 
 router = APIRouter(prefix="/forecast", tags=["forecast"])
 
-transaction_history: TransactionHistory = DemoTransactionHistory()
+# Cosmos when NESTOCK_COSMOS_* are set, otherwise demo history with a setup hint.
+transaction_history: TransactionHistory = create_transaction_history()
 
 
 def get_transaction_history() -> TransactionHistory:

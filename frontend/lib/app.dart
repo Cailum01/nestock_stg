@@ -11,8 +11,6 @@ import 'features/photo/camera_capture.dart';
 import 'features/photo/photo_upload.dart';
 import 'features/speech/speech_client.dart';
 
-import 'package:flutter/foundation.dart';
-
 class NestockApp extends StatelessWidget {
   const NestockApp({
     super.key,
@@ -58,17 +56,13 @@ class NestockApp extends StatelessWidget {
       photoUpload:
           photoUpload ??
           HttpPhotoUpload(
-            config: PhotoNetworkConfig(
-              apiBase: Uri.parse(
+            config: PhotoNetworkConfig.forApiBase(
+              Uri.parse(
                 const String.fromEnvironment(
                   'MEDIA_API_BASE',
                   defaultValue: 'http://10.0.2.2:8000',
                 ),
               ),
-              emulatorHost:
-                  !kIsWeb && defaultTargetPlatform == TargetPlatform.android
-                  ? '10.0.2.2'
-                  : null,
             ),
           ),
       inventoryClient: inventoryClient,

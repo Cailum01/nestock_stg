@@ -4,9 +4,14 @@ enum ResultKind { inventory, vision, forecast, purchaseOptions, actionResult }
 enum ApprovalPresentation { singleAction, batchAction, purchaseOptions }
 
 class AgentResultView {
-  const AgentResultView({required this.kind, required this.summary});
+  const AgentResultView({
+    required this.kind,
+    required this.summary,
+    this.data = const {},
+  });
   final ResultKind kind;
   final String summary;
+  final Map<String, dynamic> data;
 }
 
 class OperationView {

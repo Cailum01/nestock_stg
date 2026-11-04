@@ -25,6 +25,7 @@ approved as a domain-model change.
 | Transaction history | B2 reads raw transaction records; B1 does not pre-aggregate | Query contract and proposed feature-only transaction schema require cross-owner approval |
 | Transaction-to-item resolution | Append an immutable link record; never rewrite the source transaction | B2 reads link records for attribution, but never reads `change_event` |
 | Inventory removal | Soft-delete inventory records; retain IDs and transaction history | Distinct from personal-data erasure and Blob retention |
+| Family member preferences | Keep household inventory shared and store `like` / `dislike` per member and item; missing preference means `normal` | Requires an approved identity/membership feature; excluded from Skeleton v1 |
 | Forecast evaluation | Store internal B2 prediction/evaluation records in Cosmos | B2 owns schema and algorithm; records are not shown to users |
 | Authorization | No client-supplied value or model output authorizes a write; approval is validated server-side | Approval protocol is jointly owned with A1 and affected domain owners |
 | Retention and limits | Use centralized, environment-configured pilot defaults; do not hard-code policy throughout services | Product/legal decisions can change defaults without changing the storage model |
@@ -55,7 +56,8 @@ than the active policy permits.
 This design covers B1-owned persistence foundations for inventory, transaction
 records, user-submitted source records, and their references to stored media. It
 also defines extension points that other owners can use without making their
-decisions for them.
+decisions for them. It proposes a future persistence shape for member-specific
+item preferences, but does not implement household accounts or membership.
 
 - **A1** owns Agent graph/state, checkpoints, approval protocol, and task
   orchestration. The persistence design must not expose Cosmos SDK details to
@@ -77,10 +79,16 @@ Agent adapters.
 
 ### Out of scope for Skeleton v1
 
-- Connecting to Cosmos DB, Blob Storage, ADLS Gen2, Azure AI services, queues, or
-  any other cloud service.
-- Implementing authentication, accounts, household membership, real uploads,
-  real Agent execution, task resume, approval persistence, or domain mutations.
+- Connecting to cloud services for writes or media/analytics processing.
+  Exception: the explicitly approved, opt-in, Entra-authenticated, read-only
+  Cosmos adapter for Inventory and Shopping may be used for development
+  validation; it is disabled by default and does not authorize users or enable
+  transaction-history reads.
+- Connecting the backend to Blob Storage, ADLS Gen2, Azure AI services, queues,
+  or any other cloud service beyond that read-only Cosmos exception.
+- Implementing authentication, accounts, household membership, member
+  preferences, real uploads, real Agent execution, task resume, approval
+  persistence, or domain mutations.
 - Choosing a final Agent conversation/checkpoint schema or final wire protocol.
 - Implementing forecasting, shopping orchestration, checkout, or payment.
 - Treating AI-generated observations as confirmed inventory facts.
@@ -110,6 +118,9 @@ Agent adapters.
    do not store a separate `unit` field.
 10. Removing an inventory item is a soft delete. It preserves the item identity
     and transaction history; it is not a request to erase personal data.
+11. Inventory is shared at the household level. A member's preference is personal
+    metadata and never changes shared stock, another member's preference, or
+    write authorization.
 
 ## 4. Logical architecture and data flow
 
@@ -164,6 +175,7 @@ must define whether and how ordinary conversational messages are retained.
 | --- | --- | --- | --- |
 | Inventory and shopping records | Cosmos DB | Authoritative structured domain records | None |
 | Transactions | Cosmos DB | Authoritative append-only transaction records | None |
+| Future household membership and item preference | Cosmos DB | Household membership metadata and separate per-member preference records; never credentials | None |
 | Transaction-to-item resolution | Cosmos DB | Append-only links from feature-only transactions to selected items | None |
 | Text input / descriptive note | Cosmos DB | Text, scope, timestamps, retention class, optional links | None |
 | Original photo, audio, video, or document | Blob Storage | Opaque blob reference, media metadata, ownership/scope, status | Original bytes |
@@ -221,9 +233,12 @@ The following are proposed storage concepts, not final public models:
 | `shopping_item` | Shopping state; C1 owns service behavior | Updated only by validated domain operations |
 | `transaction` | Purchase, consumption, or adjustment fact; proposed `item_id` / `feature_keywords` alternative is pending unanimous contract approval | Append-only |
 | `transaction_item_link` | Approved attribution of a previously feature-only transaction to an item | Append-only |
+| `household_membership` | Future association between a stable member identity and a household | Membership lifecycle is not implemented; identity and roles require a separate owner-approved design |
+| `item_preference` | A member's preference for a shared inventory item | One current preference per member/item; omit the record for the default `normal` |
 | `user_input` | Text or reference to original media | Metadata may change for processing/deletion |
 | `note` | Descriptive user-provided context | Editable/deletable under explicit user action |
 | `agent_task_metadata` | Bounded task status and input/artifact references | State transitions validated; A1 owns runtime semantics |
+| `pending_approval` | Server-side confirmation proposal and state; A1 owns lifecycle semantics | Conditional state transition; expiry/TTL follows D-1 |
 | `operation_receipt` | Idempotency and stored operation outcome | Immutable after successful commit |
 | `change_event` | Business change provenance and future export source | Append-only |
 | `forecast_evaluation` | Internal B2 prediction and later outcome for P0 accuracy evaluation | Append-only prediction/evaluation snapshots; B2 owns schema |
@@ -235,29 +250,47 @@ Use namespaced IDs to avoid collisions, for example
 Do not expose Cosmos `id`, partition implementation, or storage envelope as
 public API fields unless owners approve a contract change.
 
-#### Proposed Transaction contract change (pending unanimous approval)
+#### Pending approval storage (provisional per D-2)
 
-The current model requires `item_id`. B2 proposes making `item_id` optional and
-adding a `feature_keywords` snapshot. Validation must require at least one of:
+B1 proposes storing each pending approval as a `pending_approval` record in the
+existing `household-data` container, partitioned by its `household_id`. The
+record holds the server-resolved proposal shown to the user and its lifecycle
+state; A1 owns the approval protocol, validation, and response semantics. This
+placement keeps the record in the household partition and can participate in
+same-container transactional batches where D-3 requires it. Use ETag-conditional
+state changes so a confirmation cannot be consumed twice. Configure item-level
+Cosmos TTL from the D-1 expiry setting; do not hard-code an expiry duration while
+D-1 is open. This is a storage proposal, not approval to add resume endpoints or
+write tools to Skeleton v1.
+
+#### Transaction contract change (B2 agrees; unanimous approval pending)
+
+The current model requires `item_id`. B2 agrees to make `item_id` optional and
+add a `feature_keywords` snapshot, subject to unanimous approval of this shared
+domain/API contract. Validation must require at least one of:
 
 - a non-empty `item_id`; or
 - a non-empty `feature_keywords` snapshot.
 
-Both may be present. The snapshot contains the exact normalized feature terms
-known when the transaction was recorded; it is immutable with the Transaction.
-For example, an unlinked soy-sauce purchase can be recorded with a normalized
-`醬油` snapshot and later resolved to a specific item. This is a proposed shared
-domain/API contract change, not approved by this B1 storage document. Do not
-change the Pydantic model, OpenAPI contract, or existing contract documentation
-until all owners approve the schema and migration.
+Both may be present. `feature_keywords` contains the exact feature terms
+normalized by A2 and is immutable after creation. Reject empty strings and
+duplicate keywords in backend validation. B2's P0 feature lookup supplies one
+keyword and uses exact equality; no fuzzy, synonym, AND, or OR matching is part
+of this query.
 
-For B2's date-window queries and late-link reconciliation, define Transaction
-`created_at` as the UTC business occurrence time (for example, the purchase
-date), including when a user reports it later. Persist a separate storage-only
-`recorded_at` timestamp for when the system accepted the record. B2 filters and
-orders on `created_at`; reconciliation compares `created_at` with the item's
-quantity-confirmation timestamp. This semantic change also requires unanimous
-approval; do not silently reinterpret existing records.
+This is a B2-approved proposal, not yet unanimous approval of the shared
+contract. Do not change the Pydantic model, OpenAPI contract, or existing
+contract documentation until all owners approve the schema and migration.
+
+B2 agrees that `created_at` represents the UTC business occurrence time (such as
+the purchase date), even when reported later; persist a separate storage-only
+`recorded_at` for when the system accepts the transaction. B2 filters and orders
+by `created_at`, and late-link reconciliation compares it with the item's
+quantity-confirmation timestamp. Validate that `created_at` is not later than
+`recorded_at`, allowing a small clock-skew tolerance that must be configurable
+and agreed before enforcement. The timestamp semantics remain part of the shared
+contract and must not be silently applied to existing records before owner
+approval and a migration plan.
 
 ### 6.3 Notes and relationships
 
@@ -278,7 +311,59 @@ Do not infer note links from text, silently rewrite notes into facts, or treat a
 note as authorization. If a user says a fact that changes inventory, the Agent
 must resolve and display the proposed change and follow HITL rules.
 
-### 6.4 Atomic inventory writes
+### 6.4 Future household membership and per-member preferences
+
+The current product has no authentication, household account, or membership
+feature. The following is a forward-compatible storage proposal only; it does
+not make the current `demo-household` scope a real security boundary.
+
+Keep the inventory item as one shared household record. Store personal
+preferences in separate records rather than embedding a per-member map in
+`inventory_item`, so a preference update does not contend with or mutate shared
+quantity. A future `item_preference` record may contain:
+
+```text
+record_type = "item_preference"
+household_id
+member_id
+item_id
+value = "like" | "dislike"
+created_at
+updated_at
+```
+
+The logical identity is `(household_id, member_id, item_id)`, enforced through a
+deterministic document ID or an equivalent conditional write. The effective
+preference is `normal` when no preference record exists; persist only explicit
+`like` or `dislike` values. Setting a preference back to `normal` removes the
+current preference record. If a future audit requirement needs preference-change
+history, add a separate append-only event rather than retaining stale current
+state in this record.
+
+Use an opaque, stable `member_id` issued by the future identity/membership
+system. Do not use email addresses, display names, or client-supplied IDs as
+authorization evidence or storage keys. A future `household_membership` record
+must establish that the member is active in the requested household before
+reading or writing that member's preferences. The server derives household and
+member scope from trusted authentication context; it must not trust a submitted
+`household_id` or `member_id` by itself.
+
+With the proposed `/household_id` partition, membership and preference records
+can reside in the same household partition as the shared inventory. Preference
+queries must always include both household and member scope. A member can update
+their own preference only, subject to a future authorization policy; another
+member's preference is not overwritten or averaged. Roles, invitation flows,
+visibility rules, and membership-removal behavior remain undecided and require
+agreement with the identity/product owners before implementation.
+
+Soft-deleting a shared item does not automatically erase transaction history.
+Whether to retain or remove associated member preferences on soft deletion is a
+product decision; a reasonable default is to retain them with the item and make
+them effective again if the same item identity is restored. A member-removal or
+personal-data-erasure workflow must separately define cleanup of that member's
+preferences without deleting household inventory or other members' data.
+
+### 6.5 Atomic inventory writes
 
 For one approved inventory operation, use a Cosmos transactional batch containing
 the applicable operations in the `household-data` container and household
@@ -301,9 +386,67 @@ stored result without applying the mutation again. The same operation ID with
 different values is a conflict, not a retry; require a new proposal and approval.
 Do not rely only on a separate “check then write,” which is race-prone.
 
+The `(household_id, operation_id)` pair is the idempotency key: store the receipt
+in the same household partition with a deterministic ID derived from the
+operation ID, and create it in the same transactional batch as all related
+writes. A1 confirms the Agent creates the operation ID before pausing and stores
+it server-side; the App cannot supply it. Editing any approved value requires a
+new operation ID. On a retry, the same ID and canonical payload returns
+`already_applied` as a successful outcome without repeating writes. Reusing the
+ID with a different payload returns an operation conflict so A1 can request a
+new approval. If the original response was lost after commit, the receipt makes
+the retry resolve to `already_applied`; if the batch did not commit, the retry
+can execute the batch using the same ID. A1 owns translating this repository
+outcome into the prior user-facing result.
+
 Transaction signs, unit conversions, and quantity arithmetic policy remain
 domain decisions; persistence must store the already validated domain operation,
 not invent those rules.
+
+#### A1 coordination: approval and repository boundary
+
+A1 agrees that approval is bound to the exact server-resolved operations and
+relevant values presented to the user. A changed target, quantity, location,
+selected purchase option, or other relevant value requires fresh approval.
+Approval is checked against the backend-stored proposal; a client-supplied
+`approved` flag or mutable values never authorize persistence.
+
+The domain service owns business validation and approval checks. The B1
+repository owns persistence primitives only, including reads/writes, conditional
+updates, and transactional batches; it does not interpret approval. Reusing an
+`operation_id` for the same logical write must not duplicate mutations. Reuse
+with different canonical values is a conflict and requires a newly resolved
+proposal and approval.
+
+Still deferred to A1's interrupt/resume experiment are who creates the
+confirmation-card expiry, pause-state storage, and the behavior of multi-item
+approval groups. A1 has confirmed that a rejection performs no write and returns
+“已取消”; cancelling after a committed write does not roll it back. A failed or
+timed-out attempt keeps the same confirmation and operation ID available for
+retry; if the user cancels instead, no later write is attempted. Invalid or
+cross-household confirmation IDs are rejected by A1 before B1 persistence is
+called.
+
+#### Multi-operation confirmation batch (provisional per D-3)
+
+Cosmos transactional batches can provide all-or-nothing writes when all
+operations target one container and one logical partition. The current
+`household-data` container and `/household_id` partition therefore support D-3's
+proposed atomic confirmation group when every affected record belongs to that
+household. A feature-transaction link and its eligible inventory quantity update
+must be in the same confirmation and batch; do not create a second Transaction.
+Each logical item operation keeps its own Agent-issued `operation_id` and
+idempotency receipt. The batch adapter must create all relevant receipts and
+domain changes together.
+
+This is **provisional per D-3**. Do not promise atomicity for records in another
+container, partition, or service. C1 must confirm which Shopping/Inventory/
+Transaction records `complete_purchase` includes. Before enabling the SDK
+adapter, validate the final operation count, request size, and execution-time
+limits against Cosmos transactional-batch limits; reject an oversized group
+before any write rather than splitting it into success-shaped partial writes.
+Selection semantics and the `ResumeRequest` representation remain open under
+D-3.
 
 Shopping operations and `complete_purchase` need C1's decision on which records
 belong in the same atomic batch. Do not claim cross-container, cross-partition,
@@ -340,6 +483,12 @@ Use optimistic concurrency. If the item's quantity or confirmation time changes
 after the user saw the preview, do not silently recompute and apply a different
 quantity; resolve again and obtain fresh approval.
 
+B2 confirms that resolving a feature-only transaction and applying any eligible
+quantity delta are one user confirmation: show the selected item, system-unit
+quantity, and resulting confirmed quantity together. This follows the multi-item
+approval approach in D-3 and remains **provisional per D-3** until its owners
+decide the approval-group and batch semantics.
+
 The existing domain model has `updated_at`, but that timestamp may change for
 non-quantity edits. The persistence design therefore needs an authoritative
 quantity-confirmation timestamp. Prefer an explicit `quantity_confirmed_at`
@@ -347,20 +496,20 @@ field or equivalent persistence metadata; do not use general `updated_at` unless
 the contract guarantees it changes only when quantity is confirmed. Agree any
 public model change before exposing it through Pydantic/OpenAPI.
 
-### 6.5 Queries and indexing
+### 6.6 Queries and indexing
 
 Expose raw, household-scoped Transaction reads for B2. These are storage queries,
-not B1-side aggregation:
+not B1-side aggregation. B2 agrees with all three query shapes:
 
 1. **Household history:** all Transactions for a `household_id`.
 2. **Item history:** Transactions for a `household_id` and exact `item_id`,
    including feature-only transactions whose active append-only link resolves
    them to that item. Return each `transaction_id` once; do not rewrite the
    original transaction to populate its item.
-3. **Feature history:** Transactions for a `household_id` and an exact normalized
-   feature keyword in the transaction's keyword snapshot. This returns both
-   already item-linked and unmatched transactions so the Agent can offer relevant
-   candidates and ask the user to resolve ambiguity.
+3. **Feature history:** Transactions for a `household_id` and one exact
+   normalized feature keyword in the transaction's keyword snapshot. Return both
+   linked and unmatched transactions and mark each result with its active
+   resolution (`resolved_item_id` when linked, otherwise unresolved).
 
 All three queries accept optional `since` and `limit` filters:
 
@@ -381,12 +530,27 @@ repository and Cosmos query do not perform fuzzy, stemming, synonym, or semantic
 matching. A query for a normalized feature such as `醬油` can retrieve records
 whose snapshot contains exactly `醬油`, including transactions with no `item_id`.
 Candidate selection and asking the user to choose remain Agent/domain behavior.
+The feature query takes exactly one keyword; P0 does not define multi-keyword
+AND/OR behavior.
 
-For attribution, B2 reads the matching `transaction_item_link` records along
-with Transactions; it does not read `change_event`. The link records are
-association metadata, not extra quantity transactions. B1 may expose a raw
-transaction query resolved through these links, but does not calculate
-consumption, aggregate history, or materialize B2's prediction input.
+For item history, B2 proposes the union of direct `item_id == X` transactions
+and feature-only transactions whose active link points to X, de-duplicated by
+`transaction_id`. An active link is the latest append-only link not superseded
+by another link; a transaction has at most one active link. A transaction with
+an existing `item_id` cannot be linked. If a link is corrected to Y, the
+transaction appears only in Y's history. A link to a soft-deleted item remains
+valid. Apply `since`, ordering, and `limit` after union and de-duplication, using
+the Transaction's `created_at`, not link time. Return the original Transaction
+with a separate resolved item ID and attribution source (`direct` or `link`);
+never rewrite the source Transaction. Unmatched feature-only transactions are
+excluded from item history and appear only in feature history.
+
+These are B2's proposed link-resolution semantics. Keep them provisional until
+the affected owners approve the append-only link contract and D-3 batch behavior.
+For attribution, B2 reads link records along with Transactions; it does not read
+`change_event`. Links are metadata, not additional quantity transactions. B1
+does not calculate consumption, aggregate history, or materialize B2's
+prediction input.
 
 Also support non-B2 household-scoped reads for listing active inventory, loading
 records by stable ID, loading notes explicitly linked to a known record, and
@@ -394,10 +558,14 @@ loading task/input metadata by stable task or input ID.
 
 Use the partition key and record type in queries. Add composite/range indexes only
 when a concrete query and measured workload justify them. Keep indexing policy in
-one reviewed configuration. Transaction queries need a composite index compatible
-with `created_at DESC, transaction_id ASC`; feature-keyword equality plus the
-requested sort may require an additional composite index, to be verified against
-the selected Cosmos SDK and query plan.
+one reviewed configuration. The household Transaction query's
+`created_at DESC, transaction_id ASC` ordering requires a Cosmos composite index
+with those paths and sort directions before the query is deployed. Keep the
+definition in [cosmos-indexing-policy.json](./cosmos-indexing-policy.json) and
+apply/verify it on every environment's `household-data` container. The shared
+development container has this index applied. Feature-keyword equality plus the
+requested sort may require another composite index; add it only after the
+Transaction contract is approved and the selected SDK's query plan is verified.
 
 The proposed single `/household_id` partition is supported by B2's current
 estimate of approximately 700–3,000 transactions per household per year, or
@@ -412,7 +580,7 @@ need broad search over notes, OCR, or transcripts, evaluate Azure AI Search as a
 separate optional index. It must enforce household filters, support deletion
 propagation, and remain a derived index rather than the source of truth.
 
-### 6.6 Units, soft deletion, and forecast evaluation
+### 6.7 Units, soft deletion, and forecast evaluation
 
 #### System-defined units
 
@@ -421,7 +589,10 @@ validation reject a client attempt to set or change it. Transaction has no
 `unit` field; its quantity delta is expressed in the associated item's canonical
 unit. Before asking for approval, the Agent resolves package descriptions (for
 example, one six-bottle carton) to an exact canonical quantity (six bottles) and
-shows that quantity to the user.
+shows that quantity to the user. B2 confirms the Agent must use the item's
+system-defined unit, not copy a unit supplied in user text into the proposal or
+write. Any package conversion must be resolved before approval and the canonical
+quantity shown on the confirmation card.
 
 A feature-only Transaction can be stored only when the system can deterministically
 resolve its normalized feature to a versioned, system-owned unit definition. Keep
@@ -429,6 +600,14 @@ the definition version as persistence metadata, not as a user-settable unit or a
 new `Transaction.unit` field. If the canonical quantity/unit cannot be resolved
 unambiguously, ask a follow-up question and do not write an untyped quantity.
 No general unit-conversion engine is implied.
+
+When forecast inputs are insufficient, B2 returns a status and suggested next
+step; it does not persist an inferred adjustment. The Agent may politely ask
+whether the user wants to report the current quantity. The user can decline; if
+they provide a quantity, it still requires a confirmation card before any write.
+Forecast output never replaces confirmed inventory. Any reminder to report a
+missed purchase occurs only while the user is using the app; do not add a
+scheduler or push notification for this behavior.
 
 #### Soft-deleted inventory
 
@@ -440,7 +619,7 @@ resolution can still find them. A later confirmed match may restore the same
 
 Reusing an old identity does not make its old on-hand quantity current. Require a
 fresh user-confirmed quantity or apply only a later, approved, not-yet-counted
-Transaction under the §6.4 rule. Keep soft deletion distinct from privacy-driven
+Transaction under the §6.5 rule. Keep soft deletion distinct from privacy-driven
 personal-data erasure in §7.3; an erasure request follows a separately approved
 retention/legal workflow.
 
@@ -649,13 +828,14 @@ When an AI agent implements a task from this document:
 
 | Phase | Deliverable | Gate |
 | --- | --- | --- |
-| 0. Design | Review this proposal and settle cross-owner boundaries | No cloud connection |
+| 0. Design | Review this proposal and settle cross-owner boundaries | No write-capable cloud connection; the approved opt-in read-only Cosmos adapter is limited to Inventory and Shopping development reads |
 | 1. Local persistence boundary | Repository/service interfaces and tests against a local fake | Existing API/tool behavior remains shared and read-only until writes are approved |
 | 2. Cosmos pilot | Household-scoped records, transactional inventory operation, receipt, transaction, and change event | Security, cost, recovery, and owner approvals complete |
 | 3. Blob pilot | Private original-media upload, validation, metadata, retention and deletion | A2 input/processing contract agreed |
 | 4. Agent processing | Async task lifecycle and derived artifact references | A1/A2 agree task and resume boundaries |
 | 5. Optional Data Lake | Change Feed projection to ADLS Gen2 | Named analytics/audit consumer, retention, access, and cost approved |
 | 6. Search, if needed | Search index for notes/transcripts/OCR | Query requirements and household filtering tested |
+| 7. Optional member preferences | Membership-validated, per-member item preference records | Identity, membership, authorization, privacy, and preference ownership agreed; not part of Skeleton v1 |
 
 Phases are independent gates, not a commitment to deploy every Azure service.
 
@@ -667,6 +847,9 @@ Phases are independent gates, not a commitment to deploy every Azure service.
   measured scale; migration plan if not.
 - Production identity, household authorization, data residency, encryption/key,
   and network requirements.
+- If member preferences are implemented: stable member identity, active
+  household-membership validation, member-removal behavior, preference visibility,
+  and deletion/retention rules.
 - Final media types, content scanning, upload limits, retention, legal holds,
   user deletion, and backup/recovery objectives.
 - A1's Agent task/checkpoint/approval protocol and A2's processing/artifact
@@ -675,7 +858,7 @@ Phases are independent gates, not a commitment to deploy every Azure service.
   semantics, plus the active-link/correction rules and quantity-confirmation
   timestamp needed for late transaction resolution.
 - B2's forecast algorithm and evaluation-record schema; query behavior is
-  specified in §6.5 and B1 does not pre-aggregate its input.
+  specified in §6.6 and B1 does not pre-aggregate its input.
 - C1's shopping and `complete_purchase` atomicity requirements.
 - Whether Data Lake activation criteria are met, plus event schema, lake
   retention, consumers, and access ownership.

@@ -15,7 +15,7 @@ tests and contributor documentation. Validate tools, tests and actual launch.
 
 ```text
 Flutter -- Normal API ------------------+
-        -- Agent API --> Agent / Tools -+--> Shared domain services --> Cosmos (planned)
+        -- Agent API --> Agent / Tools -+--> Shared domain services --> Cosmos (optional read-only adapter)
 ```
 
 The current frontend uses injected offline mocks. Backend GET routes and query
@@ -23,8 +23,11 @@ tools delegate to the same read service instances, replaceable through dependenc
 injection. There are no write endpoints or mutation ports. `POST /agent/messages`
 runs a read-only LangGraph Agent on Azure OpenAI when `backend/.env` is configured
 and returns HTTP 501 otherwise; `POST /agent/resume` still returns 501. Cosmos DB
-for NoSQL is provisioned on Azure, but the backend is not connected to it yet and
-serves read-only demo data.
+for NoSQL is provisioned on Azure. The backend can optionally use an Entra-
+authenticated, read-only Cosmos adapter for Inventory and Shopping when all
+`NESTOCK_COSMOS_*` settings are supplied; without them it continues to serve
+read-only demo data. The adapter is not authorization, exposes no transaction
+history, and performs no writes. The frontend remains on offline mocks.
 
 Pydantic models define the domain and provisional HTTP envelopes. FastAPI derives
 OpenAPI for models exposed through routes. Transaction currently has no public

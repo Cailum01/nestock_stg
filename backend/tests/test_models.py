@@ -10,6 +10,7 @@ from app.models.agent import (
     PendingApproval,
     ProposedOperation,
     ResultKind,
+    ResumeRequest,
 )
 from app.models.domain import InventoryItem, ShoppingItem, Transaction, TransactionReason
 
@@ -123,3 +124,50 @@ def test_provisional_approval_and_result_concepts(presentation):
 def test_empty_approval_is_invalid():
     with pytest.raises(ValidationError):
         PendingApproval(approval_id="empty", presentation="single_action", operations=[])
+
+
+def resume_data(**changes):
+    return dict(household_id="demo-household", approval_id="approval-1", approved=True) | changes
+
+
+def test_resume_without_selection_fields_still_valid():
+    resume = ResumeRequest(**resume_data())
+    assert resume.approved_operation_ids is None
+    assert resume.selected_option_id is None
+
+
+def test_resume_carries_batch_and_purchase_selections():
+    batch = ResumeRequest(**resume_data(approved_operation_ids=["op-101", "op-103"]))
+    purchase = ResumeRequest(**resume_data(selected_option_id="option-001"))
+    assert batch.approved_operation_ids == ["op-101", "op-103"]
+    assert purchase.selected_option_id == "option-001"
+    assert ResumeRequest.model_validate_json(batch.model_dump_json()) == batch
+
+
+def test_resume_cancel_may_carry_ignored_selection_fields():
+    resume = ResumeRequest(
+        **resume_data(approved=False, approved_operation_ids=["op-101"], selected_option_id="o-1")
+    )
+    assert resume.approved is False
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"approved_operation_ids": []},
+        {"approved_operation_ids": [""]},
+        {"approved_operation_ids": ["  "]},
+        {"approved_operation_ids": ["op-101", "op-101"]},
+        {"selected_option_id": ""},
+        {"selected_option_id": "  "},
+    ],
+)
+def test_resume_rejects_empty_or_repeated_selections(changes):
+    with pytest.raises(ValidationError):
+        ResumeRequest(**resume_data(**changes))
+
+
+@pytest.mark.parametrize("extra", ["values", "quantity", "selected_operation_ids"])
+def test_resume_rejects_client_write_payloads(extra):
+    with pytest.raises(ValidationError):
+        ResumeRequest(**resume_data(**{extra: 1}))

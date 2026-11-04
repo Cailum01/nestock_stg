@@ -6,13 +6,16 @@ port takes a household. This adapter bridges the two and keeps B1's ordering
 small (about 700-3,000 records a year) and the "still enough?" path may need a
 purchase older than the forecast windows.
 
-It reads the same `NESTOCK_COSMOS_*` settings as B1's inventory adapter. Without
-them it falls back to the demo history and logs how to enable Cosmos. B1 owns
-`app/core/dependencies.py`; until B1 shares its repository there, this opens a
-second read-only client to the same container.
+B1 decided (Issue #31) that B2 reads through B1's single repository/client. Pass
+that repository to `create_transaction_history`; wiring belongs to B1's
+`app/core/dependencies.py` and is coordinated when PR #16 is integrated. Until
+then, without a repository it reads the same `NESTOCK_COSMOS_*` settings and
+opens a temporary second read-only client, or falls back to the demo history and
+logs how to enable Cosmos.
 
 Open gaps:
-- Feature-only Transactions and links wait for D-6; B1's query reads `item_id` only.
+- Feature-only Transactions and links wait for A1's decision in Issue #36; B1's
+  query reads `item_id` only.
 """
 
 import atexit
@@ -59,8 +62,12 @@ class CosmosTransactionHistory:
 
 def create_transaction_history(
     environment: Mapping[str, str] | None = None,
+    repository: TransactionQueryReader | None = None,
 ) -> TransactionHistory:
-    """Cosmos when all three settings are present, demo history when none are."""
+    """B1's shared repository when given; otherwise Cosmos when all three settings
+    are present (temporary second client), demo history when none are."""
+    if repository is not None:
+        return CosmosTransactionHistory(repository)
     environment = os.environ if environment is None else environment
     configured = {name: environment[name] for name in COSMOS_SETTINGS if name in environment}
     if not configured:

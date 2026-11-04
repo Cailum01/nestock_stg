@@ -141,3 +141,20 @@ def test_full_cosmos_settings_build_cosmos_history(monkeypatch):
             "container_name": "household-data",
         }
     ]
+
+
+def test_shared_repository_is_used_without_settings_or_a_second_client(monkeypatch):
+    def no_second_client(**kwargs):
+        raise AssertionError("must reuse B1's repository")
+
+    monkeypatch.setattr(
+        "app.services.cosmos_sdk.create_azure_cosmos_read_repository", no_second_client
+    )
+    client = FakeDocumentClient([CosmosDocumentMapper.to_document(purchase(30))])
+
+    history = create_transaction_history({}, repository=CosmosReadRepository(client))
+
+    assert isinstance(history, CosmosTransactionHistory)
+    assert [r.transaction_id for r in asyncio.run(history.list_transactions(HOUSEHOLD))] == [
+        "tx-30"
+    ]

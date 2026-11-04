@@ -50,6 +50,8 @@ void main() {
       final room = tester.getRect(find.byKey(const Key('room')));
       await tester.tapAt(Offset(room.left + 2, room.bottom - 2));
       await tester.pumpAndSettle();
+      expect(find.byKey(const Key('shopping-overlay')), findsNothing);
+      await open();
       expect(find.byKey(const Key('shopping-overlay')), findsOneWidget);
       await tester.tap(find.byTooltip('關閉購物清單'));
       await tester.pump(const Duration(milliseconds: 60));

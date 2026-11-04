@@ -30,7 +30,6 @@ void main() {
       final room = tester.getRect(find.byKey(const Key('room')));
       final cabinet = tester.getRect(find.byKey(const Key('cabinet')));
       final cart = tester.getRect(find.byKey(const Key('cart')));
-      final window = tester.getRect(find.byKey(const Key('window')));
       final agent = tester.getRect(find.byKey(const Key('agent')));
       final speech = tester.getRect(find.byKey(const Key('speech')));
       final composer = tester.getRect(find.byKey(const Key('composer')));
@@ -38,7 +37,7 @@ void main() {
       expect(cabinet.center.dy, lessThan(room.center.dy));
       expect(cabinet.center.dx, lessThan(room.center.dx));
       expect(cart.center.dx, greaterThan(room.center.dx));
-      expect(cart.center.dy, greaterThan(window.center.dy));
+      expect(cart.top, greaterThan(room.top + room.height * .4));
       expect(
         room.contains(cart.topLeft) && room.contains(cart.bottomRight),
         isTrue,
@@ -48,10 +47,36 @@ void main() {
         isTrue,
       );
       expect(cabinet.width, greaterThan(room.width * .2));
+      expect(find.byKey(const Key('window')), findsOneWidget);
+      expect(find.byKey(const Key('window-image')), findsOneWidget);
+      expect(find.byKey(const Key('weather-viewport')), findsOneWidget);
       expect(
         find.descendant(
-          of: find.byKey(const Key('window')),
-          matching: find.byType(InkWell),
+          of: find.byKey(const Key('weather-viewport')),
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Image &&
+                widget.image is AssetImage &&
+                (widget.image as AssetImage).assetName ==
+                    'assets/images/weather/weather_test.png' &&
+                widget.fit == BoxFit.cover,
+          ),
+        ),
+        findsOneWidget,
+      );
+      final sceneWindow = tester.widget<Stack>(
+        find
+            .descendant(
+              of: find.byType(SceneWindow),
+              matching: find.byType(Stack),
+            )
+            .first,
+      );
+      expect(sceneWindow.children.first, isA<Positioned>());
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('weather-viewport')),
+          matching: find.byKey(const Key('window-image')),
         ),
         findsNothing,
       );
@@ -59,7 +84,8 @@ void main() {
         (agent.center.dy - room.center.dy).abs(),
         lessThan(room.height * .3),
       );
-      expect(speech.bottom, lessThan(agent.top));
+      expect(speech.center.dy, lessThan(agent.center.dy));
+      expect(speech.center.dx, greaterThan(agent.center.dx));
       expect(composer.top, greaterThanOrEqualTo(room.bottom));
       expect(toolbar.top, greaterThanOrEqualTo(composer.bottom));
       expect(find.byType(TextField).hitTestable(), findsOneWidget);

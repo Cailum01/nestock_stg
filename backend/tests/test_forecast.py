@@ -391,3 +391,17 @@ def test_default_does_not_scale_reference_for_insufficient_items():
     assert results[1].method is None
     assert results[1].household_factor is None
     assert results[1].daily_consumption is None
+
+
+def test_quantity_sign_does_not_change_the_estimate():
+    """Reason decides the kind; the sign of quantity_delta is never read (PR #16)."""
+    buy = TransactionReason.PURCHASE
+    signed = estimate(item(quantity=10), [tx(10, -2), tx(5, -3)], NOW)
+    unsigned = estimate(item(quantity=10), [tx(10, 2), tx(5, 3)], NOW)
+    assert unsigned.daily_consumption == pytest.approx(signed.daily_consumption)
+    assert unsigned.consumption_event_count == signed.consumption_event_count == 2
+
+    interval_signed = estimate(item(), [tx(30, 6, buy), tx(0, 6, buy)], NOW)
+    interval_flipped = estimate(item(), [tx(30, -6, buy), tx(0, -6, buy)], NOW)
+    assert interval_flipped.method == ForecastMethod.PURCHASE_INTERVAL
+    assert interval_flipped.daily_consumption == pytest.approx(interval_signed.daily_consumption)

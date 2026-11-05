@@ -18,6 +18,18 @@ then a household factor (`use_household_reference`, see forecast_reference).
 The household's own information always takes priority, no head count is inferred,
 and the user is never asked about household size.
 
+Data assumptions (PR #16 review):
+- The sign of `quantity_delta` is NOT used. Whether a record is a purchase or a
+  consumption comes only from `reason`; the amount is `abs(quantity_delta)`.
+- Consumption records are estimates, not meter readings. They come only from the
+  user's photos: the same item at the same storage place and stacking style, or
+  a count compared within one photo, showing whether the amount went up or down.
+  The rate is a trend, not an exact count; it never changes the confirmed quantity.
+- `created_at` is whatever the Transaction contract says it is; the forecast adds
+  no meaning of its own. `recorded_at` is not read. If the contract later
+  separates the two, only `_events`, `_consumption_rate` and
+  `_purchase_interval_rate` change.
+
 Open gaps:
 - Feature-only Transactions and links wait for D-6; only `item_id` is read.
 - There is no quantity-confirmation timestamp yet, so the estimate starts from
@@ -84,9 +96,6 @@ def _events(
         if tx.household_id == item.household_id
         and tx.item_id == item.item_id
         and tx.reason == reason
-        and (
-            tx.quantity_delta > 0 if reason == TransactionReason.PURCHASE else tx.quantity_delta < 0
-        )
         and window_start <= tx.created_at <= now
     ]
 
@@ -100,7 +109,7 @@ def _consumption_rate(consumed: list[Transaction], now: datetime) -> float | Non
     if not consumed:
         return None
     span = _days(min(tx.created_at for tx in consumed), now)
-    return sum(-tx.quantity_delta for tx in consumed) / span if span > 0 else None
+    return sum(abs(tx.quantity_delta) for tx in consumed) / span if span > 0 else None
 
 
 def _purchase_interval_rate(purchases: list[Transaction]) -> float | None:
@@ -110,7 +119,7 @@ def _purchase_interval_rate(purchases: list[Transaction]) -> float | None:
     if len(ordered) < 2:
         return None
     span = _days(ordered[0].created_at, ordered[-1].created_at)
-    return sum(tx.quantity_delta for tx in ordered[:-1]) / span if span > 0 else None
+    return sum(abs(tx.quantity_delta) for tx in ordered[:-1]) / span if span > 0 else None
 
 
 def estimate(
@@ -207,7 +216,7 @@ def _from_sufficiency(
         if a.answer == SufficiencyAnswer.ENOUGH and bought.created_at < a.answered_at < ran_low
     ]
     usage_min = _days(bought.created_at, still_enough[-1]) if still_enough else 0.0
-    daily = bought.quantity_delta / ((usage_min + usage_max) / 2)
+    daily = abs(bought.quantity_delta) / ((usage_min + usage_max) / 2)
 
     usage = dict(usage_days_min=usage_min, usage_days_max=usage_max)
     restocked = [tx for tx in ordered if tx.created_at >= ran_low]

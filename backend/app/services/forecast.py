@@ -5,7 +5,8 @@ it, otherwise from the interval between purchases, applied to the confirmed
 quantity.
 
 Portability: `estimate` reads only Transaction columns (household_id, item_id,
-reason, quantity_delta, created_at) and one confirmed quantity, and uses only
+reason, quantity_delta and, once its meaning is confirmed, created_at) and one
+confirmed quantity, and uses only
 filter/sum/min/max, so the same rule can run as a grouped SQL query over a lake
 table. Storage stays behind `TransactionHistory`; a lake or warehouse source is
 another adapter, and its engine and table format are B1/team decisions.
@@ -25,10 +26,33 @@ Data assumptions (PR #16 review):
   user's photos: the same item at the same storage place and stacking style, or
   a count compared within one photo, showing whether the amount went up or down.
   The rate is a trend, not an exact count; it never changes the confirmed quantity.
-- `created_at` is whatever the Transaction contract says it is; the forecast adds
-  no meaning of its own. `recorded_at` is not read. If the contract later
-  separates the two, only `_events`, `_consumption_rate` and
-  `_purchase_interval_rate` change.
+- `created_at` is not assumed to mean anything yet; see "Time semantics" below.
+
+Time semantics (UNCONFIRMED; time-based forecasts are paused):
+`contracts/README.md` requires `Transaction.created_at` but does not say whether it
+is when the event happened or when the system recorded it. Every window, ordering
+and interval in this module depends on that: a late-reported purchase would sit on
+the day it was entered, not the day it happened. Until the owners confirm it,
+`ForecastSettings.time_semantics_confirmed` is False and `estimate` never reads
+`created_at`: no time window, no sorting, no purchase interval and no "still
+enough?" bounds. Every item returns `insufficient_data` with no daily rate, no
+estimated empty date and no card. The two event counts are plain totals per item
+and reason, not windowed. The reason is documented here only, because
+`ItemForecast` accepts no unagreed field.
+
+Pending confirmation:
+- Question: is `created_at` the business event time, or the system recording time?
+- Who (inferred from AGENTS.md, not confirmed): B1 (persistence), C1 (workflows
+  that create Transactions) and A1 (operation identity), agreed by the team. The
+  contract is a shared file, so reviewers are jasonko13w or Cailum01.
+- Also assumes created_at, outside B2's files: B1's
+  `cosmos_read.build_transaction_query` (range filter and ORDER BY) and its
+  `/created_at` index.
+- To resume: once an approved contract entry states that `created_at` is the
+  business event time, cite it here, add a test with a late-reported Transaction,
+  and set `time_semantics_confirmed` to True. If the contract instead adds a
+  separate recording time, only `_events`, `_consumption_rate`,
+  `_purchase_interval_rate` and `_from_sufficiency` change.
 
 Open gaps:
 - Feature-only Transactions and links wait for D-6; only `item_id` is read.
@@ -70,6 +94,10 @@ class ForecastSettings:
     # P1, off by default: v8 §3.4 returns insufficient_data without guessing.
     use_sufficiency_check: bool = False
     use_household_reference: bool = False
+    # Off until the Transaction contract owners confirm what `created_at` means (see
+    # "Time semantics" above). While off, no calculation reads it and every item
+    # returns insufficient_data.
+    time_semantics_confirmed: bool = False
 
 
 class SufficiencyCheckHistory(Protocol):
@@ -86,17 +114,19 @@ def _events(
     item: InventoryItem,
     transactions: list[Transaction],
     reason: TransactionReason,
-    window_days: int,
+    window_days: int | None,
     now: datetime,
 ) -> list[Transaction]:
-    window_start = now - timedelta(days=window_days)
+    """Records of one item and reason. `window_days=None` applies no time window and
+    never reads `created_at`."""
+    window_start = None if window_days is None else now - timedelta(days=window_days)
     return [
         tx
         for tx in transactions
         if tx.household_id == item.household_id
         and tx.item_id == item.item_id
         and tx.reason == reason
-        and window_start <= tx.created_at <= now
+        and (window_start is None or window_start <= tx.created_at <= now)
     ]
 
 
@@ -130,12 +160,24 @@ def estimate(
     checks: list[SufficiencyCheck] | None = None,
 ) -> ItemForecast:
     """Prefer recorded consumption; fall back to purchase intervals, which users log
-    far more often, then (P1) to "still enough?" answers; otherwise insufficient data."""
+    far more often, then (P1) to "still enough?" answers; otherwise insufficient data.
+
+    While `settings.time_semantics_confirmed` is False, `created_at` is never read and
+    the result is always insufficient_data (see "Time semantics" in the module note)."""
+    timed = settings.time_semantics_confirmed
     consumed = _events(
-        item, transactions, TransactionReason.CONSUMPTION, settings.consumption_window_days, now
+        item,
+        transactions,
+        TransactionReason.CONSUMPTION,
+        settings.consumption_window_days if timed else None,
+        now,
     )
     purchases = _events(
-        item, transactions, TransactionReason.PURCHASE, settings.purchase_window_days, now
+        item,
+        transactions,
+        TransactionReason.PURCHASE,
+        settings.purchase_window_days if timed else None,
+        now,
     )
     base = dict(
         household_id=item.household_id,
@@ -146,6 +188,14 @@ def estimate(
         consumption_event_count=len(consumed),
         purchase_event_count=len(purchases),
     )
+    if not timed:
+        # No rate, no interval, no "still enough?" card and no guess: each of those
+        # would assume what created_at means.
+        return ItemForecast(
+            **base,
+            status=ForecastStatus.INSUFFICIENT_DATA,
+            suggested_action=SuggestedAction.NONE,
+        )
 
     method, daily = None, None
     if len(consumed) >= settings.min_consumption_events:

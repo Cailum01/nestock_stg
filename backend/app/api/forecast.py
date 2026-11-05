@@ -4,6 +4,9 @@ Routes and Agent tools share ForecastService. Responses are estimates and never
 change confirmed inventory. The history source sits behind `get_transaction_history`
 so the Cosmos adapter (or a later lake adapter) replaces the demo without changing
 these routes.
+
+Until the Transaction contract owners confirm what `created_at` means, every item
+returns `insufficient_data` (see "Time semantics" in services/forecast.py).
 """
 
 from collections.abc import Callable

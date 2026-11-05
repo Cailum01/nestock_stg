@@ -21,8 +21,14 @@ from app.services.forecast import (
 )
 
 NOW = datetime(2026, 3, 1, tzinfo=UTC)
+# created_at semantics are unconfirmed, so the default pauses every time-based estimate.
+# Tests of the estimate arithmetic opt in, as if the owners had confirmed that
+# created_at is the business event time.
+CONFIRMED = ForecastSettings(time_semantics_confirmed=True)
 # P1 extensions, off by default; tests of those paths opt in explicitly.
-P1 = ForecastSettings(use_sufficiency_check=True, use_household_reference=True)
+P1 = ForecastSettings(
+    time_semantics_confirmed=True, use_sufficiency_check=True, use_household_reference=True
+)
 
 
 def item(quantity=10.0, item_id="soy-sauce", household_id="demo"):
@@ -50,7 +56,7 @@ def tx(days_ago, delta, reason=TransactionReason.CONSUMPTION, item_id="soy-sauce
 
 
 def test_estimates_daily_rate_and_days_until_empty():
-    result = estimate(item(quantity=10), [tx(10, -2), tx(5, -3)], NOW)
+    result = estimate(item(quantity=10), [tx(10, -2), tx(5, -3)], NOW, CONFIRMED)
 
     assert result.status == ForecastStatus.ESTIMATED
     assert result.daily_consumption == pytest.approx(0.5)
@@ -62,14 +68,14 @@ def test_estimates_daily_rate_and_days_until_empty():
 
 
 def test_suggests_restock_within_reorder_days():
-    result = estimate(item(quantity=2), [tx(10, -2), tx(5, -3)], NOW)
+    result = estimate(item(quantity=2), [tx(10, -2), tx(5, -3)], NOW, CONFIRMED)
 
     assert result.days_until_empty == pytest.approx(4)
     assert result.suggested_action == SuggestedAction.CONSIDER_RESTOCK
 
 
 def test_one_purchase_and_no_consumption_is_insufficient_data():
-    result = estimate(item(), [tx(3, 1, reason=TransactionReason.PURCHASE)], NOW)
+    result = estimate(item(), [tx(3, 1, reason=TransactionReason.PURCHASE)], NOW, CONFIRMED)
 
     assert result.status == ForecastStatus.INSUFFICIENT_DATA
     assert result.suggested_action == SuggestedAction.NONE
@@ -91,14 +97,16 @@ def test_ignores_other_items_households_reasons_and_out_of_window_records():
         tx(-1, -50),
     ]
 
-    result = estimate(item(quantity=10), records, NOW)
+    result = estimate(item(quantity=10), records, NOW, CONFIRMED)
 
     assert result.consumption_event_count == 2
     assert result.daily_consumption == pytest.approx(0.5)
 
 
 def test_settings_change_threshold_without_changing_contract():
-    settings = ForecastSettings(consumption_window_days=7, reorder_days=30)
+    settings = ForecastSettings(
+        time_semantics_confirmed=True, consumption_window_days=7, reorder_days=30
+    )
 
     result = estimate(item(), [tx(10, -2), tx(5, -3)], NOW, settings)
 
@@ -112,7 +120,8 @@ def purchase(days_ago, delta):
 
 def test_falls_back_to_purchase_interval_without_consumption_records():
     # 2 + 2 bottles used between day 60 and day 0; the latest 2 are still on hand.
-    result = estimate(item(quantity=2), [purchase(60, 2), purchase(30, 2), purchase(0, 2)], NOW)
+    records = [purchase(60, 2), purchase(30, 2), purchase(0, 2)]
+    result = estimate(item(quantity=2), records, NOW, CONFIRMED)
 
     assert result.status == ForecastStatus.ESTIMATED
     assert result.method == ForecastMethod.PURCHASE_INTERVAL
@@ -124,37 +133,38 @@ def test_falls_back_to_purchase_interval_without_consumption_records():
 def test_consumption_records_take_priority_over_purchases():
     records = [tx(10, -2), tx(5, -3), purchase(60, 2), purchase(30, 2)]
 
-    result = estimate(item(quantity=10), records, NOW)
+    result = estimate(item(quantity=10), records, NOW, CONFIRMED)
 
     assert result.method == ForecastMethod.CONSUMPTION
     assert result.daily_consumption == pytest.approx(0.5)
 
 
 def test_one_consumption_record_still_uses_purchase_interval():
-    result = estimate(item(quantity=2), [tx(3, -1), purchase(60, 2), purchase(0, 2)], NOW)
+    records = [tx(3, -1), purchase(60, 2), purchase(0, 2)]
+    result = estimate(item(quantity=2), records, NOW, CONFIRMED)
 
     assert result.method == ForecastMethod.PURCHASE_INTERVAL
     assert result.daily_consumption == pytest.approx(2 / 60)
 
 
 def test_purchase_window_is_longer_than_consumption_window():
-    result = estimate(item(), [purchase(170, 2), purchase(100, 2)], NOW)
+    result = estimate(item(), [purchase(170, 2), purchase(100, 2)], NOW, CONFIRMED)
 
     assert result.method == ForecastMethod.PURCHASE_INTERVAL
-    assert estimate(item(), [purchase(200, 2), purchase(100, 2)], NOW).status == (
+    assert estimate(item(), [purchase(200, 2), purchase(100, 2)], NOW, CONFIRMED).status == (
         ForecastStatus.INSUFFICIENT_DATA
     )
 
 
 def test_same_day_purchases_are_insufficient_data():
-    result = estimate(item(), [purchase(5, 2), purchase(5, 1)], NOW)
+    result = estimate(item(), [purchase(5, 2), purchase(5, 1)], NOW, CONFIRMED)
 
     assert result.status == ForecastStatus.INSUFFICIENT_DATA
     assert result.suggested_action == SuggestedAction.NONE
 
 
 def test_zero_quantity_is_empty_now():
-    result = estimate(item(quantity=0), [tx(10, -2), tx(5, -3)], NOW)
+    result = estimate(item(quantity=0), [tx(10, -2), tx(5, -3)], NOW, CONFIRMED)
 
     assert result.days_until_empty == 0
     assert result.suggested_action == SuggestedAction.CONSIDER_RESTOCK
@@ -163,7 +173,7 @@ def test_zero_quantity_is_empty_now():
 def test_forecast_never_changes_confirmed_quantity():
     source = item(quantity=3)
 
-    result = estimate(source, [tx(10, -2), tx(5, -3)], NOW)
+    result = estimate(source, [tx(10, -2), tx(5, -3)], NOW, CONFIRMED)
 
     assert source.quantity == 3
     assert result.confirmed_quantity == 3
@@ -196,7 +206,7 @@ class FakeHistory:
 
 def test_service_reads_ports_and_estimates():
     history = FakeHistory([tx(10, -2), tx(5, -3)])
-    service = ForecastService(FakeInventory([item(quantity=10)]), history)
+    service = ForecastService(FakeInventory([item(quantity=10)]), history, CONFIRMED)
 
     result = asyncio.run(service.forecast_item("demo", "soy-sauce", NOW))
 
@@ -214,7 +224,7 @@ def test_service_rejects_unknown_or_other_household_item():
 def test_service_forecasts_every_household_item_with_one_history_read():
     history = FakeHistory([tx(10, -2), tx(5, -3)])
     items = [item(quantity=10), item(item_id="rice"), item(item_id="x", household_id="other")]
-    service = ForecastService(FakeInventory(items), history)
+    service = ForecastService(FakeInventory(items), history, CONFIRMED)
 
     results = asyncio.run(service.forecast_household("demo", NOW))
 
@@ -318,7 +328,9 @@ def test_not_enough_bounds_usage_days_and_suggests_restock():
 def test_window_moves_to_the_restock_after_not_enough():
     answers = [check(10, SufficiencyAnswer.NOT_ENOUGH)]
     # Two purchases would normally use the purchase interval; require three here.
-    settings = ForecastSettings(min_purchase_events=3, use_sufficiency_check=True)
+    settings = ForecastSettings(
+        time_semantics_confirmed=True, min_purchase_events=3, use_sufficiency_check=True
+    )
 
     result = estimate(
         item(quantity=2), [purchase(40, 2), purchase(8, 2)], NOW, settings, checks=answers
@@ -370,7 +382,7 @@ def test_p1_extensions_are_off_by_default():
 def test_default_ignores_answers_and_shows_no_card():
     answers = [check(20, SufficiencyAnswer.ENOUGH), check(10, SufficiencyAnswer.NOT_ENOUGH)]
 
-    result = estimate(item(quantity=1), [purchase(40, 2)], NOW, checks=answers)
+    result = estimate(item(quantity=1), [purchase(40, 2)], NOW, CONFIRMED, checks=answers)
 
     assert result.status == ForecastStatus.INSUFFICIENT_DATA
     assert result.suggested_action == SuggestedAction.NONE
@@ -382,7 +394,7 @@ def test_default_does_not_scale_reference_for_insufficient_items():
     shampoo = named("shampoo", "洗髮精", "ml")
     body_wash = named("body-wash", "沐浴乳", "ml", quantity=240)
     records = [item_purchase("shampoo", 60, 600), item_purchase("shampoo", 0, 600)]
-    service = ForecastService(FakeInventory([shampoo, body_wash]), FakeHistory(records))
+    service = ForecastService(FakeInventory([shampoo, body_wash]), FakeHistory(records), CONFIRMED)
 
     results = asyncio.run(service.forecast_household("demo", NOW))
 
@@ -396,12 +408,83 @@ def test_default_does_not_scale_reference_for_insufficient_items():
 def test_quantity_sign_does_not_change_the_estimate():
     """Reason decides the kind; the sign of quantity_delta is never read (PR #16)."""
     buy = TransactionReason.PURCHASE
-    signed = estimate(item(quantity=10), [tx(10, -2), tx(5, -3)], NOW)
-    unsigned = estimate(item(quantity=10), [tx(10, 2), tx(5, 3)], NOW)
+    signed = estimate(item(quantity=10), [tx(10, -2), tx(5, -3)], NOW, CONFIRMED)
+    unsigned = estimate(item(quantity=10), [tx(10, 2), tx(5, 3)], NOW, CONFIRMED)
     assert unsigned.daily_consumption == pytest.approx(signed.daily_consumption)
     assert unsigned.consumption_event_count == signed.consumption_event_count == 2
 
-    interval_signed = estimate(item(), [tx(30, 6, buy), tx(0, 6, buy)], NOW)
-    interval_flipped = estimate(item(), [tx(30, -6, buy), tx(0, -6, buy)], NOW)
+    interval_signed = estimate(item(), [tx(30, 6, buy), tx(0, 6, buy)], NOW, CONFIRMED)
+    interval_flipped = estimate(item(), [tx(30, -6, buy), tx(0, -6, buy)], NOW, CONFIRMED)
     assert interval_flipped.method == ForecastMethod.PURCHASE_INTERVAL
     assert interval_flipped.daily_consumption == pytest.approx(interval_signed.daily_consumption)
+
+
+# created_at semantics are unconfirmed (see "Time semantics" in app/services/forecast.py).
+
+
+def test_time_based_forecast_is_paused_by_default():
+    assert ForecastSettings().time_semantics_confirmed is False
+
+
+def test_unconfirmed_created_at_returns_insufficient_data_with_no_estimate():
+    records = [tx(10, -2), tx(5, -3), purchase(60, 2), purchase(30, 2)]
+
+    result = estimate(item(quantity=10), records, NOW)
+
+    assert result.status == ForecastStatus.INSUFFICIENT_DATA
+    assert result.suggested_action == SuggestedAction.NONE
+    assert result.method is None
+    assert result.daily_consumption is None
+    assert result.days_until_empty is None
+    assert result.estimated_empty_at is None
+    assert result.confirmed_quantity == 10
+
+
+def test_unconfirmed_created_at_is_never_read():
+    def undated(reason, delta):
+        # model_construct skips validation and leaves created_at unset, so any read of
+        # it raises AttributeError.
+        return Transaction.model_construct(
+            transaction_id=f"undated-{reason}-{delta}",
+            household_id="demo",
+            item_id="soy-sauce",
+            operation_id="op",
+            quantity_delta=delta,
+            reason=reason,
+        )
+
+    records = [
+        undated(TransactionReason.CONSUMPTION, -2),
+        undated(TransactionReason.CONSUMPTION, -3),
+        undated(TransactionReason.PURCHASE, 2),
+        undated(TransactionReason.PURCHASE, 2),
+    ]
+
+    result = estimate(item(), records, NOW)
+
+    assert result.status == ForecastStatus.INSUFFICIENT_DATA
+    # Plain totals per item and reason; no time window is applied.
+    assert (result.consumption_event_count, result.purchase_event_count) == (2, 2)
+
+
+def test_late_reported_transactions_do_not_change_an_unconfirmed_result():
+    # The same events, first entered on the day they happened, then entered only in the
+    # last two days. If created_at means the recording time, every date above moves.
+    on_time = [tx(10, -2), tx(5, -3), purchase(60, 2), purchase(30, 2)]
+    late = [tx(2, -2), tx(1, -3), purchase(2, 2), purchase(1, 2)]
+
+    assert estimate(item(quantity=10), on_time, NOW) == estimate(item(quantity=10), late, NOW)
+
+
+def test_unconfirmed_created_at_also_pauses_the_p1_extensions():
+    # Even with both P1 switches on, no card and no answer-based bound without a meaning
+    # for created_at; the user's answers are not turned into an estimate.
+    answers = [check(20, SufficiencyAnswer.ENOUGH), check(10, SufficiencyAnswer.NOT_ENOUGH)]
+    settings = ForecastSettings(use_sufficiency_check=True, use_household_reference=True)
+
+    result = estimate(item(quantity=1), [purchase(40, 2)], NOW, settings, checks=answers)
+
+    assert result.status == ForecastStatus.INSUFFICIENT_DATA
+    assert result.suggested_action == SuggestedAction.NONE
+    assert result.method is None
+    assert result.usage_days_min is None

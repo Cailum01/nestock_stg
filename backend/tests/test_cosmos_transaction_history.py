@@ -12,7 +12,7 @@ from app.services.cosmos_transaction_history import (
     CosmosTransactionHistory,
     create_transaction_history,
 )
-from app.services.forecast import ForecastService
+from app.services.forecast import ForecastService, ForecastSettings
 from app.services.interfaces import TransactionHistory
 from app.services.transaction_history import DemoTransactionHistory
 
@@ -89,9 +89,11 @@ def test_cosmos_history_rejects_records_from_another_household():
 
 def test_forecast_runs_on_cosmos_history():
     service, _ = history_over([purchase(30), purchase(75), purchase(120)])
+    # As if the owners had confirmed that created_at is the business event time.
+    confirmed = ForecastSettings(time_semantics_confirmed=True)
 
     (forecast,) = asyncio.run(
-        ForecastService(FakeInventory(), service).forecast_household(HOUSEHOLD, NOW)
+        ForecastService(FakeInventory(), service, confirmed).forecast_household(HOUSEHOLD, NOW)
     )
 
     assert forecast.status == ForecastStatus.ESTIMATED

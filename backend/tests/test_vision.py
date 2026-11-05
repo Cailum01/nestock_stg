@@ -283,3 +283,55 @@ async def test_azure_vision_service_offline_fallback():
     assert result.scene_type == SceneType.SINGLE_ITEM
     assert len(result.detected_items) >= 1
     assert result.detected_items[0].canonical_name == "高纖無糖豆漿"
+
+
+@pytest.mark.anyio
+async def test_azure_vision_service_ignores_empty_raw_name_items():
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    settings = VisionOpenAISettings(
+        endpoint="https://fake.openai.azure.com/",
+        api_key="valid-test-key",
+        deployment="gpt-4o",
+    )
+    inventory = DummyInventoryService([])
+    media = LocalStagingMediaStorage()
+    await media.simulate_client_upload("demo-household", "blob://demo/test.jpg", b"fake-image-bytes")
+    service = AzureOpenAIVisionService(settings, inventory, media, mock_fallback=False)
+
+    fake_response_json = {
+        "choices": [
+            {
+                "message": {
+                    "content": """{
+                        "scene_type": "single_item",
+                        "raw_text": "可口可樂",
+                        "items": [
+                            {"raw_name": ""},
+                            {"raw_name": "   "},
+                            {"raw_name": "可口可樂 330ml", "quantity": 1.0, "unit": "罐"}
+                        ]
+                    }"""
+                }
+            }
+        ]
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = fake_response_json
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        result = await service.analyze_image(
+            household_id="demo-household",
+            image_ref="blob://demo/test.jpg",
+        )
+
+    assert result.scene_type == SceneType.SINGLE_ITEM
+    # Empty ghost items must be safely filtered out
+    assert len(result.detected_items) == 1
+    assert result.detected_items[0].raw_detected_name == "可口可樂 330ml"
+    assert result.detected_items[0].canonical_name == "可口可樂"
+    assert result.detected_items[0].quantity == 1.0
+    assert result.detected_items[0].unit == "罐"
+    assert result.detected_items[0].unit_confirmed is True

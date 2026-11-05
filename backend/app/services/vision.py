@@ -270,17 +270,15 @@ class AzureOpenAIVisionService:
             detected_items: list[DetectedItem] = []
             for raw_item in parsed.get("items", []):
                 raw_name = raw_item.get("raw_name", "").strip()
-                if raw_name:
-                    norm = self._normalizer.normalize(raw_name)
-                    canonical_name = norm.canonical_name
-                    keywords = norm.feature_keywords
-                    qty = float(raw_item.get("quantity") or norm.quantity or 1.0)
-                    unit = raw_item.get("unit") or norm.unit
-                else:
-                    canonical_name = "未知名稱"
-                    keywords = []
-                    qty = float(raw_item.get("quantity") or 1.0)
-                    unit = raw_item.get("unit")
+                if not raw_name:
+                    # [DEFENSIVE_GUARD] Skip empty ghost items from LLM to maintain DetectedItem min_length=1 contract
+                    continue
+
+                norm = self._normalizer.normalize(raw_name)
+                canonical_name = norm.canonical_name
+                keywords = norm.feature_keywords
+                qty = float(raw_item.get("quantity") or norm.quantity or 1.0)
+                unit = raw_item.get("unit") or norm.unit
                 unit_confirmed = bool(unit)
 
                 matched_id = None

@@ -6,7 +6,7 @@ Generic operation values must not be dispatched directly to domain services.
 
 from enum import StrEnum
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, field_validator
 
 from app.models.base import ContractModel
 
@@ -31,8 +31,9 @@ class AgentRequest(ContractModel):
     image_ref: str | None = Field(default=None, min_length=1)
     """Optional opaque reference from POST /api/media/upload-authorization (A2).
 
-    The Agent cannot read images yet (Day 8). Before it does, the referenced media
-    must be verified to belong to household_id.
+    The Agent verifies the referenced media belongs to household_id before A2's
+    recognition reads it (open-decisions D-5); an unknown or foreign reference is
+    refused. Recognition results are display-only and write nothing.
     """
 
 
@@ -63,8 +64,40 @@ class AgentResponse(ContractModel):
 
 
 class ResumeRequest(ContractModel):
-    """Server must load and validate exact approved values; no client write payload."""
+    """Server must load and validate exact approved values; no client write payload.
+
+    One envelope for all three approval presentations (v8 section 12, D-10):
+    - single_action: no selection field.
+    - batch_action: approved_operation_ids lists the displayed operations the
+      user kept; operations left out are not written.
+    - purchase_options: selected_option_id is the one option the user chose.
+
+    When approved is false nothing is written and both selection fields are
+    ignored. Which field a presentation requires, and whether the IDs belong to
+    the stored approval, must be checked against the server-side approval, not
+    here.
+    """
 
     household_id: str
     approval_id: str
     approved: bool
+    approved_operation_ids: list[str] | None = Field(default=None, min_length=1)
+    selected_option_id: str | None = Field(default=None, min_length=1)
+
+    @field_validator("approved_operation_ids")
+    @classmethod
+    def _operation_ids_are_distinct(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        if any(not operation_id.strip() for operation_id in value):
+            raise ValueError("approved_operation_ids must not contain empty IDs")
+        if len(set(value)) != len(value):
+            raise ValueError("approved_operation_ids must not repeat an ID")
+        return value
+
+    @field_validator("selected_option_id")
+    @classmethod
+    def _option_id_not_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("selected_option_id must not be blank")
+        return value

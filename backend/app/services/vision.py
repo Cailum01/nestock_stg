@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
-from dotenv import load_dotenv
-
 from app.models.vision import (
     CandidateMatch,
     DetectedItem,
@@ -43,28 +41,26 @@ class VisionOpenAISettings:
 def load_vision_azure_settings(
     environment: Mapping[str, str] | None = None,
 ) -> VisionOpenAISettings | None:
-    """Load vision settings.
+    """Load vision settings without process-wide dotenv side-effects.
 
     Decoupled model strategy:
     1. Endpoint and API Key prioritize AZURE_OPENAI_VISION_*; fallback to AZURE_OPENAI_*.
     2. Deployment prioritizes AZURE_OPENAI_VISION_DEPLOYMENT; fallback to AZURE_OPENAI_DEPLOYMENT
        or default to 'gpt-4o'.
     """
-    if environment is None:
-        load_dotenv(BACKEND_DIR / ".env", override=False)
-        environment = os.environ
+    env = os.environ if environment is None else environment
 
     endpoint = (
-        environment.get("AZURE_OPENAI_VISION_ENDPOINT", "").strip()
-        or environment.get("AZURE_OPENAI_ENDPOINT", "").strip()
+        env.get("AZURE_OPENAI_VISION_ENDPOINT", "").strip()
+        or env.get("AZURE_OPENAI_ENDPOINT", "").strip()
     )
     api_key = (
-        environment.get("AZURE_OPENAI_VISION_API_KEY", "").strip()
-        or environment.get("AZURE_OPENAI_API_KEY", "").strip()
+        env.get("AZURE_OPENAI_VISION_API_KEY", "").strip()
+        or env.get("AZURE_OPENAI_API_KEY", "").strip()
     )
     deployment = (
-        environment.get("AZURE_OPENAI_VISION_DEPLOYMENT", "").strip()
-        or environment.get("AZURE_OPENAI_DEPLOYMENT", "").strip()
+        env.get("AZURE_OPENAI_VISION_DEPLOYMENT", "").strip()
+        or env.get("AZURE_OPENAI_DEPLOYMENT", "").strip()
         or "gpt-4o"
     )
 
@@ -271,7 +267,8 @@ class AzureOpenAIVisionService:
             for raw_item in parsed.get("items", []):
                 raw_name = raw_item.get("raw_name", "").strip()
                 if not raw_name:
-                    # [DEFENSIVE_GUARD] Skip empty ghost items from LLM to maintain DetectedItem min_length=1 contract
+                    # [DEFENSIVE_GUARD] Skip empty ghost items from LLM to maintain
+                    # DetectedItem min_length=1 contract.
                     continue
 
                 norm = self._normalizer.normalize(raw_name)

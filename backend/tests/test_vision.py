@@ -242,6 +242,17 @@ def test_load_vision_azure_settings_returns_none_when_empty():
     assert load_vision_azure_settings(environment={}) is None
 
 
+def test_load_vision_azure_settings_does_not_mutate_os_environ():
+    import os
+
+    marker = "TEST_ISOLATION_SENTINEL_NESTOCK"
+    if marker in os.environ:
+        del os.environ[marker]
+
+    load_vision_azure_settings(environment={})
+    assert marker not in os.environ
+
+
 def test_create_vision_service_falls_back_to_mock():
     inventory = DummyInventoryService([])
     media = LocalStagingMediaStorage()
@@ -296,7 +307,9 @@ async def test_azure_vision_service_ignores_empty_raw_name_items():
     )
     inventory = DummyInventoryService([])
     media = LocalStagingMediaStorage()
-    await media.simulate_client_upload("demo-household", "blob://demo/test.jpg", b"fake-image-bytes")
+    await media.simulate_client_upload(
+        "demo-household", "blob://demo/test.jpg", b"fake-image-bytes"
+    )
     service = AzureOpenAIVisionService(settings, inventory, media, mock_fallback=False)
 
     fake_response_json = {

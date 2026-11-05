@@ -77,9 +77,7 @@ def _create_vision_service(
 inventory_service, shopping_service, cosmos_read_repository = _create_read_composition()
 media_storage_service: MediaStorageService = LocalStagingMediaStorage()
 speech_service: SpeechToTextService = MockSpeechToTextService()
-vision_service: VisionService = _create_vision_service(
-    inventory_service, media_storage_service
-)
+vision_service: VisionService = _create_vision_service(inventory_service, media_storage_service)
 
 
 def get_inventory_service() -> InventoryService:

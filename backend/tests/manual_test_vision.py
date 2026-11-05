@@ -14,12 +14,15 @@ import asyncio
 import sys
 from pathlib import Path
 
-from app.core.dependencies import get_inventory_service
-from app.models.vision import SceneType
-from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
-from app.services.vision import AzureOpenAIVisionService, load_vision_azure_settings
-
 BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from app.core.dependencies import get_inventory_service  # noqa: E402
+from app.models.vision import SceneType  # noqa: E402
+from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage  # noqa: E402
+from app.services.vision import AzureOpenAIVisionService, load_vision_azure_settings  # noqa: E402
+
 FIXTURES_DIR = BACKEND_DIR / "tests" / "fixtures" / "vision"
 
 
@@ -79,6 +82,10 @@ async def run_single_test(
 
 
 async def main() -> None:
+    from dotenv import load_dotenv
+
+    load_dotenv(BACKEND_DIR / ".env", override=False)
+
     print("=" * 65)
     print("Nestock A2 視覺模型真實連線手動測試器 (Live Vision Runner)")
     print("=" * 65)
@@ -128,7 +135,7 @@ async def main() -> None:
             "場景 1：單一商品 (無提示，由模型自主推斷 scene_type 與清洗行銷贅字)",
         ),
         (
-            FIXTURES_DIR / "img_receipt.jpg",
+            FIXTURES_DIR / "146078.jpg",
             SceneType.RECEIPT,
             "場景 2：收據發票 (指定 receipt，多品項萃取、過濾發票金額與稅金)",
         ),

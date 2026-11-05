@@ -8,6 +8,9 @@
   household (open-decisions D-5). An unknown or foreign photo is refused before
   the model is called.
 - scene_type is passed only when the user hinted it; otherwise A2 decides.
+- A2 reports only what the photo shows. A1 decides which household item it is
+  (Issue #44): exact name/alias here, and the model compares an unmatched name
+  with the household item list in the same call (Issue #36 layers 2 and 3).
 - Recognition results are shown only. Nothing is written to inventory here.
 - Tools call the same services as the API routes (AGENTS.md architecture rule).
 """
@@ -30,7 +33,9 @@ from app.core.dependencies import (
     get_shopping_service,
 )
 from app.models.agent import AgentRequest, AgentResponse, AgentResult, ResultKind
+from app.models.domain import InventoryItem
 from app.models.vision import SceneType, VisionAnalysisResult
+from app.services.item_matching import ItemMatch, ItemMatcher, MatchMethod, match_term
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.vision import VisionService
 from app.tools.queries import QueryTools
@@ -44,6 +49,7 @@ PHOTO_NOT_SUPPORTED = (
 )
 PHOTO_ATTACHED = "使用者這次附了一張照片。請先呼叫 analyze_photo 看照片內容，再回答。"
 PHOTO_NOT_FOUND = "找不到這張照片，請重新拍一次或重新上傳。"
+LOW_CONFIDENCE = 0.6  # below this, the Agent says it is unsure (Issue #17)
 NO_PHOTO = "這次沒有附照片，無法辨識。"
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
@@ -110,23 +116,62 @@ def _scene(value: Any) -> SceneType | None:
         return None
 
 
-def _vision_for_model(result: VisionAnalysisResult) -> dict[str, Any]:
-    """Compact view for the model: what was seen and how it matches inventory."""
+def _match_view(match: ItemMatch) -> dict[str, Any]:
+    """A1's answer to "which household item is this?" for one detected item."""
+    view: dict[str, Any] = {"method": match.method.value}
+    item = match.matched
+    if item is not None:
+        view.update(item_id=item.item_id, item_name=item.name, item_unit=item.unit)
+    elif match.ambiguous:
+        view["choices"] = [
+            {"item_id": choice.item_id, "item_name": choice.name} for choice in match.items
+        ]
+    return view
+
+
+def _household_item_view(item: InventoryItem) -> dict[str, Any]:
+    return {
+        "item_id": item.item_id,
+        "name": item.name,
+        "aliases": list(item.aliases or []),
+        "unit": item.unit,
+    }
+
+
+def _vision_view(
+    result: VisionAnalysisResult,
+    matches: list[ItemMatch],
+    household_items: list[InventoryItem],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """(view for the model, data for the App).
+
+    Uses only what A2 observed plus A1's own matching; A2's matched_inventory_id,
+    candidate_matches and match_status are ignored so A2 can remove them (Issue #44).
+    """
     items = []
-    for item in result.detected_items:
+    for detected, match in zip(result.detected_items, matches, strict=True):
         items.append(
             {
-                "name": item.canonical_name,
-                "quantity": item.quantity,
-                "unit": item.unit if item.unit_confirmed else None,
-                "unit_confirmed": item.unit_confirmed,
-                "confidence": item.confidence,
-                "match_status": item.match_status.value,
-                "matched_inventory_id": item.matched_inventory_id,
-                "candidates": [candidate.name for candidate in item.candidate_matches],
+                "name": detected.canonical_name,
+                "seen_as": detected.raw_detected_name,
+                "quantity": detected.quantity,
+                "unit": detected.unit if detected.unit_confirmed else None,
+                "unit_confirmed": detected.unit_confirmed,
+                "confidence": detected.confidence,
+                "low_confidence": detected.confidence < LOW_CONFIDENCE,
+                "match": _match_view(match),
             }
         )
-    return {"scene_type": result.scene_type.value, "items": items}
+    data: dict[str, Any] = {
+        "image_ref": result.image_ref,
+        "scene_type": result.scene_type.value,
+        "items": items,
+    }
+    model_view: dict[str, Any] = {"scene_type": result.scene_type.value, "items": items}
+    if any(match.method == MatchMethod.NONE for match in matches):
+        # Layer 3: the model compares unmatched names with the household's items.
+        model_view["household_items"] = [_household_item_view(i) for i in household_items]
+    return model_view, data
 
 
 def _text(message: AnyMessage) -> str:
@@ -144,6 +189,7 @@ class ReadAgent:
         system_prompt: str,
         vision: VisionService | None = None,
         media: MediaStorageService | None = None,
+        matcher: ItemMatcher | None = None,
     ) -> None:
         self._model = model.bind_tools(TOOL_SCHEMAS)
         self._handlers: dict[str, Callable[[str], Awaitable[list[Any]]]] = {
@@ -153,6 +199,7 @@ class ReadAgent:
         self._system_prompt = system_prompt
         self._vision = vision
         self._media = media
+        self._matcher = matcher or ItemMatcher(tools.inventory, tools.shopping)
         self._graph = self._build_graph()
 
     @property
@@ -201,11 +248,17 @@ class ReadAgent:
         image_ref = state.get("image_ref")
         if not image_ref or self._vision is None:
             return NO_PHOTO, None
+        household_id = state["household_id"]
         result = await self._vision.analyze_image(
-            state["household_id"], image_ref, _scene(args.get("scene_type"))
+            household_id, image_ref, _scene(args.get("scene_type"))
         )
-        content = json.dumps(_vision_for_model(result), ensure_ascii=False)
-        return content, result.model_dump(mode="json")
+        household_items = await self._matcher.household_items(household_id)
+        matches = [
+            match_term(detected.canonical_name, household_items)
+            for detected in result.detected_items
+        ]
+        model_view, data = _vision_view(result, matches, household_items)
+        return json.dumps(model_view, ensure_ascii=False), data
 
     async def respond(self, request: AgentRequest) -> AgentResponse:
         messages: list[AnyMessage] = [SystemMessage(self._system_prompt)]

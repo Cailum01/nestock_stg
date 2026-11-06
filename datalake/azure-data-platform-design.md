@@ -4,8 +4,11 @@
 and labels unresolved items as proposals or future work
 **Scope:** Persistence and storage boundaries for multimodal user input, inventory,
 transactions, descriptive notes, and future Agent workflows
-**Implementation status:** Documentation only. Skeleton v1 must remain offline and
-must not connect to Azure or implement persistence.
+**Implementation status:** The backend defaults to offline demo data, but its
+approved, opt-in, Entra-authenticated Cosmos path performs read-only Inventory,
+Shopping, and forecast/TransactionHistory reads when all `NESTOCK_COSMOS_*`
+settings are supplied. Offline-testable write primitives exist; no domain write
+workflow or Azure write integration is connected.
 
 This document records initial design decisions and their adjustment points. It is
 an implementation guide for AI-assisted development, not a second API schema.
@@ -27,7 +30,7 @@ approved as a domain-model change.
 | Item resolution | Resolve an item before creating a Transaction; existing item aliases may be extended through an approved operation | A1 selected layered matching in Issue #36; alias mutation remains part of the future approved write flow |
 | Inventory removal | Soft-delete inventory records; retain IDs and transaction history | Distinct from personal-data erasure and Blob retention |
 | Family member preferences | Keep household inventory shared and store `like` / `dislike` per member and item; missing preference means `normal` | Requires an approved identity/membership feature; excluded from Skeleton v1 |
-| Forecast evaluation | P0 uses B2's offline, read-only historical backtesting; no evaluation record is persisted | Any future persisted evaluation requires a new B2 proposal and authorization/read-boundary review |
+| Forecast evaluation | P0 uses B2's read-only historical backtesting; no evaluation record is persisted | Any future persisted evaluation requires a new B2 proposal and authorization/read-boundary review |
 | Authorization | No client-supplied value or model output authorizes a write; approval is validated server-side | Approval protocol is jointly owned with A1 and affected domain owners |
 | Retention and limits | Use centralized, environment-configured pilot defaults; do not hard-code policy throughout services | Product/legal decisions can change defaults without changing the storage model |
 
@@ -88,9 +91,9 @@ Agent adapters.
 
 - Connecting to cloud services for writes or media/analytics processing.
   Exception: the explicitly approved, opt-in, Entra-authenticated, read-only
-  Cosmos adapter for Inventory and Shopping may be used for development
-  validation; it is disabled by default and does not authorize users or enable
-  transaction-history reads.
+  Cosmos path for Inventory, Shopping, and forecast/TransactionHistory reads may
+  be used for development validation; it is disabled by default and does not
+  authorize users or enable writes.
 - Connecting the backend to Blob Storage, ADLS Gen2, Azure AI services, queues,
   or any other cloud service beyond that read-only Cosmos exception.
 - Implementing authentication, accounts, household membership, member
@@ -726,6 +729,27 @@ Transaction; if the item or system unit cannot be identified confidently, ask a
 follow-up question rather than writing an unresolved Transaction. A2's proposed
 versioned unit whitelist remains subject to owner agreement; no global unit
 registry or general conversion engine is implied.
+
+#### P0 countable quantities and Shopping Intent (Issue #52)
+
+Issue #52 is closed with the following cross-owner P0 contract. Persisted
+`InventoryItem.quantity` and `Transaction.quantity_delta` use integers for
+countable inventory units. `ShoppingItem.quantity` is an optional integer and
+`ShoppingItem.unit` is optional: a Shopping entry may contain only its `name`,
+and omitting quantity must not silently default it to `1`. This does not make
+weight or volume package specifications inventory quantities, and it does not
+constrain B2's calculated forecast values to integers.
+
+Keep the planned Shopping quantity distinct from the actual purchased quantity.
+On purchase completion, only the user-confirmed actual integer quantity updates
+Inventory and the purchase Transaction; the original planned quantity remains
+on the completed Shopping entry. If no planned quantity was supplied, do not
+invent one. Agent additions retain their HITL confirmation; a Direct Shopping
+UI submission is explicit user intent but still requires backend validation and
+must report success only after persistence. Both entry paths use C1's shared
+ShoppingService. Stable request identity and its binding to operation IDs,
+approvals, and receipts remain part of the cross-owner integration tracked by
+Issue #60.
 
 B2 has identified a possible need for an authoritative time marking when an
 Inventory quantity was last confirmed, distinct from general `updated_at`.

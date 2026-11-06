@@ -40,8 +40,8 @@ configuration/policy location and make them overrideable per environment.
 | Setting | Initial default | Notes |
 | --- | --- | --- |
 | Unattached, abandoned upload | Delete after 24 hours | Uploads not associated with an accepted input/processing record |
-| Original media after successful processing | Retain for 90 days | Delete earlier on a valid user deletion request |
-| Media explicitly attached to a saved business record | Retain while the attachment is active | Deleting/detaching the record must apply the documented deletion workflow |
+| Orphaned media after processing | Delete within 24 hours | Includes media that was never attached to a confirmed business record |
+| Original media attached to a confirmed business record | Retain while the attachment is active | Deleting/detaching the record must apply the documented deletion workflow |
 | Text notes and confirmed domain records | Retain until user deletion or an approved product retention policy says otherwise | Do not apply the raw-media TTL to notes or transactions |
 | Image size | 20 MiB maximum | Validate actual bytes and decoded format |
 | Audio size / duration | 25 MiB / 10 minutes maximum | Limits are configurable; reject unsupported inputs explicitly |
@@ -223,6 +223,10 @@ and a stable Cosmos `id` on each record. This keeps the initial inventory update
 transaction, operation receipt, and change event eligible for a same-container,
 same-logical-partition transactional batch.
 
+Enable Cosmos TTL on this container with default TTL `-1`, so records with a
+finite per-document `ttl` expire while records without one are retained.
+TTL is cleanup only and must not replace authorization or approval-expiry checks.
+
 This is a starting point for the expected household-scoped workload, not a
 forever-scale guarantee. A household partition can become a storage or throughput
 hotspot. Measure real workload before adding containers or changing the partition
@@ -290,8 +294,10 @@ flow is implemented.
 The offline write-repository boundary can point-read a `pending_approval` by
 `household_id` and `approval_id`, returning the stored document and Cosmos ETag
 for a caller to compose an ETag-conditional replace into the same transactional
-batch as related writes. This primitive does not define approval states or
-transitions and is not wired to an Azure SDK write adapter.
+batch as related writes. With a household-scoped query client, it can also list
+`pending` and `confirmed` approvals for the household and return their documents
+and ETags to the A1 lifecycle service. This primitive does not define approval
+states or transitions and is not wired to an Azure SDK write adapter.
 
 Per the decision in the closed [Issue #39](https://github.com/nestock-app/nestock/issues/39),
 confirmation expiry is 30 minutes and must remain configurable rather than
@@ -338,9 +344,15 @@ service is not yet implemented.
 
 If receipt state and related domain records disagree, stop automatic writes.
 Do not infer whether an operation committed from current Inventory quantity
-alone, and do not retry under a newly generated operation ID. A1/C1 own the
-user-facing recovery flow and must define the authoritative reconciliation
-outcome with B1 before wiring `complete_purchase` or approval resume.
+alone, and do not retry under a newly generated operation ID. C1 confirmed the
+MVP policy in Issue #27: stop business writes, report
+`reconciliation-required`, and do not auto-repair partial receipts or mismatched
+domain data. A completed approval returns its stored outcome; a confirmed
+approval with no receipts may retry under the lifecycle using the same
+selection and operation IDs. A changed target requires fresh confirmation.
+A1/C1 own the user-facing recovery flow; there is no automated reconciliation
+service yet. Confirm implementation alignment and test the integrated path
+before wiring `complete_purchase` or approval resume.
 
 ### 6.3 Notes and relationships
 
@@ -548,11 +560,19 @@ distinguishable from explicitly removed items. The marker is storage metadata,
 not a new public Pydantic field or status. A household-scoped conditional update
 must preserve the record and its identity.
 
-The domain behavior above is agreed, not approval to implement writes. The
-storage representation is B1's proposal for C1 integration. Approval-state
-participation in the business batch and recovery when a batch has an unexpected
-receipt/data mismatch still require B1/C1/A1 coordination. Do not silently
-assign a new operation identity to work whose prior outcome is unknown.
+The domain behavior above is agreed, not approval to implement domain writes.
+In Issue #27, C1 accepted B1's storage-only `deleted_at` representation for
+manual removal. A future removal must validate household scope, server-side
+approval and target version, then apply the ETag-conditional marker and
+necessary operation receipt in the same household batch. It does not change
+Inventory, create a purchase or Transaction, or reverse existing history.
+
+Approval-state participation in the business batch is settled in
+[`contracts/approval-lifecycle.md`](../contracts/approval-lifecycle.md). C1
+also confirmed the recovery policy for an unexpected partial receipt or
+receipt/domain mismatch: stop, report `reconciliation-required`, and do not
+auto-repair or assign a new operation identity. These decisions do not mean
+that a domain write adapter or user-facing recovery flow is implemented.
 
 #### C2 confirmation UI integration boundary
 
@@ -737,9 +757,11 @@ B1 proposes representing explicit Shopping removal with the same storage-only
 `deleted_at` marker on the `shopping_item` document, rather than adding a third
 public Shopping status or physically deleting the record. The active Shopping
 List read returns only `pending` records without a deletion marker; completed
-entries remain distinguishable from explicitly removed entries. If C1 agrees,
-the write operation should use the household partition and an ETag condition to
-avoid removing a stale item.
+entries remain distinguishable from explicitly removed entries. C1 accepted
+this representation in Issue #27. When implemented, removal must use the
+household partition, validate the approval and target version, and conditionally
+write the marker with its operation receipt in the same batch to avoid removing
+a stale item.
 
 Reusing an old identity does not make its old on-hand quantity current. Require a
 fresh user-confirmed quantity before treating a restored item as current. Keep

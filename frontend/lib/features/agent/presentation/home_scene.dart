@@ -131,7 +131,7 @@ class HomeScene extends StatelessWidget {
                                   children: [
                                     Positioned.fill(
                                       child: Image.asset(
-                                        'assets/images/objects/thought_bubble.png',
+                                        'assets/images/ui/thought_bubble.png',
                                         fit: BoxFit.contain,
                                         excludeFromSemantics: true,
                                       ),
@@ -300,7 +300,7 @@ class HomeScene extends StatelessWidget {
                         children: [
                           Positioned.fill(
                             child: Image.asset(
-                              'assets/images/objects/thought_bubble.png',
+                              'assets/images/ui/thought_bubble.png',
                               fit: BoxFit.contain,
                               excludeFromSemantics: true,
                             ),

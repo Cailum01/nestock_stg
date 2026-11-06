@@ -676,15 +676,17 @@ the current read-only scope.
 
 #### Forecast test connectivity (PR #53)
 
-The accepted development decision is that forecast API integration tests use
-the configured read-only Cosmos data path whenever all `NESTOCK_COSMOS_*`
-settings are present. Do not override the Inventory or TransactionHistory
-dependencies to force demo services in this Cosmos-configured test mode. Use
-synthetic development records and do not assume demo-only records such as
-`demo-rice` exist in the configured container. Without Cosmos settings, the
-existing demo fallback remains available. This decision permits read-only
-development access only; it does not authorize test writes or other cloud
-connections.
+The team meeting explicitly decided that forecast API integration tests use the
+real configured Cosmos DB through the read-only data path whenever all
+`NESTOCK_COSMOS_*` settings are present. Earlier generic offline-only wording did
+not capture this decision and blocked AI development; this subsection is the
+current guidance and supersedes that interpretation. Do not override the
+Inventory or TransactionHistory dependencies to force demo services in this
+Cosmos-configured test mode. Use synthetic development records, keep household
+scope, and do not assume demo-only records such as `demo-rice` exist in the
+configured container. Without Cosmos settings, the existing demo fallback
+remains available. This decision permits read-only development access only; it
+does not authorize test writes or other cloud connections.
 
 Use the partition key and record type in queries. Add composite/range indexes only
 when a concrete query and measured workload justify them. Keep indexing policy in
@@ -1027,10 +1029,12 @@ When an AI agent implements a task from this document:
    `contracts/README.md` first. Confirm the user's owner code.
 2. Change only paths owned by that owner. Do not modify shared contracts or
    another owner's paths without explicit approval.
-3. Keep the default skeleton offline. The approved opt-in, read-only Cosmos
-   development path covers Inventory, Shopping, and the forecast API when
-   `NESTOCK_COSMOS_*` is configured. Do not add other cloud connections or
-   write-capable cloud access without an explicit decision.
+3. Keep the default skeleton offline when Cosmos is not configured. When all
+   `NESTOCK_COSMOS_*` settings are configured, use the actual Cosmos DB through
+   the approved read-only development path for Inventory, Shopping, and forecast
+   API reads/tests. Use synthetic test data and preserve household scope. Do not
+   add other cloud connections or write-capable cloud access without an explicit
+   decision.
 4. Treat examples and proposed storage envelopes as design guidance, not public
    schemas. Pydantic domain models remain authoritative.
 5. Never infer confirmation or approval from OCR, transcription, a model result,

@@ -22,7 +22,7 @@ approved as a domain-model change.
 | Text input and notes | Store as scoped records in Cosmos when the user action requires persistence | Separate Agent conversation history remains an A1 decision |
 | Data Lake | Do not require or deploy it for the first implementation | Add ADLS Gen2 only when analytics, long-term event replay, or a formal audit requirement justifies it |
 | Multimodal processing | Keep original media, bounded derived observations, and business records separate | A2's input/artifact metadata and processing lifecycle remain proposals; long-running task persistence is outside the current MVP |
-| Inventory and shopping writes | Persist the approved domain changes, transaction, operation receipt, and change event atomically within one household partition | Cosmos SDK write adapter and domain workflows are not implemented |
+| Inventory and shopping writes | Persist the approved domain changes, transaction, operation receipt, and change event atomically within one household partition | Generic Cosmos SDK batch client exists, but no domain write workflow is connected |
 | Transaction history | B2 reads raw transactions through B1's household-scoped repository; B1 does not pre-aggregate | `item_id` remains required; no feature-only transaction or transaction-item link is in the selected contract |
 | Item resolution | Resolve an item before creating a Transaction; existing item aliases may be extended through an approved operation | A1 selected layered matching in Issue #36; alias mutation remains part of the future approved write flow |
 | Inventory removal | Soft-delete inventory records; retain IDs and transaction history | Distinct from personal-data erasure and Blob retention |
@@ -70,8 +70,8 @@ item preferences, but does not implement household accounts or membership.
   household-scoped source records and query filters, not forecast-ready summaries.
 - **C1** owns ShoppingService behavior and `complete_purchase`. The initial
   same-household-partition batch boundary is agreed for the workflow described
-  in Issue #27; the mutation service and Cosmos SDK write adapter are not yet
-  implemented.
+  in Issue #27; the generic Cosmos SDK batch client is not yet connected to a
+  mutation service.
 - **C2** owns frontend presentation and final wire mapping.
 
 For image perception, A2 services return observations and must not depend on
@@ -292,10 +292,14 @@ batch as operation receipts and domain writes; it cannot be performed through
 the approval-only replacement. TTL is supplied by the caller for cleanup and
 does not determine whether an approval is authorized or expired.
 
-These are offline-testable primitives only: no Azure SDK write adapter, domain
-service, API, or Agent tool is connected. A1 owns approval lifecycle and
-validation; this document does not claim that a write or resume flow is
-implemented.
+The generic Azure SDK batch client converts create/ETag-replace operations to
+Cosmos transactional batches, enforces the 100-operation limit, and maps indexed
+409/412 conflicts to the repository conflict type. It logs request charge,
+operation count, conflict index/status, and duration without document contents.
+A read/write factory creates both repositories over one container/client.
+Neither is wired into application composition, a domain service, API, or Agent
+tool; this is not an approval or business-write workflow. A1 owns approval
+lifecycle and validation, and no resume flow is implemented.
 
 Per the decision in the closed [Issue #39](https://github.com/nestock-app/nestock/issues/39),
 confirmation expiry is 30 minutes and must remain configurable rather than
@@ -462,8 +466,8 @@ from `read_pending_approval()`, and bind retries to the exact operation membersh
 and shared batch writes with a batch fingerprint. A partial set of existing
 receipts stops with a reconciliation error instead of applying the batch. These
 are storage primitives, not a recovery policy: they do not compare receipts with
-Inventory, Shopping, or Transaction state, and are not wired to an Azure SDK
-write adapter or domain service.
+Inventory, Shopping, or Transaction state. The generic Azure SDK batch client
+exists but is not wired to a domain service, API, or Agent tool.
 
 Transaction signs, unit conversions, and quantity arithmetic policy remain
 domain decisions; persistence must store the already validated domain operation,

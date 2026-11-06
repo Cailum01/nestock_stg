@@ -1,7 +1,8 @@
-"""Offline-testable Cosmos transactional write primitives.
+"""Offline-testable Cosmos transactional write repository.
 
 The domain service must validate the operation and approval before calling this
-repository. This module is not wired into the application or a Cosmos SDK.
+repository. Its Azure SDK client lives in ``cosmos_sdk`` and is not wired into
+application composition.
 """
 
 import hashlib

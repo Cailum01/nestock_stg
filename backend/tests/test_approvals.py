@@ -42,6 +42,10 @@ T0 = datetime(2026, 11, 6, 6, 0, tzinfo=timezone.utc)
 DAY = 24 * 60 * 60
 
 
+class ApprovalIdConflict(Exception):
+    """Stands in for PR #54's error: same approval_id, different content."""
+
+
 class Stored:
     def __init__(self, document, etag):
         self.document = document
@@ -54,6 +58,8 @@ class FakeStorage:
         self.receipts = {}
         self.batches = []
         self.batch_attempts = 0
+        self.create_attempts = 0
+        self.lose_next_create_response = False
         self._counter = 0
         self.fail_next_batch = None
         self.lose_next_batch_response = False
@@ -75,13 +81,22 @@ class FakeStorage:
         return self.docs[(household_id, f"pending_approval:{approval_id}")]
 
     async def create_pending_approval(self, *, household_id, approval, ttl_seconds):
+        """Follows PR #54: the same card again returns it; different content is refused."""
         await asyncio.sleep(0)
         assert approval["household_id"] == household_id and approval["status"] == "pending"
         assert isinstance(ttl_seconds, int) and ttl_seconds > 0
-        assert (household_id, approval["id"]) not in self.docs
+        self.create_attempts += 1
         document = dict(approval)
         document["ttl"] = ttl_seconds
-        self.put(document)
+        current = self.docs.get((household_id, approval["id"]))
+        if current is not None:
+            if {k: v for k, v in current.items() if k != "_etag"} != document:
+                raise ApprovalIdConflict(approval["approval_id"])
+        else:
+            self.put(document)
+        if self.lose_next_create_response:
+            self.lose_next_create_response = False
+            raise TimeoutError("Lost response after the card was stored.")
         return await self.read_pending_approval(
             household_id=household_id, approval_id=approval["approval_id"]
         )
@@ -254,37 +269,35 @@ def plain_operation(name):
     return NewOperation(action="add_to_shopping_list", description=name, values={"name": name})
 
 
+def create(service, **card):
+    return asyncio.run(service.save(service.prepare(household_id=HOME, **card)))
+
+
 def make_single(service, etag):
-    return asyncio.run(
-        service.create(
-            household_id=HOME,
-            presentation=ApprovalPresentation.SINGLE_ACTION,
-            operations=[rice_operation(etag)],
-        )
+    return create(
+        service,
+        presentation=ApprovalPresentation.SINGLE_ACTION,
+        operations=[rice_operation(etag)],
     )
 
 
 def make_batch(service, names=("豆漿", "衛生紙", "洗衣精")):
-    return asyncio.run(
-        service.create(
-            household_id=HOME,
-            presentation=ApprovalPresentation.BATCH_ACTION,
-            operations=[plain_operation(name) for name in names],
-        )
+    return create(
+        service,
+        presentation=ApprovalPresentation.BATCH_ACTION,
+        operations=[plain_operation(name) for name in names],
     )
 
 
 def make_purchase(service):
-    return asyncio.run(
-        service.create(
-            household_id=HOME,
-            presentation=ApprovalPresentation.PURCHASE_OPTIONS,
-            operations=[plain_operation("衛生紙")],
-            options=[
-                NewOption(option_id="option_001", values={"store": "店家 A", "price": 99}),
-                NewOption(option_id="option_002", values={"store": "店家 B", "price": 109}),
-            ],
-        )
+    return create(
+        service,
+        presentation=ApprovalPresentation.PURCHASE_OPTIONS,
+        operations=[plain_operation("衛生紙")],
+        options=[
+            NewOption(option_id="option_001", values={"store": "店家 A", "price": 99}),
+            NewOption(option_id="option_002", values={"store": "店家 B", "price": 109}),
+        ],
     )
 
 
@@ -300,6 +313,10 @@ def cancel(service, record, **selection):
         household_id=HOME, approval_id=record.approval_id, approved=False, **selection
     )
     return asyncio.run(service.resume(request))
+
+
+def cards(storage):
+    return [key[1] for key in storage.docs if key[1].startswith("pending_approval:")]
 
 
 def stored_record(storage, record):
@@ -321,6 +338,67 @@ def test_create_stores_pending_card_with_server_ids_and_ttl():
     assert document["status"] == "pending"
     assert record.expires_at == T0 + timedelta(minutes=30)
     assert document["ttl"] == 30 * 60 + DAY
+
+
+def test_prepare_stores_nothing_until_save():
+    service, storage, _, _, etag = setup()
+    record = service.prepare(
+        household_id=HOME,
+        presentation=ApprovalPresentation.SINGLE_ACTION,
+        operations=[rice_operation(etag)],
+    )
+    assert not cards(storage)
+
+    saved = asyncio.run(service.save(record))
+
+    assert saved == record
+    assert cards(storage) == [f"pending_approval:{record.approval_id}"]
+
+
+def test_retrying_save_after_a_lost_response_keeps_one_card():
+    service, storage, _, _, etag = setup()
+    record = service.prepare(
+        household_id=HOME,
+        presentation=ApprovalPresentation.SINGLE_ACTION,
+        operations=[rice_operation(etag)],
+    )
+    storage.lose_next_create_response = True
+    with pytest.raises(TimeoutError):
+        asyncio.run(service.save(record))  # stored, but the reply was lost
+
+    saved = asyncio.run(service.save(record))  # the caller retries with the same card
+
+    assert saved == record
+    assert storage.create_attempts == 2
+    assert cards(storage) == [f"pending_approval:{record.approval_id}"]
+    assert confirm(service, saved).outcome is ResumeOutcome.COMPLETED
+    assert storage.docs[(HOME, RICE)]["quantity"] == 8  # added once
+
+
+def test_save_refuses_different_content_under_the_same_id():
+    service, storage, _, _, etag = setup()
+    record = make_single(service, etag)
+    before = dict(storage.card(record.approval_id))
+    changed = record.model_copy(
+        update={"operations": [record.operations[0].model_copy(update={"values": {"delta": 9}})]}
+    )
+
+    with pytest.raises(ApprovalIdConflict):
+        asyncio.run(service.save(changed))
+    assert storage.card(record.approval_id) == before
+
+
+def test_save_takes_only_pending_cards():
+    service, storage, _, _, etag = setup()
+    record = service.prepare(
+        household_id=HOME,
+        presentation=ApprovalPresentation.SINGLE_ACTION,
+        operations=[rice_operation(etag)],
+    )
+
+    with pytest.raises(ValueError):
+        asyncio.run(service.save(record.model_copy(update={"status": ApprovalStatus.CONFIRMED})))
+    assert not cards(storage)
 
 
 def test_lifetime_is_configurable():
@@ -346,20 +424,31 @@ def test_lifetime_is_configurable():
         ),
     ],
 )
-def test_create_rejects_card_shapes_outside_v8(presentation, operation_count, options):
+def test_prepare_rejects_card_shapes_outside_v8(presentation, operation_count, options):
     service, storage, _, _, _ = setup()
     operations = [plain_operation(f"item {n}") for n in range(operation_count)]
 
     with pytest.raises(ValueError):
-        asyncio.run(
-            service.create(
-                household_id=HOME,
-                presentation=presentation,
-                operations=operations,
-                options=options,
-            )
+        service.prepare(
+            household_id=HOME,
+            presentation=presentation,
+            operations=operations,
+            options=options,
         )
-    assert not [key for key in storage.docs if key[1].startswith("pending_approval:")]
+    assert not cards(storage)
+
+
+def test_option_values_may_not_carry_their_own_option_id():
+    service, storage, _, _, _ = setup()
+
+    with pytest.raises(ValueError, match="option_id"):
+        service.prepare(
+            household_id=HOME,
+            presentation=ApprovalPresentation.PURCHASE_OPTIONS,
+            operations=[plain_operation("衛生紙")],
+            options=[NewOption(option_id="o1", values={"option_id": "momo-123"})],
+        )
+    assert not cards(storage)
 
 
 def test_public_card_shows_operations_and_purchase_options():
@@ -375,6 +464,18 @@ def test_public_card_shows_operations_and_purchase_options():
         "option_001",
         "option_002",
     ]
+
+
+def test_public_card_always_shows_the_cards_own_option_id():
+    service, storage, _, _, _ = setup()
+    record = make_purchase(service)
+    document = dict(storage.card(record.approval_id))
+    document["options"][0]["values"]["option_id"] = "momo-123"  # written by other code
+
+    card = ApprovalService.to_pending_approval(ApprovalRecord.from_document(document))
+
+    shown = card.operations[0].values["options"]
+    assert [option["option_id"] for option in shown] == ["option_001", "option_002"]
 
 
 def test_document_round_trip_ignores_cosmos_system_fields():

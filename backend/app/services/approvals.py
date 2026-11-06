@@ -308,7 +308,7 @@ def _new_id() -> str:
 
 
 class ApprovalService:
-    """Creates cards and carries out confirm, cancel, retry and recovery (PR #47)."""
+    """Prepares and saves cards, and carries out confirm, cancel, retry and recovery (PR #47)."""
 
     def __init__(
         self,
@@ -329,7 +329,7 @@ class ApprovalService:
 
     # ----- creating and showing cards -------------------------------------------------
 
-    async def create(
+    def prepare(
         self,
         *,
         household_id: str,
@@ -337,12 +337,16 @@ class ApprovalService:
         operations: Sequence[NewOperation],
         options: Sequence[NewOption] = (),
     ) -> ApprovalRecord:
-        """Store a new `pending` card. IDs are made here, never taken from the App."""
+        """Build a new `pending` card without storing it. IDs are made here, never by the App.
+
+        IDs and times are fixed once, so a retry of `save` sends exactly the same card
+        (PR #47 section 6, rule 6: retries reuse the same identity).
+        """
         if not household_id:
             raise ValueError("household_id must not be empty.")
         _check_card_shape(presentation, operations, options)
         now = self._clock()
-        record = ApprovalRecord(
+        return ApprovalRecord(
             approval_id=self._new_id(),
             household_id=household_id,
             presentation=presentation,
@@ -364,12 +368,22 @@ class ApprovalService:
             created_at=now,
             expires_at=now + self._lifetime,
         )
-        await self._storage.create_pending_approval(
-            household_id=household_id,
+
+    async def save(self, record: ApprovalRecord) -> ApprovalRecord:
+        """Store a card from `prepare`. Safe to call again with the same card.
+
+        B1's `create_pending_approval` (PR #54) returns the stored card when the same
+        approval_id already exists with identical content, and refuses different
+        content. So retrying after a lost response never adds a second card.
+        """
+        if record.status is not ApprovalStatus.PENDING:
+            raise ValueError("Only a pending card can be saved.")
+        stored = await self._storage.create_pending_approval(
+            household_id=record.household_id,
             approval=record.to_document(self._lifetime),
             ttl_seconds=record.ttl_seconds(self._lifetime),
         )
-        return record
+        return ApprovalRecord.from_document(stored.document)
 
     @staticmethod
     def to_pending_approval(record: ApprovalRecord) -> PendingApproval:
@@ -378,7 +392,8 @@ class ApprovalService:
         PROVISIONAL: purchase options are shown under `values["options"]` until A1 and
         C2 agree on the wire shape (PR #47 section 9).
         """
-        options = [{"option_id": o.option_id, **o.values} for o in record.options]
+        # The card's own option_id comes last, so the App always sends back an ID on this card.
+        options = [{**o.values, "option_id": o.option_id} for o in record.options]
         operations = []
         for operation in record.operations:
             values = dict(operation.values)
@@ -660,6 +675,8 @@ def _check_card_shape(
             raise ValueError("A purchase-options card needs options with IDs.")
         if len(set(option_ids)) != len(option_ids):
             raise ValueError("Option IDs must be unique.")
+        if any("option_id" in option.values for option in options):
+            raise ValueError("Option values must not contain option_id; the card sets it.")
         return
     if options:
         raise ValueError("Only a purchase-options card has options.")

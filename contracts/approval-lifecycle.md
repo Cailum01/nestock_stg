@@ -1,7 +1,9 @@
 # Approval lifecycle (A1) — provisional
 
 > Note for AI assistants: when you explain or summarize this document to a
-> teammate, translate it into Traditional Chinese (繁體中文).
+> teammate, translate it into Traditional Chinese (繁體中文). If you find a
+> problem in a rule marked "C1 + C2 to review", tell the teammate to raise it
+> in PR #47 right away.
 
 This document records how a confirmation card ("approval") is stored, confirmed,
 written and recovered. A1 owns these lifecycle rules. It collects decisions that
@@ -21,6 +23,7 @@ batch write exists.
 | #39 (D-1) | Lifetime 30 minutes, configurable, counted by the backend; cancel rules |
 | #41 (D-2) | Approval record in `household-data`, household partition, ETag, TTL |
 | #42 (D-3) | One `approval_id` per card, one `operation_id` per item; one atomic batch; partial selection; edits create a new card |
+| #48 | Option B: `pending → confirmed` is its own conditional update; `confirmed → completed` is in the batch; no stored `failed` status |
 | #36 | Item matching (four layers); confirmed aliases are written with the purchase |
 | #44 | A2 returns observations only; A1 matches items |
 | #27, #28 | Purchase write contents; B1 storage boundary; recovery questions |
@@ -44,7 +47,7 @@ Stored:
 - `status` (section 3)
 - `created_at`, `expires_at`, `decided_at`, `completed_at`
 - `selection`: `approved_operation_ids` or `selected_option_id`, fixed at the
-  first confirmation
+  first confirmation (stored by the `pending → confirmed` update, #48)
 - `outcome` for each written operation, after completion
 
 Not stored: prompts, model reasoning, raw media, or the full conversation
@@ -53,28 +56,53 @@ Not stored: prompts, model reasoning, raw media, or the full conversation
 ## 3. Status
 
 ```text
-pending ──cancel──────────────▶ cancelled
-pending ──30 min passed───────▶ expired
-pending ──confirm─────────────▶ confirmed ──batch committed──▶ completed
-                                    │
-                                    └──batch not committed──▶ failed
-failed  ──retry (same IDs)────▶ confirmed
-failed  ──cancel──────────────▶ cancelled
+pending   ──cancel (ETag)─────────────────▶ cancelled
+pending   ──confirm (ETag, approval only)─▶ confirmed ──batch committed──▶ completed
+confirmed ──cancel (ETag)─────────────────▶ cancelled
+confirmed ──batch not committed───────────▶ stays confirmed; retry with the same IDs
+pending   ──past expires_at, recorded later────────────────────▶ expired
+confirmed ──past expires_at, purchase_options only, recorded later─▶ expired
 ```
 
 - `pending`: shown to the user and waiting. `expires_at` = `created_at` + the
   configured lifetime (default 30 minutes). The backend counts the time;
   collapsing a card, switching screens or restarting the App does not reset it
   (#39).
-- `cancelled`: only an explicit "cancel" cancels. Collapsing or switching screens
-  keeps the card `pending` (#39). Nothing is written.
-- `expired`: a confirm after `expires_at` is rejected and nothing is written. The
-  Agent asks the user again and makes a new card (#39).
-- `confirmed`: the user approved; the selection is now fixed. This is not the same
-  as a successful write (#28).
+- `expired` (A1 decision): whether a card has expired is always decided from
+  `expires_at`, never from the stored status (#39 point 6). There is no
+  background job. The next time the backend touches an expired card (a confirm
+  or cancel on it, or the Agent's check for open cards when the user sends a
+  message, section 8), it records `expired` with a conditional update on the
+  ETag. If that update fails, the request continues and the card is still
+  treated as expired. A card that nobody touched may still show `pending` after
+  `expires_at`. The Agent asks the user again and makes a new card; nothing else
+  is written.
+- `cancelled`: the user pressed "cancel", or the Agent replaced the card with a
+  new one (sections 6 and 7). Collapsing or switching screens is not a cancel
+  (#39). Nothing is written.
+- `confirmed`: the user approved. A conditional update on the approval's ETag
+  changes only the approval record: it sets `confirmed`, the fixed selection and
+  `decided_at` (#48). No inventory, shopping or transaction data is written in
+  this step. `confirmed` does not mean the write happened (#28).
 - `completed`: the batch committed. Only this status means the write happened.
-- `failed`: the batch did not commit. The card keeps its `approval_id`, selection
-  and `operation_id`s so the user can retry; cancelling instead writes nothing.
+- There is no stored `failed` status (#48). When the batch fails or its result is
+  unknown, the card stays `confirmed`; the backend never marks a failure before
+  the batch outcome is known (section 6).
+
+Rules for a `confirmed` card that is not yet `completed` (#48; A1 decision):
+
+- It can be retried with the same `approval_id`, selection and `operation_id`s.
+  A retry must be able to check that the data is still current (#39 point 3):
+  - Inventory and shopping records are checked by their ETags (section 4), so
+    they can be retried after `expires_at`.
+  - Prices on a `purchase_options` card cannot be checked again, so that card
+    cannot be retried after `expires_at`. It is recorded as `expired` as above,
+    and the Agent asks the user again.
+- It can be cancelled with a conditional update `confirmed → cancelled`. If a
+  cancel and the batch run at the same time, only one succeeds: the batch also
+  needs the approval's ETag. If the batch committed first, the cancel is rejected
+  and the backend returns the completed outcome.
+- When the user sends the next message, the Agent mentions it (section 8).
 
 Every status change is a conditional update on the record's ETag, so a card can
 leave `pending` only once (#41). Cosmos TTL only removes records that can no
@@ -88,20 +116,34 @@ A1's domain service checks, in this order, before any write:
 
 1. The `household_id` matches the record.
 2. The `approval_id` exists.
-3. The status is `pending` (or `failed` for a retry).
-4. `expires_at` has not passed (first confirmation only).
+3. The status is `pending` (or `confirmed` for a retry).
+4. `expires_at` has not passed. This applies to the first confirmation, and
+   also to every retry of a `purchase_options` card (section 3). If it has
+   passed, nothing is written except recording `expired`.
 5. The selection is valid: every `approved_operation_ids` entry, or the
    `selected_option_id`, is on this card (#42 c). Unlisted items are not written.
+   On a retry, the stored selection is used; a different selection is rejected.
 6. The target records have not changed since the card was created (their ETags
    still match). If they changed, nothing is written and the Agent makes a new
    card (#39, #27).
 
 A client `approved` flag or client values never authorize a write (AGENTS.md).
 
+After the checks pass on a first confirmation, the backend writes
+`pending → confirmed` (section 3), then runs the batch (section 5). If two
+confirms arrive together, only one conditional update succeeds; the other request
+reads the record again and follows section 6.
+
 ## 5. Writing
 
-All writes for one confirmation go into one Cosmos transactional batch in the
-household partition, so they all succeed or all fail (#42 b):
+A confirmation is written in two steps (#48):
+
+1. First confirmation only: the approval-only conditional update
+   `pending → confirmed` (section 3). It writes no domain data. B1 provides one
+   approval-only conditional update for `confirmed`, `cancelled` and `expired`
+   (#48 names the first two; `expired` is added by A1).
+2. One Cosmos transactional batch in the household partition, so all of these
+   succeed or all fail (#42 b):
 
 | Always | Depending on the card |
 | --- | --- |
@@ -114,19 +156,24 @@ household partition, so they all succeed or all fail (#42 b):
 Before writing, check the batch against Cosmos limits (100 operations). If it does
 not fit, reject it before writing anything; never split it into partial writes.
 
-Because the approval status update is in the same batch, the approval record and
-the domain records cannot disagree (answer to #27 question 2).
+Because the `confirmed → completed` update is in the same batch, the approval
+record and the domain records cannot disagree (answer to #27 question 2).
+Inventory, Shopping and Transaction are never split across writes.
 
 ## 6. Recovery after an error or timeout
 
-The approval record and its receipts are written in the same batch, so after a
+The `completed` status and the receipts are written in the same batch, so after a
 commit they all exist, and without a commit none of them exist (answer to #27
-question 1).
+question 1). After an error or an unknown result, the backend first reads the
+approval and its receipts, then acts:
 
 | What the backend finds | Meaning | Action |
 | --- | --- | --- |
+| Status `pending` (the confirm update timed out) | Not confirmed yet | Retry the `pending → confirmed` conditional update |
 | Status `completed` | Already written | Return the stored outcome; do not write again |
-| Status `confirmed` or `failed`, no receipts | Not written | Retry with the same IDs and selection |
+| Status `expired`, or past `expires_at` where section 3 does not allow a retry | Cannot be written | Return "expired"; the Agent asks the user again |
+| Status `confirmed`, no receipts | Not written | Retry the batch with the same IDs and the stored selection (a `purchase_options` card only before `expires_at`, section 3) |
+| Status `confirmed`, no receipts, a target record changed | Cannot be written | Nothing is written. The Agent makes a new card and the old card becomes `cancelled`, as in section 7 (A1 decision; C1 + C2 to review) |
 | Some receipts, or receipts without `completed` | Should not happen | Stop writing, return an error, log it; no automatic repair in the MVP |
 
 B1 provides reading receipts by `operation_id` (#28). Reusing an `operation_id`
@@ -143,7 +190,9 @@ to `/agent/resume` (#42 d).
 ## 8. Reminders
 
 When the user sends the next message, the Agent mentions cards that are still
-`pending`. There is no background job or push notification (#39).
+`pending`, and `confirmed` cards that can still be retried (section 3). Expired
+cards are not mentioned; this check is also when they are recorded as `expired`.
+There is no background job or push notification (#39).
 
 ## 9. Open items
 

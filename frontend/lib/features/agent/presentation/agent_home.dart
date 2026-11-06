@@ -9,6 +9,7 @@ import '../domain/agent_client.dart';
 import '../domain/agent_view_data.dart';
 import 'agent_result_card.dart';
 import 'approval_card.dart';
+import 'confirmation_card.dart';
 import 'agent_state.dart';
 import 'home_scene.dart';
 import '../../inventory/inventory_overlay.dart';
@@ -91,6 +92,7 @@ class _AgentHomeState extends State<AgentHome> {
   bool _workOpen = false;
   bool _inventoryOpen = false;
   bool _shoppingOpen = false;
+  ConfirmationDraftFocus? _confirmationDraftFocus;
   AgentState _state = AgentState.idle;
   bool get _busy => _state == AgentState.loading;
   Future<AgentReply> Function()? _retry;
@@ -201,9 +203,7 @@ class _AgentHomeState extends State<AgentHome> {
       final transcript = (await widget.speechClient.transcribe(bytes)).trim();
       if (!mounted) return;
       if (transcript.isEmpty) throw StateError('empty');
-      final current = _input.text;
-      _input.text = current.isEmpty ? transcript : '$current $transcript';
-      _input.selection = TextSelection.collapsed(offset: _input.text.length);
+      _applyTranscript(transcript);
     } catch (error) {
       if (mounted) {
         final message = switch (error) {
@@ -220,6 +220,26 @@ class _AgentHomeState extends State<AgentHome> {
     } finally {
       if (mounted) setState(() => _speechBusy = false);
     }
+  }
+
+  void _applyTranscript(String transcript) {
+    final draftFocus = _confirmationDraftFocus;
+    if (draftFocus != null &&
+        _workOpen &&
+        !_inventoryOpen &&
+        !_shoppingOpen &&
+        draftFocus.isCurrent) {
+      draftFocus.applyTranscript(transcript);
+      return;
+    }
+    _confirmationDraftFocus = null;
+    final current = _input.text;
+    _input.text = current.isEmpty ? transcript : '$current $transcript';
+    _input.selection = TextSelection.collapsed(offset: _input.text.length);
+  }
+
+  void _onConfirmationDraftFocusChanged(ConfirmationDraftFocus? draftFocus) {
+    _confirmationDraftFocus = draftFocus;
   }
 
   void _closeInventory() {
@@ -424,6 +444,18 @@ class _AgentHomeState extends State<AgentHome> {
                         items: entry.reply!.mockVisionItems!,
                         embedded: true,
                         onClose: () => setState(() => _workOpen = false),
+                      ),
+                    if (entry.reply!.mockConfirmationItems != null)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+                        child: ConfirmationCard(
+                          key: ValueKey('confirmation-${entry.reply}'),
+                          items: entry.reply!.mockConfirmationItems!,
+                          // Prototype controls intentionally have no side effects.
+                          onCancel: () {},
+                          onConfirm: () {},
+                          onDraftFocusChanged: _onConfirmationDraftFocusChanged,
+                        ),
                       ),
                   ],
                 ],

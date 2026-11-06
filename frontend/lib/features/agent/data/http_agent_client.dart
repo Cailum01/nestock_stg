@@ -24,7 +24,8 @@ class HttpAgentClient implements PhotoAwareAgentClient {
       _send(message, imageRef);
 
   Future<AgentReply> _send(String message, String? imageRef) async {
-    if (message == '/vision-demo' && imageRef == null) {
+    if ((message == '/vision-demo' || message == '/confirmation-demo') &&
+        imageRef == null) {
       return MockAgentClient().send(message);
     }
     final response = await client

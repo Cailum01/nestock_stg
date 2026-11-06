@@ -349,7 +349,8 @@ class _ConfirmationItem extends StatelessWidget {
                         if (editing)
                           Row(
                             children: [
-                              const Text('數量　　'),
+                              const Text('數量'),
+                              const SizedBox(width: 8),
                               SizedBox(
                                 width: 44,
                                 child: TextField(
@@ -375,7 +376,9 @@ class _ConfirmationItem extends StatelessWidget {
                                 ),
                               ),
                               const SizedBox(width: 4),
-                              Text(item.unit, style: detailStyle),
+                              Expanded(
+                                child: Text(item.unit, style: detailStyle),
+                              ),
                             ],
                           )
                         else

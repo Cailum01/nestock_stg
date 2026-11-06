@@ -23,6 +23,7 @@ class FakeDocumentClient:
     def __init__(self, documents):
         self.documents = documents
         self.calls = []
+        self.read_calls = []
 
     async def query_items(self, *, query, parameters, partition_key):
         self.calls.append(
@@ -33,6 +34,17 @@ class FakeDocumentClient:
             }
         )
         return self.documents
+
+    async def read_item(self, *, item_id, partition_key):
+        self.read_calls.append({"item_id": item_id, "partition_key": partition_key})
+        return next(
+            (
+                document
+                for document in self.documents
+                if document.get("id") == item_id and document.get("household_id") == partition_key
+            ),
+            None,
+        )
 
 
 @pytest.mark.parametrize(
@@ -370,3 +382,74 @@ def test_service_adapters_match_shared_list_items_interfaces():
     assert asyncio.run(CosmosShoppingService(shopping_repository).list_items("home")) == [
         shopping_item
     ]
+
+
+def test_shopping_list_hides_completed_and_soft_deleted_items():
+    pending = ShoppingItem(
+        shopping_item_id="pending-milk",
+        household_id="home",
+        name="Milk",
+        quantity=1,
+        unit="bottle",
+        status="pending",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    completed = ShoppingItem(
+        shopping_item_id="completed-rice",
+        household_id="home",
+        name="Rice",
+        quantity=1,
+        unit="bag",
+        status="completed",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    removed = ShoppingItem(
+        shopping_item_id="removed-tea",
+        household_id="home",
+        name="Tea",
+        quantity=1,
+        unit="box",
+        status="pending",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    client = FakeDocumentClient(
+        [
+            CosmosDocumentMapper.to_document(pending),
+            CosmosDocumentMapper.to_document(completed),
+            CosmosDocumentMapper.to_document(removed)
+            | {"deleted_at": "2026-01-02T00:00:00.000000Z"},
+        ]
+    )
+    repository = CosmosReadRepository(client)
+
+    results = asyncio.run(repository.list_shopping("home"))
+
+    assert results == [pending]
+    assert "c.status = @pending_status" in client.calls[0]["query"]
+    assert "NOT IS_DEFINED(c.deleted_at) OR IS_NULL(c.deleted_at)" in client.calls[0]["query"]
+    assert {"name": "@pending_status", "value": "pending"} in client.calls[0]["parameters"]
+
+
+def test_point_read_hides_soft_deleted_shopping_item_in_its_household():
+    item = ShoppingItem(
+        shopping_item_id="tea",
+        household_id="home",
+        name="Tea",
+        quantity=1,
+        unit="box",
+        status="pending",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    client = FakeDocumentClient(
+        [CosmosDocumentMapper.to_document(item) | {"deleted_at": "2026-01-02T00:00:00.000000Z"}]
+    )
+    repository = CosmosReadRepository(client)
+
+    result = asyncio.run(repository.read_shopping_item(household_id="home", shopping_item_id="tea"))
+
+    assert result is None
+    assert client.read_calls == [{"item_id": "shopping_item:tea", "partition_key": "home"}]

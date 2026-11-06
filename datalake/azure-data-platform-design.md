@@ -22,7 +22,7 @@ approved as a domain-model change.
 | Text input and notes | Store as scoped records in Cosmos when the user action requires persistence | Separate Agent conversation history remains an A1 decision |
 | Data Lake | Do not require or deploy it for the first implementation | Add ADLS Gen2 only when analytics, long-term event replay, or a formal audit requirement justifies it |
 | Multimodal processing | Keep original media, bounded derived observations, and business records separate | A2's input/artifact metadata and processing lifecycle remain proposals; long-running task persistence is outside the current MVP |
-| Inventory and shopping writes | Persist the approved domain changes, transaction, operation receipt, and change event atomically within one household partition | Cosmos SDK write adapter and domain workflows are not implemented |
+| Inventory and shopping writes | Persist the approved domain changes, transaction, operation receipt, and change event atomically within one household partition | Generic Cosmos SDK batch client exists, but no domain write workflow is connected |
 | Transaction history | B2 reads raw transactions through B1's household-scoped repository; B1 does not pre-aggregate | `item_id` remains required; no feature-only transaction or transaction-item link is in the selected contract |
 | Item resolution | Resolve an item before creating a Transaction; existing item aliases may be extended through an approved operation | A1 selected layered matching in Issue #36; alias mutation remains part of the future approved write flow |
 | Inventory removal | Soft-delete inventory records; retain IDs and transaction history | Distinct from personal-data erasure and Blob retention |
@@ -70,8 +70,8 @@ item preferences, but does not implement household accounts or membership.
   household-scoped source records and query filters, not forecast-ready summaries.
 - **C1** owns ShoppingService behavior and `complete_purchase`. The initial
   same-household-partition batch boundary is agreed for the workflow described
-  in Issue #27; the mutation service and Cosmos SDK write adapter are not yet
-  implemented.
+  in Issue #27; the generic Cosmos SDK batch client is not yet connected to a
+  mutation service.
 - **C2** owns frontend presentation and final wire mapping.
 
 For image perception, A2 services return observations and must not depend on
@@ -282,16 +282,24 @@ fields.
 Use ETag-conditional state changes so a waiting approval cannot be consumed
 twice. The approved record is in the same container and household partition as
 the related domain writes, so it can participate in the atomic batch when the
-final lifecycle protocol requires that. The exact coordination between approval
-state and business-write commit, and recovery after an unexpected outcome, still
-requires A1/B1/C1 alignment; this document does not claim that a write or resume
-flow is implemented.
+The offline write-repository boundary can create a household-scoped `pending`
+approval with a caller-supplied positive Cosmos `ttl`, point-read the record and
+ETag, and make approval-only ETag-conditional replacements to `confirmed`,
+`cancelled`, or `expired`. It rejects invalid transitions and conflicting reuse
+of an `approval_id`. The `pending → confirmed` update does not write domain data.
+The `confirmed → completed` transition remains part of the same transactional
+batch as operation receipts and domain writes; it cannot be performed through
+the approval-only replacement. TTL is supplied by the caller for cleanup and
+does not determine whether an approval is authorized or expired.
 
-The offline write-repository boundary can point-read a `pending_approval` by
-`household_id` and `approval_id`, returning the stored document and Cosmos ETag
-for a caller to compose an ETag-conditional replace into the same transactional
-batch as related writes. This primitive does not define approval states or
-transitions and is not wired to an Azure SDK write adapter.
+The generic Azure SDK batch client converts create/ETag-replace operations to
+Cosmos transactional batches, enforces the 100-operation limit, and maps indexed
+409/412 conflicts to the repository conflict type. It logs request charge,
+operation count, conflict index/status, and duration without document contents.
+A read/write factory creates both repositories over one container/client.
+Neither is wired into application composition, a domain service, API, or Agent
+tool; this is not an approval or business-write workflow. A1 owns approval
+lifecycle and validation, and no resume flow is implemented.
 
 Per the decision in the closed [Issue #39](https://github.com/nestock-app/nestock/issues/39),
 confirmation expiry is 30 minutes and must remain configurable rather than
@@ -458,8 +466,8 @@ from `read_pending_approval()`, and bind retries to the exact operation membersh
 and shared batch writes with a batch fingerprint. A partial set of existing
 receipts stops with a reconciliation error instead of applying the batch. These
 are storage primitives, not a recovery policy: they do not compare receipts with
-Inventory, Shopping, or Transaction state, and are not wired to an Azure SDK
-write adapter or domain service.
+Inventory, Shopping, or Transaction state. The generic Azure SDK batch client
+exists but is not wired to a domain service, API, or Agent tool.
 
 Transaction signs, unit conversions, and quantity arithmetic policy remain
 domain decisions; persistence must store the already validated domain operation,
@@ -482,12 +490,15 @@ proposal and approval.
 
 Per A1's proposal and B1's response on [Issue #28](https://github.com/nestock-app/nestock/issues/28),
 the current MVP does not persist separate Agent tasks; pending confirmation
-records are the persistence boundary. A1 proposed a lifecycle that distinguishes
-waiting, successful completion, cancellation, expiry, and failure, with retries
-reusing the same operation identity. Exact transitions and how approval state is
-committed consistently with domain writes still need A1/B1/C1 confirmation.
-Approval and successful execution are distinct facts: a user decision alone
-must never be reported as a completed write.
+records are the persistence boundary. The lifecycle is settled in
+[`contracts/approval-lifecycle.md`](../contracts/approval-lifecycle.md): the
+first `pending → confirmed` transition is an approval-only ETag update;
+`confirmed → completed` is atomic with domain writes and operation receipts;
+`cancelled` and `expired` are approval-only conditional updates; there is no
+stored `failed` status. Retries reuse the same approval and operation identities.
+Handling the unexpected partial-receipt/data-mismatch case remains open in
+Issue #27. Approval and successful execution are distinct facts: a user
+decision alone must never be reported as a completed write.
 
 A1 owns rejecting invalid or cross-household approval IDs before calling B1.
 Rejection performs no business write; cancelling after a committed write does
@@ -548,11 +559,13 @@ distinguishable from explicitly removed items. The marker is storage metadata,
 not a new public Pydantic field or status. A household-scoped conditional update
 must preserve the record and its identity.
 
-The domain behavior above is agreed, not approval to implement writes. The
-storage representation is B1's proposal for C1 integration. Approval-state
-participation in the business batch and recovery when a batch has an unexpected
-receipt/data mismatch still require B1/C1/A1 coordination. Do not silently
-assign a new operation identity to work whose prior outcome is unknown.
+The domain behavior above is agreed, not approval to implement domain writes.
+The storage representation for manual removal remains B1's proposal for C1
+integration. Approval-state participation in the business batch is settled in
+[`contracts/approval-lifecycle.md`](../contracts/approval-lifecycle.md);
+recovery when a batch has an unexpected partial-receipt/data mismatch still
+requires C1 confirmation in Issue #27. Do not silently assign a new operation
+identity to work whose prior outcome is unknown.
 
 #### C2 confirmation UI integration boundary
 

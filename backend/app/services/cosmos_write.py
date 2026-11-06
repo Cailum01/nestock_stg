@@ -1,7 +1,8 @@
-"""Offline-testable Cosmos transactional write primitives.
+"""Offline-testable Cosmos transactional write repository.
 
 The domain service must validate the operation and approval before calling this
-repository. This module is not wired into the application or a Cosmos SDK.
+repository. Its Azure SDK client lives in ``cosmos_sdk`` and is not wired into
+application composition.
 """
 
 import hashlib
@@ -26,6 +27,10 @@ class OperationIdConflict(Exception):
 
 class OperationReceiptInconsistency(Exception):
     """Only part of an expected multi-operation receipt set exists."""
+
+
+class ApprovalIdConflict(Exception):
+    """An approval ID already exists with different canonical values."""
 
 
 class WriteStatus(StrEnum):
@@ -90,6 +95,11 @@ def _pending_approval_id(approval_id: str) -> str:
     return f"pending_approval:{approval_id}"
 
 
+def _without_cosmos_system_properties(document: Mapping[str, object]) -> dict[str, object]:
+    system_properties = {"_attachments", "_etag", "_rid", "_self", "_ts"}
+    return {key: value for key, value in document.items() if key not in system_properties}
+
+
 def _canonical_fingerprint(
     operations: Sequence[BatchOperation],
 ) -> str:
@@ -138,6 +148,62 @@ class CosmosWriteRepository:
     def __init__(self, client: TransactionalBatchClient) -> None:
         self._client = client
 
+    async def create_pending_approval(
+        self,
+        *,
+        household_id: str,
+        approval: Mapping[str, object],
+        ttl_seconds: int,
+    ) -> PendingApprovalRecord:
+        if not household_id:
+            raise ValueError("household_id must not be empty.")
+        if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be a positive integer.")
+
+        approval_id = approval.get("approval_id")
+        if not isinstance(approval_id, str) or not approval_id:
+            raise ValueError("approval_id must not be empty.")
+        document_id = _pending_approval_id(approval_id)
+        if (
+            approval.get("id") != document_id
+            or approval.get("record_type") != "pending_approval"
+            or approval.get("household_id") != household_id
+            or approval.get("status") != "pending"
+        ):
+            raise ValueError(
+                "Pending approval must have a matching household, ID, and pending status."
+            )
+
+        document = _without_cosmos_system_properties(approval)
+        document["ttl"] = ttl_seconds
+        try:
+            await self._client.execute_batch(
+                partition_key=household_id,
+                operations=(CreateDocument(document),),
+            )
+        except BatchOperationConflict as conflict:
+            if conflict.operation_index != 0:
+                raise
+            created = await self.read_pending_approval(
+                household_id=household_id,
+                approval_id=approval_id,
+            )
+            if created is None:
+                raise
+            if _without_cosmos_system_properties(created.document) != document:
+                raise ApprovalIdConflict(
+                    f"approval_id {approval_id!r} already exists with different canonical values."
+                ) from conflict
+            return created
+
+        created = await self.read_pending_approval(
+            household_id=household_id,
+            approval_id=approval_id,
+        )
+        if created is None:
+            raise RuntimeError("Created pending approval could not be read back.")
+        return created
+
     async def read_pending_approval(
         self,
         *,
@@ -173,6 +239,71 @@ class CosmosWriteRepository:
             document=dict(document),
             etag=etag,
         )
+
+    async def replace_pending_approval(
+        self,
+        *,
+        household_id: str,
+        approval_id: str,
+        document: Mapping[str, object],
+        if_match_etag: str,
+    ) -> PendingApprovalRecord:
+        if not household_id:
+            raise ValueError("household_id must not be empty.")
+        if not approval_id:
+            raise ValueError("approval_id must not be empty.")
+        if not if_match_etag:
+            raise ValueError("if_match_etag must not be empty.")
+        if (
+            document.get("id") != _pending_approval_id(approval_id)
+            or document.get("record_type") != "pending_approval"
+            or document.get("household_id") != household_id
+            or document.get("approval_id") != approval_id
+        ):
+            raise ValueError("Replacement approval must match its household and identity.")
+        status = document.get("status")
+        if not isinstance(status, str) or status not in {"confirmed", "cancelled", "expired"}:
+            raise ValueError(
+                "Approval-only replacement status must be confirmed, cancelled, or expired."
+            )
+
+        current = await self.read_pending_approval(
+            household_id=household_id,
+            approval_id=approval_id,
+        )
+        if current is None:
+            raise ValueError("Pending approval does not exist.")
+        if current.etag != if_match_etag:
+            raise BatchOperationConflict(0)
+        current_status = current.document.get("status")
+        if not isinstance(current_status, str):
+            raise ValueError("Stored pending approval has no valid status.")
+        allowed_transitions = {
+            "pending": {"confirmed", "cancelled", "expired"},
+            "confirmed": {"cancelled", "expired"},
+        }
+        if status not in allowed_transitions.get(current_status, set()):
+            raise ValueError(
+                f"Approval status cannot transition from {current_status!r} to {status!r} "
+                "with an approval-only replacement."
+            )
+
+        await self._client.execute_batch(
+            partition_key=household_id,
+            operations=(
+                ReplaceDocument(
+                    document=_without_cosmos_system_properties(document),
+                    if_match_etag=if_match_etag,
+                ),
+            ),
+        )
+        updated = await self.read_pending_approval(
+            household_id=household_id,
+            approval_id=approval_id,
+        )
+        if updated is None:
+            raise RuntimeError("Replaced pending approval could not be read back.")
+        return updated
 
     async def read_operation_receipt(
         self,

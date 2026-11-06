@@ -171,7 +171,7 @@ class AzureOpenAIVisionService:
         settings: VisionOpenAISettings,
         inventory_service: InventoryService,
         media_storage: MediaStorageService,
-        mock_fallback: bool = True,
+        mock_fallback: bool = False,
     ) -> None:
         self.settings = settings
         self.inventory_service = inventory_service
@@ -219,7 +219,11 @@ class AzureOpenAIVisionService:
                 "You are an expert Taiwanese FMCG and retail product recognition system. "
                 "Extract recognized grocery/pantry items or receipt line items. "
                 'Output JSON with schema: {"scene_type": "single_item"|"pantry_scene"|"receipt", '
-                '"raw_text": str, "items": [{"raw_name": str, "quantity": float, "unit": str}]}. '
+                '"raw_text": str, "items": [{"raw_name": str, "quantity": float, '
+                '"unit": str, "confidence": float}]}. '
+                "For confidence, provide a float between 0.0 and 1.0 representing recognition "
+                "certainty (e.g., 0.95 for clearly visible items/text, "
+                "0.45 for blurry or occluded items). "
                 "For units, use standard Taiwanese units (瓶, 罐, 包, 盒, 袋, 入, 箱, 個) or null. "
                 "Remove marketing noise like 特價, 買一送一."
             )
@@ -309,6 +313,13 @@ class AzureOpenAIVisionService:
                         if len(candidate_matches) == 1:
                             matched_id = candidate_matches[0].item_id
 
+                raw_conf = raw_item.get("confidence")
+                try:
+                    confidence = float(raw_conf) if raw_conf is not None else 0.85
+                    confidence = max(0.0, min(1.0, round(confidence, 2)))
+                except (ValueError, TypeError):
+                    confidence = 0.85
+
                 detected_items.append(
                     DetectedItem(
                         raw_detected_name=raw_name,
@@ -317,7 +328,7 @@ class AzureOpenAIVisionService:
                         quantity=qty,
                         unit=unit,
                         unit_confirmed=unit_confirmed,
-                        confidence=0.9,
+                        confidence=confidence,
                         matched_inventory_id=matched_id,
                         candidate_matches=candidate_matches,
                         match_status=match_status,
@@ -339,9 +350,11 @@ class AzureOpenAIVisionService:
                 raw_text=parsed.get("raw_text"),
             )
         except Exception as exc:
-            logger.warning("Azure OpenAI Vision execution failed (%s), fallback to mock.", exc)
+            logger.warning("Azure OpenAI Vision execution failed (%s)", exc)
             if self.mock_fallback:
                 return await self._fallback_service.analyze_image(
                     household_id, image_ref, scene_type
                 )
-            raise
+            if isinstance(exc, (ValueError, RuntimeError)):
+                raise
+            raise RuntimeError(f"Azure OpenAI Vision inference failed: {exc}") from exc

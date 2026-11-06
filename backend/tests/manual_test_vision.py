@@ -21,13 +21,18 @@ if str(BACKEND_DIR) not in sys.path:
 from app.core.dependencies import get_inventory_service  # noqa: E402
 from app.models.vision import SceneType  # noqa: E402
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage  # noqa: E402
-from app.services.vision import AzureOpenAIVisionService, load_vision_azure_settings  # noqa: E402
+from app.services.vision import (  # noqa: E402
+    AzureOpenAIVisionService,
+    MockVisionService,
+    VisionService,
+    load_vision_azure_settings,
+)
 
 FIXTURES_DIR = BACKEND_DIR / "tests" / "fixtures" / "vision"
 
 
 async def run_single_test(
-    service: AzureOpenAIVisionService,
+    service: VisionService,
     media: LocalStagingMediaStorage,
     household_id: str,
     image_path: Path,
@@ -54,7 +59,12 @@ async def run_single_test(
 
     try:
         result = await service.analyze_image(household_id, image_ref, scene_type=scene_hint)
-        print("[SUCCESS] Azure OpenAI Vision 解析成功！")
+        provider_name = (
+            "Azure OpenAI Vision"
+            if isinstance(service, AzureOpenAIVisionService)
+            else "Mock Vision (範例模式)"
+        )
+        print(f"[SUCCESS] {provider_name} 解析成功！")
         print(f"  * 推斷場景類別 (scene_type) : {result.scene_type.value}")
         print(f"  * 原始 OCR 萃取 (raw_text)  : {result.raw_text or '(無文字)'}")
         print(f"  * 辨識品項數量 (items count): {len(result.detected_items)} 件")
@@ -87,26 +97,26 @@ async def main() -> None:
     load_dotenv(BACKEND_DIR / ".env", override=False)
 
     print("=" * 65)
-    print("Nestock A2 視覺模型真實連線手動測試器 (Live Vision Runner)")
+    print("Nestock A2 視覺模型手動測試器 (Vision Test Runner)")
     print("=" * 65)
 
     settings = load_vision_azure_settings()
-    if not settings:
-        print("[ERROR] 無法讀取 Azure OpenAI 設定！")
-        print("請確認 backend/.env 是否正確填入：")
-        print("  AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/openai/v1")
-        print("  AZURE_OPENAI_API_KEY=<your-key>")
-        print("  AZURE_OPENAI_DEPLOYMENT=gpt-4o")
-        return
-
-    print(f"連線端點 (Endpoint)  : {settings.endpoint}")
-    print(f"使用模型 (Deployment): {settings.deployment}")
-    print(f"基礎網址 (Base URL)  : {settings.base_url}")
-
     media = LocalStagingMediaStorage()
     inventory = get_inventory_service()
-    service = AzureOpenAIVisionService(settings, inventory, media, mock_fallback=False)
     household_id = "demo-household"
+
+    if settings is not None:
+        print("[MODE] 偵測到 Azure OpenAI 設定，啟動【真實連線模式 (Live Azure OpenAI)】：")
+        print(f"  * 連線端點 (Endpoint)  : {settings.endpoint}")
+        print(f"  * 使用模型 (Deployment): {settings.deployment}")
+        print(f"  * 基礎網址 (Base URL)  : {settings.base_url}")
+        service: VisionService = AzureOpenAIVisionService(
+            settings, inventory, media, mock_fallback=False
+        )
+    else:
+        print("[MODE] 未偵測到 Azure OpenAI 設定，自動啟用【範例模式 (MockVisionService)】：")
+        print("  * 說明：以內建生活用品範例資料進行結構化展示，無需連網或金鑰。")
+        service = MockVisionService(inventory_service=inventory)
 
     # 若命令列有指定圖片參數：測試使用者自選圖
     if len(sys.argv) > 1:

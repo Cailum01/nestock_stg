@@ -3,7 +3,11 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
-from app.core.dependencies import _create_vision_service, get_vision_service
+from app.core.dependencies import (
+    _create_vision_service,
+    _reset_vision_service_for_test,
+    get_vision_service,
+)
 from app.models.domain import InventoryItem
 from app.models.vision import (
     CandidateMatch,
@@ -272,8 +276,27 @@ def test_create_vision_service_creates_azure_adapter_when_configured():
 
 
 def test_dependencies_get_vision_service():
+    _reset_vision_service_for_test()
     service = get_vision_service()
     assert isinstance(service, VisionService)
+    # Subsequent calls should return the same singleton instance
+    assert get_vision_service() is service
+
+
+def test_dependencies_get_vision_service_lazy_resolution_with_env():
+    _reset_vision_service_for_test()
+    env = {
+        "AZURE_OPENAI_VISION_ENDPOINT": "https://test-vision.openai.azure.com/",
+        "AZURE_OPENAI_VISION_API_KEY": "vision-secret",
+    }
+    custom_service = get_vision_service(environment=env)
+    assert isinstance(custom_service, AzureOpenAIVisionService)
+
+    # Calling without environment after reset should fallback to Mock if env not set
+    _reset_vision_service_for_test()
+    fallback_service = get_vision_service(environment={})
+    assert isinstance(fallback_service, MockVisionService)
+    _reset_vision_service_for_test()
 
 
 @pytest.mark.anyio
@@ -348,3 +371,94 @@ async def test_azure_vision_service_ignores_empty_raw_name_items():
     assert result.detected_items[0].quantity == 1.0
     assert result.detected_items[0].unit == "罐"
     assert result.detected_items[0].unit_confirmed is True
+
+
+@pytest.mark.anyio
+async def test_azure_vision_service_raises_on_api_error_when_fallback_disabled():
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    settings = VisionOpenAISettings(
+        endpoint="https://fake.openai.azure.com/",
+        api_key="valid-test-key",
+        deployment="gpt-4o",
+    )
+    inventory = DummyInventoryService([])
+    media = LocalStagingMediaStorage()
+    await media.simulate_client_upload(
+        "demo-household", "blob://demo/fail.jpg", b"fake-image-bytes"
+    )
+    # mock_fallback defaults to False
+    service = AzureOpenAIVisionService(settings, inventory, media)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 500
+    mock_resp.text = "Internal Server Error"
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        with pytest.raises(RuntimeError) as exc_info:
+            await service.analyze_image(
+                household_id="demo-household",
+                image_ref="blob://demo/fail.jpg",
+            )
+        assert "Azure OpenAI Vision inference failed" in str(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_azure_vision_service_parses_dynamic_confidence():
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    settings = VisionOpenAISettings(
+        endpoint="https://fake.openai.azure.com/",
+        api_key="valid-test-key",
+        deployment="gpt-4o",
+    )
+    inventory = DummyInventoryService([])
+    media = LocalStagingMediaStorage()
+    await media.simulate_client_upload(
+        "demo-household", "blob://demo/conf.jpg", b"fake-image-bytes"
+    )
+    service = AzureOpenAIVisionService(settings, inventory, media, mock_fallback=False)
+
+    fake_response_json = {
+        "choices": [
+            {
+                "message": {
+                    "content": """{
+                        "scene_type": "pantry_scene",
+                        "raw_text": "儲藏櫃",
+                        "items": [
+                            {
+                                "raw_name": "義美全脂鮮奶 936ml",
+                                "quantity": 1.0,
+                                "unit": "瓶",
+                                "confidence": 0.96
+                            },
+                            {
+                                "raw_name": "模糊的罐頭",
+                                "quantity": 2.0,
+                                "unit": "罐",
+                                "confidence": 0.42
+                            }
+                        ]
+                    }"""
+                }
+            }
+        ]
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = fake_response_json
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        result = await service.analyze_image(
+            household_id="demo-household",
+            image_ref="blob://demo/conf.jpg",
+        )
+
+    assert result.scene_type == SceneType.PANTRY_SCENE
+    assert len(result.detected_items) == 2
+    assert result.detected_items[0].canonical_name == "全脂鮮奶"
+    assert result.detected_items[0].confidence == 0.96
+    assert result.detected_items[1].canonical_name == "模糊的罐頭"
+    assert result.detected_items[1].confidence == 0.42

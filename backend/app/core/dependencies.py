@@ -77,7 +77,7 @@ def _create_vision_service(
 inventory_service, shopping_service, cosmos_read_repository = _create_read_composition()
 media_storage_service: MediaStorageService = LocalStagingMediaStorage()
 speech_service: SpeechToTextService = MockSpeechToTextService()
-vision_service: VisionService = _create_vision_service(inventory_service, media_storage_service)
+_vision_service: VisionService | None = None
 
 
 def get_inventory_service() -> InventoryService:
@@ -100,5 +100,29 @@ def get_speech_service() -> SpeechToTextService:
     return speech_service
 
 
-def get_vision_service() -> VisionService:
-    return vision_service
+def get_vision_service(environment: Mapping[str, str] | None = None) -> VisionService:
+    """FastAPI dependency for VisionService.
+
+    Lazily instantiates the vision provider on first invocation rather than
+    module import time. This ensures runtime environment variables from .env
+    are fully available when resolving Azure OpenAI credentials.
+    """
+    global _vision_service
+    if environment is not None:
+        return _create_vision_service(
+            get_inventory_service(),
+            get_media_storage_service(),
+            environment=environment,
+        )
+    if _vision_service is None:
+        _vision_service = _create_vision_service(
+            get_inventory_service(),
+            get_media_storage_service(),
+        )
+    return _vision_service
+
+
+def _reset_vision_service_for_test() -> None:
+    """Reset singleton state for test isolation."""
+    global _vision_service
+    _vision_service = None

@@ -51,7 +51,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_inventory",
-            "description": "查詢家裡目前的庫存：品名、數量、單位、放置位置、別名。",
+            "description": (
+                "查詢家裡目前的庫存：品名、數量、單位、放置位置、別名。"
+                "會一起附上待購清單裡還沒買的東西。"
+            ),
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -177,9 +180,20 @@ class ReadAgent:
                 else:
                     items = await handler(state["household_id"])
                     rows = [item.model_dump(mode="json") for item in items]
+                    content = json.dumps(rows, ensure_ascii=False)
                     if call["name"] == "list_inventory":
                         update["inventory"] = rows
-                    content = json.dumps(rows, ensure_ascii=False)
+                        # v8 Flow B: an inventory lookup always shows what is
+                        # already on the shopping list, so the answer can say so.
+                        shopping = await self._handlers["list_shopping"](state["household_id"])
+                        pending = [
+                            item.model_dump(mode="json")
+                            for item in shopping
+                            if item.status == "pending"
+                        ]
+                        content = json.dumps(
+                            {"inventory": rows, "shopping_list": pending}, ensure_ascii=False
+                        )
                 update["messages"].append(ToolMessage(content, tool_call_id=call["id"]))
             return update
 

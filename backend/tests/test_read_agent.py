@@ -67,8 +67,8 @@ def test_inventory_question_looks_then_answers():
 
     assert response.message == "還有 2 包白米，在廚房櫃子。"
     assert response.pending_approval is None
-    rows = _tool_rows(model)  # the model's second turn saw the real service data
-    assert [row["name"] for row in rows] == ["白米"]
+    seen = _tool_rows(model)  # the model's second turn saw the real service data
+    assert [row["name"] for row in seen["inventory"]] == ["白米"]
     assert response.results[0].kind == ResultKind.INVENTORY
     assert response.results[0].data["items"][0]["location"] == "廚房櫃子"
 
@@ -79,6 +79,56 @@ def test_shopping_question_uses_shopping_list():
 
     assert [row["name"] for row in _tool_rows(model)] == ["牛奶"]
     assert response.results == []  # inventory card only when inventory was looked up
+
+
+# --- v8 Flow B: "I want to buy X, do we still have it?" ----------------------
+
+
+def test_flow_b_lookup_shows_shopping_list_and_writes_nothing():
+    # One inventory lookup is enough to also say "already on the shopping list".
+    model = ScriptedModel(_call("list_inventory"), AIMessage(content="庫存裡沒有找到 AA 電池。"))
+    app = create_app()
+    app.dependency_overrides[get_read_agent] = lambda: _agent(model)
+    with TestClient(app) as client:
+        before = [client.get(path).json() for path in ["/inventory", "/shopping"]]
+        response = client.post(
+            "/agent/messages",
+            json={"household_id": HOUSEHOLD, "message": "我要買 AA 電池，家裡還有嗎？"},
+        )
+        after = [client.get(path).json() for path in ["/inventory", "/shopping"]]
+
+    assert response.status_code == 200
+    seen = _tool_rows(model)
+    assert [row["name"] for row in seen["inventory"]] == ["白米"]
+    assert [row["name"] for row in seen["shopping_list"]] == ["牛奶"]
+    assert len(model.seen) == 2  # one lookup, then the answer
+    body = response.json()
+    assert body["pending_approval"] is None
+    assert [result["kind"] for result in body["results"]] == ["inventory"]
+    assert body["results"][0]["data"]["items"] == seen["inventory"]  # card: inventory only
+    assert before == after
+
+
+def test_flow_b_leaves_out_items_already_bought():
+    from app.models.domain import ShoppingStatus
+
+    class Shopping:
+        async def list_items(self, household_id: str):
+            milk = (await get_shopping_service().list_items(household_id))[0]
+            bought = milk.model_copy(
+                update={
+                    "shopping_item_id": "bought",
+                    "name": "衛生紙",
+                    "status": ShoppingStatus.COMPLETED,
+                }
+            )
+            return [milk, bought]
+
+    model = ScriptedModel(_call("list_inventory"), AIMessage(content="庫存裡沒有找到衛生紙。"))
+    tools = QueryTools(get_inventory_service(), Shopping())
+    _ask(ReadAgent(model, tools, load_system_prompt()), "我要買衛生紙，家裡還有嗎？")
+
+    assert [row["name"] for row in _tool_rows(model)["shopping_list"]] == ["牛奶"]
 
 
 def test_greeting_needs_no_tool():
@@ -97,7 +147,7 @@ def test_household_comes_from_request_not_model():
         AIMessage(content="庫存裡沒有找到。"),
     )
     _ask(_agent(model), "家裡有什麼？", household_id="another-household")
-    assert _tool_rows(model) == []
+    assert _tool_rows(model) == {"inventory": [], "shopping_list": []}
 
 
 def test_unknown_tool_is_refused():

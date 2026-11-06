@@ -818,10 +818,18 @@ and confirmed the boundary should contain only bounded, structured, objective
 observations; hidden model reasoning is never persisted. A2 also corrected the
 public identifier boundary: clients and Agent requests continue to use opaque
 `image_ref`; `input_id` is an internal persistence identity and is not exposed
-by the current upload authorization API. Any internal mapping from an image
-reference to an input record remains to be specified and implemented; do not
-assume a 1:1 mapping to an internal media ID without validating ownership and
-agreeing the service contract.
+by the current upload authorization API. In Issue #30 (closed 2026-11-06) A2
+and B1 agreed the mapping is created and validated server-side: when the
+backend authorizes an upload it writes an initial mapping record (internal
+`input_id`, opaque `image_ref`, `household_id`, `content_type`, expected
+`file_size_bytes`, state `allocated`) instead of parsing client-supplied paths,
+and later use of an `image_ref` is validated by a household-scoped server-side
+lookup. A2's pipeline never accesses Cosmos directly; it calls a storage port
+provided by B1. This is the first planned formal Cosmos write path and is gated
+on B1's write adapter progress (PR #51 provides offline primitives only; no
+Azure SDK batch client yet), so A2 stays on local staging storage until that
+port exists. Do not assume a 1:1 mapping to an internal media ID without
+validating ownership.
 
 The proposed artifact set, producer/schema versions, retention classes, and
 input-record fields remain subject to the relevant owner agreement. Original
@@ -837,11 +845,36 @@ media-processing lifecycle:
 allocated -> received -> processing -> completed / failed
 ```
 
-This lifecycle is A2's processing proposal, not an implemented service or a
-public contract. `completed` means extraction/processing finished; it does not
-mean a business operation was approved or written. Confirmation-card
-presentation, approval, resume, and operation execution belong to A1's separate
-Agent lifecycle.
+This state machine is confirmed between A2 and B1 (Issue #30, 2026-11-06) with
+four lifecycle triggers; it remains an agreed boundary, not an implemented
+service or a public contract:
+
+- **Create**: `POST /api/media/upload-authorization` allocates the internal
+  `input_id` and opaque `image_ref`, writes the initial mapping record as
+  `allocated`, and sets an upload authorization expiry (about 300 seconds).
+- **Upload/process complete**: the storage receiver marks `received` with the
+  actual `file_size_bytes` and `sha256_hash`; the Vision pipeline finishing
+  marks `completed` with the bounded `artifact_ref`. Only `completed`
+  references are usable by the Agent (for example `verify_media_exists`);
+  every other state is rejected.
+- **Fail**: upload timeout, payload validation failure, and processing failure
+  all transition to `failed`; the cause is kept in a separate
+  `failure_reason` field (`upload_timeout`, `validation_failed`,
+  `processing_failed`) so the state machine stays minimal.
+- **Delete/purge**: orphaned media — never attached to any confirmed business
+  record, including uploads that never finished, validation or processing
+  failures, inputs that produced no confirmation card, and cards that expired
+  or were cancelled — is physically cleaned up within 24 hours via Cosmos TTL
+  and Blob lifecycle policy. Media attached to a confirmed business record is
+  retained while the attachment is active (Section 1.1), not for a fixed
+  90 days; the mapping record's retention is symmetric with its media. The
+  confirmation-card 30-minute expiry (Issue #39) is a business deadline only
+  and does not define orphanhood. Deletion relies on infrastructure
+  TTL/lifecycle policies; service code does not implement deletion schedulers.
+
+`completed` means extraction/processing finished; it does not mean a business
+operation was approved or written. Confirmation-card presentation, approval,
+resume, and operation execution belong to A1's separate Agent lifecycle.
 
 The current one-turn MVP does not persist separate Agent tasks or checkpoints.
 Long-running video/audio work, queues/workers, and persistent task/checkpoint

@@ -2,16 +2,21 @@ import asyncio
 import logging
 
 import pytest
-from azure.cosmos.exceptions import CosmosResourceNotFoundError
+from azure.cosmos.exceptions import CosmosBatchOperationError, CosmosResourceNotFoundError
 
 from app.core import dependencies
 from app.core.dependencies import _create_domain_read_services, _create_read_composition
 from app.models.domain import InventoryItem, ShoppingItem
+from app.services import cosmos_sdk
 from app.services.cosmos_read import CosmosDocumentMapper, CosmosReadRepository
 from app.services.cosmos_sdk import (
+    COSMOS_TRANSACTIONAL_BATCH_LIMIT,
     AzureCosmosDocumentQueryClient,
+    AzureCosmosTransactionalBatchClient,
     create_azure_cosmos_read_repository,
+    create_azure_cosmos_repositories,
 )
+from app.services.cosmos_write import BatchOperationConflict, CreateDocument, ReplaceDocument
 from app.services.demo import DemoInventoryService, DemoShoppingService
 
 NOW = "2026-01-01T00:00:00.000000Z"
@@ -42,6 +47,229 @@ class FakeContainer:
                 response_hook({"x-ms-request-charge": "0.9"}, {})
                 return document
         raise CosmosResourceNotFoundError(status_code=404)
+
+
+class FakeWritableContainer(FakeContainer):
+    def __init__(self, documents):
+        super().__init__(documents)
+        self.batch_calls = []
+        self.batch_error = None
+
+    def execute_item_batch(self, *, batch_operations, partition_key, response_hook):
+        self.batch_calls.append(
+            {"batch_operations": batch_operations, "partition_key": partition_key}
+        )
+        if self.batch_error is not None:
+            raise self.batch_error
+        response_hook({"x-ms-request-charge": "1.5"}, [])
+        return []
+
+
+def test_sdk_batch_client_maps_create_and_etag_replace_operations():
+    container = FakeWritableContainer([])
+    client = AzureCosmosTransactionalBatchClient(container)
+
+    asyncio.run(
+        client.execute_batch(
+            partition_key="home",
+            operations=(
+                CreateDocument(
+                    {
+                        "id": "inventory:rice",
+                        "record_type": "inventory_item",
+                        "household_id": "home",
+                    }
+                ),
+                ReplaceDocument(
+                    document={
+                        "id": "pending_approval:approval-1",
+                        "record_type": "pending_approval",
+                        "household_id": "home",
+                        "status": "confirmed",
+                        "_etag": '"etag-1"',
+                        "_ts": 123,
+                    },
+                    if_match_etag='"etag-1"',
+                ),
+            ),
+        )
+    )
+
+    assert container.batch_calls == [
+        {
+            "partition_key": "home",
+            "batch_operations": [
+                (
+                    "create",
+                    (
+                        {
+                            "id": "inventory:rice",
+                            "record_type": "inventory_item",
+                            "household_id": "home",
+                        },
+                    ),
+                ),
+                (
+                    "replace",
+                    (
+                        "pending_approval:approval-1",
+                        {
+                            "id": "pending_approval:approval-1",
+                            "record_type": "pending_approval",
+                            "household_id": "home",
+                            "status": "confirmed",
+                        },
+                    ),
+                    {"if_match_etag": '"etag-1"'},
+                ),
+            ],
+        }
+    ]
+
+
+def test_sdk_batch_client_logs_write_metrics_without_household_or_document_data(caplog):
+    container = FakeWritableContainer([])
+    client = AzureCosmosTransactionalBatchClient(container)
+
+    with caplog.at_level(logging.INFO, logger="app.services.cosmos_sdk"):
+        asyncio.run(
+            client.execute_batch(
+                partition_key="private-household",
+                operations=(
+                    CreateDocument(
+                        {
+                            "id": "inventory:private-item",
+                            "record_type": "inventory_item",
+                            "household_id": "private-household",
+                        }
+                    ),
+                ),
+            )
+        )
+
+    assert "request_charge=1.5" in caplog.text
+    assert "operation_count=1" in caplog.text
+    assert "private-household" not in caplog.text
+    assert "private-item" not in caplog.text
+
+
+@pytest.mark.parametrize("status_code", [409, 412])
+def test_sdk_batch_client_maps_conflict_errors_with_operation_index(status_code):
+    container = FakeWritableContainer([])
+    container.batch_error = CosmosBatchOperationError(
+        error_index=2,
+        headers={},
+        status_code=status_code,
+        message="Batch conflict",
+    )
+    client = AzureCosmosTransactionalBatchClient(container)
+
+    with pytest.raises(BatchOperationConflict) as error:
+        asyncio.run(
+            client.execute_batch(
+                partition_key="home",
+                operations=(CreateDocument({"id": "record:1", "household_id": "home"}),),
+            )
+        )
+
+    assert error.value.operation_index == 2
+
+
+def test_sdk_batch_client_propagates_non_conflict_errors():
+    container = FakeWritableContainer([])
+    error = CosmosBatchOperationError(
+        error_index=0,
+        headers={},
+        status_code=429,
+        message="Throttled",
+    )
+    container.batch_error = error
+    client = AzureCosmosTransactionalBatchClient(container)
+
+    with pytest.raises(CosmosBatchOperationError) as raised:
+        asyncio.run(
+            client.execute_batch(
+                partition_key="home",
+                operations=(CreateDocument({"id": "record:1", "household_id": "home"}),),
+            )
+        )
+
+    assert raised.value is error
+
+
+@pytest.mark.parametrize(
+    ("partition_key", "operations", "message"),
+    [
+        ("", (CreateDocument({"id": "record:1", "household_id": "home"}),), "partition_key"),
+        ("home", (), "at least one operation"),
+        (
+            "home",
+            (CreateDocument({"id": "record:1", "household_id": "other"}),),
+            "household partition",
+        ),
+        ("home", (CreateDocument({"household_id": "home"}),), "non-empty Cosmos id"),
+        (
+            "home",
+            (
+                ReplaceDocument(
+                    document={"id": "record:1", "household_id": "home"},
+                    if_match_etag="",
+                ),
+            ),
+            "current Cosmos _etag",
+        ),
+    ],
+)
+def test_sdk_batch_client_rejects_invalid_batch_operations(partition_key, operations, message):
+    container = FakeWritableContainer([])
+    client = AzureCosmosTransactionalBatchClient(container)
+
+    with pytest.raises(ValueError, match=message):
+        asyncio.run(client.execute_batch(partition_key=partition_key, operations=operations))
+
+    assert container.batch_calls == []
+
+
+def test_sdk_batch_client_enforces_cosmos_operation_limit():
+    container = FakeWritableContainer([])
+    client = AzureCosmosTransactionalBatchClient(container)
+    operations = tuple(
+        CreateDocument({"id": f"record:{index}", "household_id": "home"})
+        for index in range(COSMOS_TRANSACTIONAL_BATCH_LIMIT + 1)
+    )
+
+    with pytest.raises(ValueError, match="cannot exceed 100 operations"):
+        asyncio.run(client.execute_batch(partition_key="home", operations=operations))
+
+    assert container.batch_calls == []
+
+
+def test_sdk_batch_client_accepts_exact_cosmos_operation_limit():
+    container = FakeWritableContainer([])
+    client = AzureCosmosTransactionalBatchClient(container)
+    operations = tuple(
+        CreateDocument({"id": f"record:{index}", "household_id": "home"})
+        for index in range(COSMOS_TRANSACTIONAL_BATCH_LIMIT)
+    )
+
+    asyncio.run(client.execute_batch(partition_key="home", operations=operations))
+
+    assert len(container.batch_calls[0]["batch_operations"]) == COSMOS_TRANSACTIONAL_BATCH_LIMIT
+
+
+def test_sdk_batch_client_delegates_household_point_reads():
+    document = {"id": "pending_approval:approval-1", "household_id": "home"}
+    container = FakeWritableContainer([document])
+    client = AzureCosmosTransactionalBatchClient(container)
+
+    result = asyncio.run(
+        client.read_item(item_id="pending_approval:approval-1", partition_key="home")
+    )
+
+    assert result == document
+    assert container.point_read_calls == [
+        {"item": "pending_approval:approval-1", "partition_key": "home"}
+    ]
 
 
 def test_sdk_query_client_uses_household_partition_and_returns_documents():
@@ -242,6 +470,50 @@ def test_repository_factory_rejects_non_https_endpoint():
             database_name="nestock",
             container_name="household-data",
         )
+
+
+def test_repository_factory_shares_container_and_sdk_client_between_repositories(monkeypatch):
+    class FakeCredential:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeCosmosClient:
+        def __init__(self, container):
+            self.container = container
+            self.closed = False
+
+        def get_database_client(self, database_name):
+            assert database_name == "nestock"
+            return self
+
+        def get_container_client(self, container_name):
+            assert container_name == "household-data"
+            return self.container
+
+        def close(self):
+            self.closed = True
+
+    credential = FakeCredential()
+    container = FakeWritableContainer([])
+    sdk_client = FakeCosmosClient(container)
+    monkeypatch.setattr(cosmos_sdk, "DefaultAzureCredential", lambda: credential)
+    monkeypatch.setattr(cosmos_sdk, "CosmosClient", lambda endpoint, credential: sdk_client)
+
+    read_repository, write_repository, close = create_azure_cosmos_repositories(
+        endpoint="https://example.documents.azure.com",
+        database_name="nestock",
+        container_name="household-data",
+    )
+
+    assert isinstance(read_repository, CosmosReadRepository)
+    assert read_repository._client._container is container
+    assert write_repository._client._container is container
+    close()
+    assert sdk_client.closed
+    assert credential.closed
 
 
 def test_missing_cosmos_configuration_keeps_offline_demo_services():

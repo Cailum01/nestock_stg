@@ -311,3 +311,13 @@ def test_speech_transcribe_unsupported_media_type_returns_415():
     with TestClient(create_app()) as client:
         response = client.post("/api/speech/transcribe", files=files)
         assert response.status_code == 415
+
+
+def test_main_app_mounts_read_only_forecast_routes():
+    # Issue #46: the shared app serves B2's forecast router (demo history without Cosmos).
+    with TestClient(create_app()) as client:
+        response = client.get("/forecast")
+        assert response.status_code == 200
+        assert [f["item_id"] for f in response.json()] == ["demo-rice"]
+        assert client.get("/forecast/not-an-item").status_code == 404
+        assert client.post("/forecast/demo-rice").status_code == 405

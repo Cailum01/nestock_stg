@@ -674,6 +674,18 @@ preserving B1's query boundary. The B2 wiring still needs coordination when
 integrating PR #16. This does not expose a new public Transaction route or change
 the current read-only scope.
 
+#### Forecast test connectivity (PR #53)
+
+The accepted development decision is that forecast API integration tests use
+the configured read-only Cosmos data path whenever all `NESTOCK_COSMOS_*`
+settings are present. Do not override the Inventory or TransactionHistory
+dependencies to force demo services in this Cosmos-configured test mode. Use
+synthetic development records and do not assume demo-only records such as
+`demo-rice` exist in the configured container. Without Cosmos settings, the
+existing demo fallback remains available. This decision permits read-only
+development access only; it does not authorize test writes or other cloud
+connections.
+
 Use the partition key and record type in queries. Add composite/range indexes only
 when a concrete query and measured workload justify them. Keep indexing policy in
 one reviewed configuration. The household Transaction query's
@@ -1015,9 +1027,10 @@ When an AI agent implements a task from this document:
    `contracts/README.md` first. Confirm the user's owner code.
 2. Change only paths owned by that owner. Do not modify shared contracts or
    another owner's paths without explicit approval.
-3. Keep the current skeleton offline. Do not add Azure SDKs, credentials,
-   deployment resources, cloud connections, or paid services unless the user
-   explicitly requests an implementation phase.
+3. Keep the default skeleton offline. The approved opt-in, read-only Cosmos
+   development path covers Inventory, Shopping, and the forecast API when
+   `NESTOCK_COSMOS_*` is configured. Do not add other cloud connections or
+   write-capable cloud access without an explicit decision.
 4. Treat examples and proposed storage envelopes as design guidance, not public
    schemas. Pydantic domain models remain authoritative.
 5. Never infer confirmation or approval from OCR, transcription, a model result,
@@ -1039,7 +1052,7 @@ When an AI agent implements a task from this document:
 
 | Phase | Deliverable | Gate |
 | --- | --- | --- |
-| 0. Design | Review this proposal and settle cross-owner boundaries | No write-capable cloud connection; the approved opt-in read-only Cosmos adapter is limited to Inventory and Shopping development reads |
+| 0. Design | Review this proposal and settle cross-owner boundaries | No write-capable cloud connection; the approved opt-in read-only Cosmos path covers Inventory, Shopping, and configured Forecast development reads |
 | 1. Local persistence boundary | Repository/service interfaces and tests against a local fake | Existing API/tool behavior remains shared and read-only until writes are approved |
 | 2. Cosmos pilot | Household-scoped records, transactional inventory operation, receipt, transaction, and change event | Security, cost, recovery, and owner approvals complete |
 | 3. Blob pilot | Private original-media upload, validation, metadata, retention and deletion | A2 input/processing contract agreed |

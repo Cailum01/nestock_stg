@@ -22,6 +22,9 @@ import '../../photo/camera_capture.dart';
 import '../../photo/photo_upload.dart';
 import '../../speech/speech_client.dart';
 
+/// Matches the opaque outer edge of the room artwork when it is letterboxed.
+const _roomBackgroundBase = Color(0xFFEAEDF5);
+
 /// The uploaded reference stays attached to its session-only photo message.
 class PhotoMessageImage extends StatelessWidget {
   const PhotoMessageImage({
@@ -492,6 +495,12 @@ class _AgentHomeState extends State<AgentHome> {
         child: Stack(
           key: const Key('home-viewport'),
           children: [
+            const Positioned.fill(
+              child: ColoredBox(
+                key: Key('room-background-base'),
+                color: _roomBackgroundBase,
+              ),
+            ),
             Positioned.fill(
               child: Image.asset(
                 'assets/images/room/background.png',

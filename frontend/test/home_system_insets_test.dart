@@ -6,6 +6,28 @@ import 'package:nestock/features/agent/data/mock_agent_client.dart';
 import 'package:nestock/shared/data/demo_catalog.dart';
 
 void main() {
+  testWidgets('wide home viewport paints the room base behind artwork', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(540, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      NestockApp(agentClient: MockAgentClient(), catalog: const DemoCatalog()),
+    );
+
+    final viewport = find.byKey(const Key('home-viewport'));
+    final roomBackgroundBase = find.byKey(const Key('room-background-base'));
+    expect(roomBackgroundBase, findsOneWidget);
+    expect(
+      tester.widget<ColoredBox>(roomBackgroundBase).color,
+      const Color(0xFFEAEDF5),
+    );
+    expect(tester.getRect(roomBackgroundBase), tester.getRect(viewport));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'home viewport respects bars and keyboard without double bottom padding',
     (tester) async {
@@ -37,6 +59,13 @@ void main() {
       expect(style?.statusBarColor, Colors.black);
       expect(navigationStyle?.systemNavigationBarColor, Colors.black);
       final viewport = find.byKey(const Key('home-viewport'));
+      final roomBackgroundBase = find.byKey(const Key('room-background-base'));
+      expect(roomBackgroundBase, findsOneWidget);
+      expect(
+        tester.widget<ColoredBox>(roomBackgroundBase).color,
+        const Color(0xFFEAEDF5),
+      );
+      expect(tester.getRect(roomBackgroundBase), tester.getRect(viewport));
       expect(tester.getRect(viewport).top, 32);
       expect(tester.getRect(viewport).bottom, 975 - 28);
       expect(

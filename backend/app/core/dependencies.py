@@ -1,5 +1,6 @@
 import atexit
 import os
+import threading
 from collections.abc import Mapping
 
 from app.services.cosmos_read import (
@@ -12,7 +13,10 @@ from app.services.demo import DemoInventoryService, DemoShoppingService
 from app.services.interfaces import InventoryService, ShoppingService
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
-from app.services.speech import MockSpeechToTextService, SpeechToTextService
+from app.services.speech import (
+    SpeechToTextService,
+    create_speech_service,
+)
 
 
 def _create_domain_read_services(
@@ -55,7 +59,8 @@ def _create_read_composition(
 
 inventory_service, shopping_service, cosmos_read_repository = _create_read_composition()
 media_storage_service: MediaStorageService = LocalStagingMediaStorage()
-speech_service: SpeechToTextService = MockSpeechToTextService()
+_speech_service: SpeechToTextService | None = None
+_speech_lock = threading.Lock()
 
 
 def get_inventory_service() -> InventoryService:
@@ -75,4 +80,21 @@ def get_media_storage_service() -> MediaStorageService:
 
 
 def get_speech_service() -> SpeechToTextService:
-    return speech_service
+    """FastAPI dependency for SpeechToTextService.
+
+    Thread-safe lazy resolution of AzureSpeechService when AZURE_SPEECH_KEY
+    is configured, or MockSpeechToTextService otherwise.
+    """
+    global _speech_service
+    if _speech_service is None:
+        with _speech_lock:
+            if _speech_service is None:
+                _speech_service = create_speech_service()
+    return _speech_service
+
+
+def _reset_speech_service_for_test() -> None:
+    """Reset speech singleton state for test isolation."""
+    global _speech_service
+    with _speech_lock:
+        _speech_service = None

@@ -39,9 +39,7 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
       return;
     }
     setState(() {
-      // This display projection still requires quantity and unit, but intent-only
-      // local rows deliberately leave both blank until a future intake flow.
-      _localItems.add(ShoppingViewItem(name, '', '', 'pending'));
+      _localItems.add(ShoppingViewItem(name: name, status: 'pending'));
       _adding = false;
       _addError = null;
       _nameController.clear();

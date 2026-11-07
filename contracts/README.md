@@ -80,11 +80,17 @@ A `purchase_options` card lists its options on the card itself (v8 section 12);
     "values": {"name": "衛生紙"}
   }],
   "options": [
-    {"option_id": "option-001", "store": "Store A", "price": 99, "url": "https://example.com/a", "source": "live"},
-    {"option_id": "option-002", "store": "Store B", "price": 109, "url": "https://example.com/b", "source": "live"}
+    {"option_id": "option-001", "title": "舒潔 抽取式衛生紙 100抽", "store": "momo", "source": "live",
+     "estimated_price": 299, "product_url": "https://example.com/a", "unit_spec": "100抽 x 12包"},
+    {"option_id": "option-002", "title": "舒潔 抽取式衛生紙 110抽", "store": "Coupang", "source": "live",
+     "estimated_price": 319, "product_url": "https://example.com/b", "unit_spec": "110抽 x 12包"}
   ]
 }
 ```
+
+Option fields follow A2's `PurchaseOption` (`backend/app/models/commerce.py`).
+`raw_title`, `image_url` and `updated_at` may also appear; `estimated_price` and
+`unit_spec` may be null.
 
 Never execute generic `values` or trust `approved` alone. Future implementation
 must load the exact server-side resolved proposal, validate scope and values,

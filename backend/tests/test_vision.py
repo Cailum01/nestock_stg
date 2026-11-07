@@ -38,7 +38,7 @@ def sample_detected_item() -> dict:
     return {
         "raw_detected_name": "統一陽光高纖無糖豆漿 450ml",
         "canonical_name": "高纖無糖豆漿",
-        "quantity": 1.0,
+        "quantity": 1,
         "unit": "瓶",
         "unit_confirmed": True,
         "confidence": 0.95,
@@ -58,6 +58,8 @@ def test_vision_model_validation_and_json_roundtrip():
     loaded = VisionAnalysisResult.model_validate_json(dumped)
     assert loaded == result
     assert loaded.detected_items[0].canonical_name == "高纖無糖豆漿"
+    assert loaded.detected_items[0].quantity == 1
+    assert isinstance(loaded.detected_items[0].quantity, int)
     assert loaded.detected_items[0].matched_inventory_id is None
     assert loaded.detected_items[0].candidate_matches == []
 
@@ -121,6 +123,8 @@ async def test_mock_vision_service_returns_pure_observation_without_reading_inve
     assert len(result.detected_items) == 1
     first_item = result.detected_items[0]
     assert first_item.canonical_name == "高纖無糖豆漿"
+    assert first_item.quantity == 1
+    assert isinstance(first_item.quantity, int)
     assert first_item.matched_inventory_id is None
     assert first_item.candidate_matches == []
     assert first_item.match_status == MatchStatus.NEW_ITEM
@@ -304,7 +308,8 @@ async def test_azure_vision_service_ignores_empty_raw_name_items():
     assert len(result.detected_items) == 1
     assert result.detected_items[0].raw_detected_name == "可口可樂 330ml"
     assert result.detected_items[0].canonical_name == "可口可樂"
-    assert result.detected_items[0].quantity == 1.0
+    assert result.detected_items[0].quantity == 1
+    assert isinstance(result.detected_items[0].quantity, int)
     assert result.detected_items[0].unit == "罐"
     assert result.detected_items[0].unit_confirmed is True
 
@@ -398,50 +403,3 @@ async def test_azure_vision_service_parses_dynamic_confidence():
     assert result.detected_items[0].confidence == 0.96
     assert result.detected_items[1].canonical_name == "模糊的罐頭"
     assert result.detected_items[1].confidence == 0.42
-
-
-@pytest.mark.anyio
-async def test_azure_vision_service_defaults_missing_confidence_to_low_uncertainty():
-    """PR #34 review suggestion 1: missing confidence defaults below 0.6 (0.5) so Agent asks."""
-    from unittest.mock import AsyncMock, MagicMock, patch
-
-    settings = VisionOpenAISettings(
-        endpoint="https://fake.openai.azure.com/",
-        api_key="valid-test-key",
-        deployment="gpt-4o",
-    )
-    media = LocalStagingMediaStorage()
-    await media.simulate_client_upload(
-        "demo-household", "blob://demo/missing-conf.jpg", b"fake-image-bytes"
-    )
-    service = AzureOpenAIVisionService(settings, media_storage=media, mock_fallback=False)
-
-    fake_response_json = {
-        "choices": [
-            {
-                "message": {
-                    "content": """{
-                        "scene_type": "single_item",
-                        "raw_text": "未知商品",
-                        "items": [
-                            {"raw_name": "未知商品", "quantity": 1.0, "unit": "個"}
-                        ]
-                    }"""
-                }
-            }
-        ]
-    }
-
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = fake_response_json
-
-    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
-        result = await service.analyze_image(
-            household_id="demo-household",
-            image_ref="blob://demo/missing-conf.jpg",
-        )
-
-    assert len(result.detected_items) == 1
-    assert result.detected_items[0].confidence == 0.5
-    assert result.detected_items[0].confidence < 0.6

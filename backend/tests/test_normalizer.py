@@ -12,12 +12,13 @@ def test_normalized_item_model_validation():
         brand="義美",
         feature_keywords=["鮮乳", "全脂", "義美"],
         aliases=["義美鮮乳", "鮮奶"],
-        quantity=2.0,
+        quantity=2,
         unit="瓶",
         capacity_spec="936ml",
     )
     assert item.canonical_name == "全脂鮮乳"
-    assert item.quantity == 2.0
+    assert item.quantity == 2
+    assert isinstance(item.quantity, int)
     assert item.unit == "瓶"
 
     # JSON roundtrip
@@ -31,7 +32,7 @@ def test_normalized_item_rejects_unagreed_fields():
         "raw_text": "測試",
         "canonical_name": "測試品",
         "feature_keywords": ["測試"],
-        "quantity": 1.0,
+        "quantity": 1,
         "unit": "個",
         "extra_field": "unagreed",
     }
@@ -55,7 +56,8 @@ def test_item_normalizer_resolves_single_package_and_capacity():
     res = normalizer.normalize("【特價】義美全脂鮮乳 936ml 2瓶裝")
     assert res.brand == "義美"
     assert res.canonical_name == "全脂鮮乳"
-    assert res.quantity == 2.0
+    assert res.quantity == 2
+    assert isinstance(res.quantity, int)
     assert res.unit == "瓶"
     assert res.unit_confirmed is True
     assert res.capacity_spec == "936ml"
@@ -70,7 +72,8 @@ def test_item_normalizer_resolves_multi_piece_box():
     res = normalizer.normalize("舒潔頂級三層抽取式衛生紙 100抽x24包/箱")
     assert res.brand == "舒潔"
     assert "衛生紙" in res.canonical_name
-    assert res.quantity == 24.0
+    assert res.quantity == 24
+    assert isinstance(res.quantity, int)
     assert res.unit == "包"
     assert res.unit_confirmed is True
     assert res.capacity_spec == "100抽"
@@ -81,7 +84,8 @@ def test_item_normalizer_resolves_coca_cola_pack():
     normalizer = ItemNormalizer()
     res = normalizer.normalize("可口可樂 330ml 6入組")
     assert res.brand == "可口可樂"
-    assert res.quantity == 6.0
+    assert res.quantity == 6
+    assert isinstance(res.quantity, int)
     assert res.unit == "入"
     assert res.unit_confirmed is True
     assert res.capacity_spec == "330ml"
@@ -93,7 +97,8 @@ def test_item_normalizer_fallback_defaults_leaves_unit_unconfirmed():
     # 當品名中無可解析量詞或規格時，不強加「個」，回傳 None 並標記 unit_confirmed=False
     res = normalizer.normalize("蘋果")
     assert res.canonical_name == "蘋果"
-    assert res.quantity == 1.0
+    assert res.quantity == 1
+    assert isinstance(res.quantity, int)
     assert res.unit is None
     assert res.unit_confirmed is False
     assert res.feature_keywords == []
@@ -110,7 +115,7 @@ def test_normalized_item_unconfirmed_unit_model():
     item = NormalizedItem(
         raw_text="醬油",
         canonical_name="醬油",
-        quantity=1.0,
+        quantity=1,
         unit=None,
         unit_confirmed=False,
     )

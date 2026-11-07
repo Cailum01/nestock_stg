@@ -38,7 +38,7 @@ class DetectedItem(ContractModel):
     raw_detected_name: str = Field(min_length=1)
     canonical_name: str = Field(min_length=1)
     feature_keywords: list[str] = Field(default_factory=list)
-    quantity: float = Field(gt=0)
+    quantity: int = Field(gt=0)
     unit: str | None = None
     unit_confirmed: bool = True
     confidence: float = Field(ge=0.0, le=1.0)

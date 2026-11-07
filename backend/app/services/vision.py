@@ -109,7 +109,7 @@ class MockVisionService:
         item = DetectedItem(
             raw_detected_name=raw_name,
             canonical_name=canonical_name,
-            quantity=1.0,
+            quantity=1,
             unit="瓶",
             unit_confirmed=True,
             confidence=0.95,
@@ -185,7 +185,7 @@ class AzureOpenAIVisionService:
                 "You are an expert Taiwanese FMCG and retail product recognition system. "
                 "Extract recognized grocery/pantry items or receipt line items. "
                 'Output JSON with schema: {"scene_type": "single_item"|"pantry_scene"|"receipt", '
-                '"raw_text": str, "items": [{"raw_name": str, "quantity": float, '
+                '"raw_text": str, "items": [{"raw_name": str, "quantity": int, '
                 '"unit": str, "confidence": float}]}. '
                 "For confidence, provide a float between 0.0 and 1.0 representing recognition "
                 "certainty (e.g., 0.95 for clearly visible items/text, "
@@ -243,7 +243,13 @@ class AzureOpenAIVisionService:
                 norm = self._normalizer.normalize(raw_name)
                 canonical_name = norm.canonical_name
                 keywords = norm.feature_keywords
-                qty = float(raw_item.get("quantity") or norm.quantity or 1.0)
+                raw_qty = raw_item.get("quantity")
+                try:
+                    qty = (
+                        max(1, int(round(float(raw_qty)))) if raw_qty is not None else norm.quantity
+                    )
+                except (ValueError, TypeError):
+                    qty = norm.quantity
                 unit = raw_item.get("unit") or norm.unit
                 unit_confirmed = bool(unit)
 

@@ -36,12 +36,12 @@ CAPACITY_REGEX = re.compile(
 
 # Multi-piece spec pattern (e.g. 100抽x24包, 6入x4組)
 MULTI_PACK_REGEX = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(?:抽|入|片|張)?\s*[xX*]\s*(\d+(?:\.\d+)?)\s*(入|瓶|罐|包|盒|袋|條|支|組|個|箱)",
+    r"(\d+(?:\.\d+)?)\s*(?:抽|入|片|張)?\s*[xX*]\s*(\d+)\s*(入|瓶|罐|包|盒|袋|條|支|組|個|箱)",
 )
 
 # Single-piece quantity pattern (e.g. 2瓶裝, 6入組, 12罐)
 SINGLE_PACK_REGEX = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(入|瓶|罐|包|盒|袋|條|支|組|個|箱)(?:裝|組)?(?:/[箱盒組袋])?",
+    r"(\d+)\s*(入|瓶|罐|包|盒|袋|條|支|組|個|箱)(?:裝|組)?(?:/[箱盒組袋])?",
 )
 
 
@@ -58,11 +58,11 @@ class ItemNormalizer:
         return re.sub(r"\s+", " ", cleaned).strip()
 
     def resolve_package_and_unit(
-        self, text: str, default_quantity: float = 1.0, default_unit: str | None = None
-    ) -> tuple[float, str | None, str | None, str]:
-        """Extract quantity, canonical unit, capacity specification, and remaining text."""
+        self, text: str, default_quantity: int = 1, default_unit: str | None = None
+    ) -> tuple[int, str | None, str | None, str]:
+        """Extract integer quantity, canonical unit, capacity specification, and remaining text."""
         capacity_spec: str | None = None
-        quantity: float = default_quantity
+        quantity: int = max(1, int(default_quantity))
         unit: str | None = default_unit
         working_text = text
 
@@ -70,7 +70,7 @@ class ItemNormalizer:
         multi_match = MULTI_PACK_REGEX.search(working_text)
         if multi_match:
             sub_count, main_count, matched_unit = multi_match.groups()
-            quantity = float(main_count)
+            quantity = max(1, int(main_count))
             unit = matched_unit
             # If sub_count is followed by unit like 抽/入
             capacity_match = CAPACITY_REGEX.search(working_text[: multi_match.start() + 10])
@@ -87,7 +87,7 @@ class ItemNormalizer:
             single_match = SINGLE_PACK_REGEX.search(working_text)
             if single_match:
                 qty_str, matched_unit = single_match.groups()
-                quantity = float(qty_str)
+                quantity = max(1, int(qty_str))
                 unit = matched_unit
                 working_text = (
                     working_text[: single_match.start()] + " " + working_text[single_match.end() :]
@@ -137,7 +137,7 @@ class ItemNormalizer:
         return []
 
     def normalize(
-        self, raw_text: str, fallback_quantity: float = 1.0, fallback_unit: str | None = None
+        self, raw_text: str, fallback_quantity: int = 1, fallback_unit: str | None = None
     ) -> NormalizedItem:
         """Full pipeline: clean marketing noise -> resolve units -> extract brand & features."""
         if not raw_text or not raw_text.strip():

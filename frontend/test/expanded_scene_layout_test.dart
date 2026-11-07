@@ -12,32 +12,24 @@ class VisionAgent implements PhotoAwareAgentClient {
   Future<AgentReply> send(String message) async =>
       sendWithPhoto(message, 'ref');
   @override
-  Future<AgentReply> sendWithPhoto(String message, String imageRef) async =>
-      const AgentReply(
-        message: '照片辨識結果',
-        results: [
-          AgentResultView(
-            kind: ResultKind.vision,
-            summary: '觀察結果',
-            data: {
-              'detected_items': [
-                {
-                  'canonical_name': '牛奶',
-                  'quantity': 2,
-                  'unit': '瓶',
-                  'unit_confirmed': true,
-                },
-                {
-                  'canonical_name': '茶',
-                  'quantity': 1,
-                  'unit': '包',
-                  'unit_confirmed': true,
-                },
-              ],
-            },
-          ),
-        ],
-      );
+  Future<AgentReply> sendWithPhoto(
+    String message,
+    String imageRef,
+  ) async => const AgentReply(
+    message: '照片辨識結果',
+    results: [
+      AgentResultView(
+        kind: ResultKind.vision,
+        summary: '觀察結果',
+        data: {
+          'items': [
+            {'name': '牛奶', 'quantity': 2, 'unit': '瓶', 'unit_confirmed': true},
+            {'name': '茶', 'quantity': 1, 'unit': '包', 'unit_confirmed': true},
+          ],
+        },
+      ),
+    ],
+  );
   @override
   Future<AgentReply> resume({
     required String approvalId,

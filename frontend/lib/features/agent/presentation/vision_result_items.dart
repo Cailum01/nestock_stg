@@ -7,7 +7,7 @@ class VisionResultItems extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final items = data['detected_items'];
+    final items = data['items'];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -29,8 +29,7 @@ class _VisionItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final name =
-        _text(item['canonical_name']) ?? _text(item['raw_detected_name']);
+    final name = _text(item['name']) ?? _text(item['seen_as']);
     if (name == null) return const SizedBox.shrink();
     final unit = _text(item['unit']);
     final quantity = item['quantity'];
@@ -40,14 +39,18 @@ class _VisionItem extends StatelessWidget {
               : quantity.toString())
         : null;
     final expiry = _text(item['expiry_date']);
-    final candidates = item['candidate_matches'];
-    final names = candidates is List
-        ? candidates
+    final match = item['match'];
+    final matchMap = match is Map ? match : null;
+    final choices = matchMap?['choices'];
+    final names = choices is List
+        ? choices
               .whereType<Map>()
-              .map((e) => _text(e['name']))
+              .map((e) => _text(e['item_name']))
               .whereType<String>()
               .toList()
         : <String>[];
+    final householdItemName = _text(matchMap?['item_name']);
+    final matchMethod = _text(matchMap?['method']);
     return Padding(
       padding: const EdgeInsets.only(top: 8),
       child: Column(
@@ -62,8 +65,11 @@ class _VisionItem extends StatelessWidget {
             Text('單位：$unit${item['unit_confirmed'] == true ? '' : '（待確認）'}'),
           if (expiry != null) Text('期限：$expiry'),
           if (names.isNotEmpty) Text('可能符合：${names.join('、')}'),
-          if (item['match_status'] == 'fuzzy_candidate' && names.isEmpty)
-            const Text('辨識結果待確認'),
+          if (names.isEmpty &&
+              matchMethod != 'none' &&
+              householdItemName != null)
+            Text('家中品項：$householdItemName'),
+          if (item['low_confidence'] == true) const Text('辨識結果待確認'),
         ],
       ),
     );

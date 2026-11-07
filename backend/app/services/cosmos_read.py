@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Generic, Protocol, TypeVar
 
-from app.models.domain import InventoryItem, ShoppingItem, Transaction
+from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus, Transaction
 
 DomainRecord = InventoryItem | ShoppingItem | Transaction
 RecordT = TypeVar("RecordT", InventoryItem, ShoppingItem, Transaction)
@@ -283,7 +283,7 @@ class CosmosReadRepository:
             document,
             household_id=household_id,
         )
-        if model_type is InventoryItem and document.get("deleted_at") is not None:
+        if model_type in (InventoryItem, ShoppingItem) and document.get("deleted_at") is not None:
             return None
         return record
 
@@ -296,21 +296,24 @@ class CosmosReadRepository:
     ) -> list[RecordT]:
         if not household_id:
             raise ValueError("household_id must not be empty.")
-        active_inventory_clause = (
-            "AND (NOT IS_DEFINED(c.deleted_at) OR IS_NULL(c.deleted_at)) "
-            if model_type is InventoryItem
-            else ""
-        )
+        active_clauses: list[str] = []
+        parameters: list[dict[str, object]] = [
+            {"name": "@record_type", "value": record_type},
+            {"name": "@household_id", "value": household_id},
+        ]
+        if model_type in (InventoryItem, ShoppingItem):
+            active_clauses.append("(NOT IS_DEFINED(c.deleted_at) OR IS_NULL(c.deleted_at))")
+        if model_type is ShoppingItem:
+            active_clauses.append("c.status = @pending_status")
+            parameters.append({"name": "@pending_status", "value": ShoppingStatus.PENDING.value})
+        active_filter = "".join(f"AND {clause} " for clause in active_clauses)
         query = CosmosQuery(
             query=(
                 "SELECT * FROM c WHERE c.record_type = @record_type "
                 "AND c.household_id = @household_id "
-                f"{active_inventory_clause}"
+                f"{active_filter}"
             ),
-            parameters=(
-                {"name": "@record_type", "value": record_type},
-                {"name": "@household_id", "value": household_id},
-            ),
+            parameters=tuple(parameters),
             partition_key=household_id,
         )
         documents = await self._client.query_items(
@@ -321,7 +324,14 @@ class CosmosReadRepository:
         active_documents = (
             document
             for document in documents
-            if model_type is not InventoryItem or document.get("deleted_at") is None
+            if (
+                model_type not in (InventoryItem, ShoppingItem)
+                or document.get("deleted_at") is None
+            )
+            and (
+                model_type is not ShoppingItem
+                or document.get("status") == ShoppingStatus.PENDING.value
+            )
         )
         return [
             CosmosDocumentMapper.from_document(

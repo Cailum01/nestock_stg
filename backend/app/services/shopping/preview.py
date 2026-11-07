@@ -26,7 +26,7 @@ class PurchasePreview:
     inventory_item_id: str
     purchased_quantity: float
     unit: str
-    remaining_quantity: float
+    planned_quantity: float
     next_status: ShoppingStatus
     inventory_quantity_before: float
     inventory_quantity_after: float
@@ -37,7 +37,7 @@ class RemovalPreview:
     household_id: str
     shopping_item_id: str
     name: str
-    remaining_quantity: float
+    planned_quantity: float
     unit: str
 
 
@@ -50,7 +50,7 @@ def _quantity(value: float, label: str, *, positive: bool = True) -> Decimal:
         raise ShoppingPreviewError(f"{label} is outside the supported quantity range.") from error
     if not finite or (value <= 0 if positive else value < 0):
         raise ShoppingPreviewError(f"{label} is outside the supported quantity range.")
-    # Avoid binary subtraction leaving a spurious remainder (e.g. 0.3 - 0.1).
+    # Avoid binary addition artifacts in the proposed stock (e.g. 0.1 + 0.2).
     # This is local preview arithmetic, not a shared persistence precision policy.
     return Decimal(str(value))
 
@@ -62,7 +62,7 @@ def _pending_item(household_id: str, shopping: ShoppingItem) -> Decimal:
         raise ShoppingPreviewError("Shopping identity and unit must be resolved.")
     if shopping.status != ShoppingStatus.PENDING:
         raise ShoppingPreviewError("Only a pending shopping item can be previewed.")
-    return _quantity(shopping.quantity, "Remaining shopping quantity")
+    return _quantity(shopping.quantity, "Planned shopping quantity")
 
 
 class ShoppingPreviewService:
@@ -82,9 +82,9 @@ class ShoppingPreviewService:
         cannot establish provenance, authorization, freshness or persistence.
         Unlinked purchases are deferred, not prohibited as a product feature.
         """
-        remaining = _pending_item(household_id, shopping)
+        planned = _pending_item(household_id, shopping)
         purchased = _quantity(purchased_quantity, "Purchased quantity")
-        if purchased > remaining:
+        if purchased > planned:
             raise ShoppingDecisionRequired("Purchases exceeding the list need an agreed workflow.")
         if inventory is None or not shopping.item_id:
             raise ShoppingDecisionRequired("Unlinked purchase workflow is not resolved here.")
@@ -98,26 +98,25 @@ class ShoppingPreviewService:
         after = float(before + purchased)
         if not math.isfinite(after):
             raise ShoppingPreviewError("Resulting inventory quantity must be finite.")
-        outstanding = remaining - purchased
         return PurchasePreview(
             household_id=household_id,
             shopping_item_id=shopping.shopping_item_id,
             inventory_item_id=inventory.item_id,
             purchased_quantity=float(purchased),
             unit=inventory.unit,
-            remaining_quantity=float(outstanding),
-            next_status=ShoppingStatus.PENDING if outstanding else ShoppingStatus.COMPLETED,
+            planned_quantity=float(planned),
+            next_status=ShoppingStatus.COMPLETED,
             inventory_quantity_before=float(before),
             inventory_quantity_after=after,
         )
 
     def preview_removal(self, *, household_id: str, shopping: ShoppingItem) -> RemovalPreview:
         """Describe removal of a pending entry; never implies purchase or stock reversal."""
-        remaining = _pending_item(household_id, shopping)
+        planned = _pending_item(household_id, shopping)
         return RemovalPreview(
             household_id=household_id,
             shopping_item_id=shopping.shopping_item_id,
             name=shopping.name,
-            remaining_quantity=float(remaining),
+            planned_quantity=float(planned),
             unit=shopping.unit,
         )

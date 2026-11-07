@@ -14,8 +14,22 @@ class Fixture implements ShoppingViewClient {
   @override
   Future<List<ShoppingViewItem>> load() async => List.generate(
     count,
-    (i) => ShoppingViewItem('$namePrefix$i', '1', '包', 'pending'),
+    (i) => ShoppingViewItem(
+      name: '$namePrefix$i',
+      quantity: 1,
+      unit: '包',
+      status: 'pending',
+    ),
   );
+}
+
+class NameOnlyFixture implements ShoppingViewClient {
+  const NameOnlyFixture();
+
+  @override
+  Future<List<ShoppingViewItem>> load() async => const [
+    ShoppingViewItem(name: '豆漿', status: 'pending'),
+  ];
 }
 
 Widget panel({
@@ -72,6 +86,21 @@ void main() {
 
     expect(find.text('購物清單目前是空的。'), findsOneWidget);
     expect(find.byKey(const Key('shopping-add-entry')), findsOneWidget);
+  });
+
+  testWidgets('name-only server items do not show a fake quantity or unit', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ShoppingOverlay(client: const NameOnlyFixture(), onClose: () {}),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('豆漿'), findsOneWidget);
+    expect(find.text('1'), findsNothing);
+    expect(find.text('個'), findsNothing);
   });
 
   testWidgets('add form contains only item name and cancel closes it', (

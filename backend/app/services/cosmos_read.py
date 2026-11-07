@@ -259,6 +259,52 @@ class CosmosReadRepository:
             for document in documents
         ]
 
+    async def read_inventory_item_with_etag(
+        self,
+        *,
+        household_id: str,
+        item_id: str,
+    ) -> MappedDocument[InventoryItem] | None:
+        return await self._read_mapped(
+            InventoryItem,
+            record_type="inventory_item",
+            identity=item_id,
+            identity_field="item_id",
+            household_id=household_id,
+        )
+
+    async def read_shopping_item_with_etag(
+        self,
+        *,
+        household_id: str,
+        shopping_item_id: str,
+    ) -> MappedDocument[ShoppingItem] | None:
+        return await self._read_mapped(
+            ShoppingItem,
+            record_type="shopping_item",
+            identity=shopping_item_id,
+            identity_field="shopping_item_id",
+            household_id=household_id,
+        )
+
+    async def list_inventory_with_etag(
+        self, household_id: str
+    ) -> list[MappedDocument[InventoryItem]]:
+        return await self._list_mapped(
+            InventoryItem,
+            record_type="inventory_item",
+            household_id=household_id,
+        )
+
+    async def list_shopping_with_etag(
+        self, household_id: str
+    ) -> list[MappedDocument[ShoppingItem]]:
+        return await self._list_mapped(
+            ShoppingItem,
+            record_type="shopping_item",
+            household_id=household_id,
+        )
+
     async def _read_record(
         self,
         model_type: type[RecordT],
@@ -268,6 +314,24 @@ class CosmosReadRepository:
         identity_field: str,
         household_id: str,
     ) -> RecordT | None:
+        mapped = await self._read_mapped(
+            model_type,
+            record_type=record_type,
+            identity=identity,
+            identity_field=identity_field,
+            household_id=household_id,
+        )
+        return None if mapped is None else mapped.record
+
+    async def _read_mapped(
+        self,
+        model_type: type[RecordT],
+        *,
+        record_type: str,
+        identity: str,
+        identity_field: str,
+        household_id: str,
+    ) -> MappedDocument[RecordT] | None:
         if not household_id:
             raise ValueError("household_id must not be empty.")
         if not identity:
@@ -278,14 +342,14 @@ class CosmosReadRepository:
         )
         if document is None:
             return None
-        record = CosmosDocumentMapper.from_document(
+        mapped = CosmosDocumentMapper.from_document_with_metadata(
             model_type,
             document,
             household_id=household_id,
         )
         if model_type in (InventoryItem, ShoppingItem) and document.get("deleted_at") is not None:
             return None
-        return record
+        return mapped
 
     async def _list_records(
         self,
@@ -294,6 +358,20 @@ class CosmosReadRepository:
         record_type: str,
         household_id: str,
     ) -> list[RecordT]:
+        mapped = await self._list_mapped(
+            model_type,
+            record_type=record_type,
+            household_id=household_id,
+        )
+        return [item.record for item in mapped]
+
+    async def _list_mapped(
+        self,
+        model_type: type[RecordT],
+        *,
+        record_type: str,
+        household_id: str,
+    ) -> list[MappedDocument[RecordT]]:
         if not household_id:
             raise ValueError("household_id must not be empty.")
         active_clauses: list[str] = []
@@ -334,7 +412,7 @@ class CosmosReadRepository:
             )
         )
         return [
-            CosmosDocumentMapper.from_document(
+            CosmosDocumentMapper.from_document_with_metadata(
                 model_type,
                 document,
                 household_id=household_id,

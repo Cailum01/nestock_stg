@@ -409,6 +409,26 @@ def test_expiry_date_reaches_the_app():
     assert seen["items"][0]["expiry_date"] == "2026-11-20"
 
 
+class _FailingVision:
+    async def analyze_image(self, household_id, image_ref, scene_type=None):
+        raise TimeoutError("vision timed out")
+
+
+def test_photo_failure_is_answered_instead_of_failing_the_request(caplog):
+    model = ScriptedModel(_call("analyze_photo"), AIMessage(content="照片辨識失敗了，請再拍一次。"))
+    media = LocalStagingMediaStorage()
+    asyncio.run(media.simulate_client_upload(HOUSEHOLD, PHOTO, b"jpeg-bytes"))
+    tools = QueryTools(_Inventory(), _Shopping())
+    agent = ReadAgent(model, tools, load_system_prompt(), vision=_FailingVision(), media=media)
+
+    response = _ask_photo(agent)
+
+    assert response.message == "照片辨識失敗了，請再拍一次。"
+    assert response.results == []  # no photo card: there is nothing to show
+    assert _seen_by_model(model) == {"error": "photo_analysis_failed"}
+    assert "Photo analysis failed" in caplog.text
+
+
 def test_several_items_are_matched_with_one_inventory_read():
     class _CountingInventory(_Inventory):
         reads = 0

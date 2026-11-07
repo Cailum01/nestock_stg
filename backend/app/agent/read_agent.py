@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Awaitable, Callable, TypedDict
@@ -51,6 +52,11 @@ PHOTO_ATTACHED = "使用者這次附了一張照片。請先呼叫 analyze_photo
 PHOTO_NOT_FOUND = "找不到這張照片，請重新拍一次或重新上傳。"
 LOW_CONFIDENCE = 0.6  # below this, the Agent says it is unsure (Issue #17)
 NO_PHOTO = "這次沒有附照片，無法辨識。"
+PHOTO_FAILED = json.dumps({"error": "photo_analysis_failed"})
+"""Tool result when A2's recognition raises (timeout, upstream error): the Agent still
+answers and asks for another photo instead of the whole request failing (502)."""
+
+logger = logging.getLogger(__name__)
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
@@ -250,9 +256,13 @@ class ReadAgent:
         if not image_ref or self._vision is None:
             return NO_PHOTO, None
         household_id = state["household_id"]
-        result = await self._vision.analyze_image(
-            household_id, image_ref, _scene(args.get("scene_type"))
-        )
+        try:
+            result = await self._vision.analyze_image(
+                household_id, image_ref, _scene(args.get("scene_type"))
+            )
+        except Exception:  # A2's recognition failed; nothing was read or written
+            logger.warning("Photo analysis failed for image_ref=%s", image_ref, exc_info=True)
+            return PHOTO_FAILED, None
         household_items = await self._matcher.household_items(household_id)
         matches = [
             match_term(detected.canonical_name, household_items)

@@ -18,7 +18,6 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app.core.dependencies import get_inventory_service  # noqa: E402
 from app.models.vision import SceneType  # noqa: E402
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage  # noqa: E402
 from app.services.vision import (  # noqa: E402
@@ -68,22 +67,14 @@ async def run_single_test(
         print(f"  * 推斷場景類別 (scene_type) : {result.scene_type.value}")
         print(f"  * 原始 OCR 萃取 (raw_text)  : {result.raw_text or '(無文字)'}")
         print(f"  * 辨識品項數量 (items count): {len(result.detected_items)} 件")
-        print("\n  [品項結構化辨識清單]")
+        print("\n  [品項結構化辨識清單 (純觀測事實 - Issue #44)]")
         for idx, item in enumerate(result.detected_items, 1):
             unit_display = item.unit if item.unit else "(無單位/需澄清)"
             confirmed_mark = "[V] 確定" if item.unit_confirmed else "[?] 待確認"
-            matched_id_str = item.matched_inventory_id or "無"
             print(f"    [{idx}] 標準品名: {item.canonical_name}")
             print(f"        原始字樣: {item.raw_detected_name}")
             print(f"        估算數量: {item.quantity} {unit_display} ({confirmed_mark})")
-            print(f"        特徵標籤: {item.feature_keywords}")
             print(f"        信心指標: {item.confidence:.2f}")
-            print(f"        庫存比對: {item.match_status.value} (命中ID: {matched_id_str})")
-            if item.candidate_matches:
-                candidates_str = ", ".join(
-                    f"{c.name}({c.score:.2f})" for c in item.candidate_matches
-                )
-                print(f"        模糊候選: [{candidates_str}]")
     except Exception as exc:
         print(f"[FAILED] 呼叫失敗: {type(exc).__name__} - {exc}")
         import traceback
@@ -102,7 +93,6 @@ async def main() -> None:
 
     settings = load_vision_azure_settings()
     media = LocalStagingMediaStorage()
-    inventory = get_inventory_service()
     household_id = "demo-household"
 
     if settings is not None:
@@ -111,12 +101,12 @@ async def main() -> None:
         print(f"  * 使用模型 (Deployment): {settings.deployment}")
         print(f"  * 基礎網址 (Base URL)  : {settings.base_url}")
         service: VisionService = AzureOpenAIVisionService(
-            settings, inventory, media, mock_fallback=False
+            settings, media_storage=media, mock_fallback=False
         )
     else:
         print("[MODE] 未偵測到 Azure OpenAI 設定，自動啟用【範例模式 (MockVisionService)】：")
         print("  * 說明：以內建生活用品範例資料進行結構化展示，無需連網或金鑰。")
-        service = MockVisionService(inventory_service=inventory)
+        service = MockVisionService()
 
     # 若命令列有指定圖片參數：測試使用者自選圖
     if len(sys.argv) > 1:

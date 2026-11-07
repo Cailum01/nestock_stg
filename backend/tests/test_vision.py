@@ -38,15 +38,11 @@ def sample_detected_item() -> dict:
     return {
         "raw_detected_name": "統一陽光高纖無糖豆漿 450ml",
         "canonical_name": "高纖無糖豆漿",
-        "feature_keywords": ["豆漿", "無糖", "高纖"],
         "quantity": 1.0,
         "unit": "瓶",
         "unit_confirmed": True,
         "confidence": 0.95,
         "expiry_date": date(2026, 12, 31),
-        "matched_inventory_id": "soy-001",
-        "candidate_matches": [{"item_id": "soy-001", "name": "高纖無糖豆漿", "score": 0.95}],
-        "match_status": MatchStatus.EXACT_MATCH,
     }
 
 
@@ -62,8 +58,8 @@ def test_vision_model_validation_and_json_roundtrip():
     loaded = VisionAnalysisResult.model_validate_json(dumped)
     assert loaded == result
     assert loaded.detected_items[0].canonical_name == "高纖無糖豆漿"
-    assert len(loaded.detected_items[0].candidate_matches) == 1
-    assert loaded.detected_items[0].candidate_matches[0].item_id == "soy-001"
+    assert loaded.detected_items[0].matched_inventory_id is None
+    assert loaded.detected_items[0].candidate_matches == []
 
 
 def test_detected_item_allows_none_unit_and_unconfirmed():
@@ -111,73 +107,28 @@ def test_vision_service_protocol_conformance():
 
 
 @pytest.mark.anyio
-async def test_mock_vision_service_matches_existing_item(sample_now=None):
-    from datetime import UTC, datetime
+async def test_mock_vision_service_returns_pure_observation_without_reading_inventory():
+    class ProhibitiveInventoryService:
+        async def list_items(self, household_id: str) -> list[InventoryItem]:
+            raise AssertionError("A2 VisionService must never read inventory (Issue #44)")
 
-    now = datetime(2026, 1, 1, tzinfo=UTC)
-    existing_item = InventoryItem(
-        item_id="soy-001",
-        household_id="demo-household",
-        name="高纖無糖豆漿",
-        quantity=2.0,
-        unit="瓶",
-        created_at=now,
-        updated_at=now,
-        aliases=["無糖豆漿"],
-    )
-    service = MockVisionService(inventory_service=DummyInventoryService([existing_item]))
+    service = MockVisionService(inventory_service=ProhibitiveInventoryService())
     result = await service.analyze_image(
         household_id="demo-household",
         image_ref="blob://households/demo-household/media/item1.jpg",
         scene_type=SceneType.SINGLE_ITEM,
     )
-    assert len(result.detected_items) >= 1
+    assert len(result.detected_items) == 1
     first_item = result.detected_items[0]
-    assert first_item.match_status == MatchStatus.EXACT_MATCH
-    assert first_item.matched_inventory_id == "soy-001"
-
-
-@pytest.mark.anyio
-async def test_mock_vision_service_fuzzy_candidate_matching():
-    from datetime import UTC, datetime
-
-    now = datetime(2026, 1, 1, tzinfo=UTC)
-    # 建立兩個名稱不同但包含「豆漿」關鍵字的既有品項
-    item1 = InventoryItem(
-        item_id="soy-black",
-        household_id="demo-household",
-        name="統一黑豆漿",
-        quantity=1.0,
-        unit="瓶",
-        created_at=now,
-        updated_at=now,
-    )
-    item2 = InventoryItem(
-        item_id="soy-organic",
-        household_id="demo-household",
-        name="義美有機無糖豆漿",
-        quantity=3.0,
-        unit="瓶",
-        created_at=now,
-        updated_at=now,
-    )
-    service = MockVisionService(inventory_service=DummyInventoryService([item1, item2]))
-    # 辨識圖片為 "高纖無糖豆漿" (關鍵字: 豆漿, 無糖, 高纖)，非完全匹配但命中上述兩者特徵
-    result = await service.analyze_image(
-        household_id="demo-household",
-        image_ref="blob://households/demo-household/media/item-fuzzy.jpg",
-    )
-    assert len(result.detected_items) >= 1
-    detected = result.detected_items[0]
-    assert detected.match_status == MatchStatus.FUZZY_CANDIDATE
-    assert len(detected.candidate_matches) == 2
-    candidate_ids = {c.item_id for c in detected.candidate_matches}
-    assert candidate_ids == {"soy-black", "soy-organic"}
+    assert first_item.canonical_name == "高纖無糖豆漿"
+    assert first_item.matched_inventory_id is None
+    assert first_item.candidate_matches == []
+    assert first_item.match_status == MatchStatus.NEW_ITEM
 
 
 @pytest.mark.anyio
 async def test_mock_vision_service_optional_scene_type():
-    service = MockVisionService(inventory_service=DummyInventoryService([]))
+    service = MockVisionService()
     result = await service.analyze_image(
         household_id="demo-household",
         image_ref="blob://households/demo-household/media/item2.jpg",
@@ -188,23 +139,8 @@ async def test_mock_vision_service_optional_scene_type():
 
 
 @pytest.mark.anyio
-async def test_mock_vision_service_new_item_when_not_in_inventory():
-    service = MockVisionService(inventory_service=DummyInventoryService([]))
-    result = await service.analyze_image(
-        household_id="demo-household",
-        image_ref="blob://households/demo-household/media/item2.jpg",
-        scene_type=SceneType.SINGLE_ITEM,
-    )
-    assert len(result.detected_items) >= 1
-    first_item = result.detected_items[0]
-    assert first_item.match_status == MatchStatus.NEW_ITEM
-    assert first_item.matched_inventory_id is None
-    assert len(first_item.candidate_matches) == 0
-
-
-@pytest.mark.anyio
 async def test_vision_service_rejects_empty_image_ref():
-    service = MockVisionService(inventory_service=DummyInventoryService([]))
+    service = MockVisionService()
     with pytest.raises(ValueError):
         await service.analyze_image(
             household_id="demo-household",
@@ -462,3 +398,50 @@ async def test_azure_vision_service_parses_dynamic_confidence():
     assert result.detected_items[0].confidence == 0.96
     assert result.detected_items[1].canonical_name == "模糊的罐頭"
     assert result.detected_items[1].confidence == 0.42
+
+
+@pytest.mark.anyio
+async def test_azure_vision_service_defaults_missing_confidence_to_low_uncertainty():
+    """PR #34 review suggestion 1: missing confidence defaults below 0.6 (0.5) so Agent asks."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    settings = VisionOpenAISettings(
+        endpoint="https://fake.openai.azure.com/",
+        api_key="valid-test-key",
+        deployment="gpt-4o",
+    )
+    media = LocalStagingMediaStorage()
+    await media.simulate_client_upload(
+        "demo-household", "blob://demo/missing-conf.jpg", b"fake-image-bytes"
+    )
+    service = AzureOpenAIVisionService(settings, media_storage=media, mock_fallback=False)
+
+    fake_response_json = {
+        "choices": [
+            {
+                "message": {
+                    "content": """{
+                        "scene_type": "single_item",
+                        "raw_text": "未知商品",
+                        "items": [
+                            {"raw_name": "未知商品", "quantity": 1.0, "unit": "個"}
+                        ]
+                    }"""
+                }
+            }
+        ]
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = fake_response_json
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        result = await service.analyze_image(
+            household_id="demo-household",
+            image_ref="blob://demo/missing-conf.jpg",
+        )
+
+    assert len(result.detected_items) == 1
+    assert result.detected_items[0].confidence == 0.5
+    assert result.detected_items[0].confidence < 0.6

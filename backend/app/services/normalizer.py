@@ -122,59 +122,19 @@ class ItemNormalizer:
         return detected_brand, canonical
 
     def extract_feature_keywords(self, canonical_name: str, brand: str | None = None) -> list[str]:
-        """Extract deduplicated feature keywords snapshot for B1 storage and exact matching.
+        """Return empty list as feature_keywords is retired under Issue #36 (Plan B).
 
-        Note: Brand is intentionally excluded to avoid candidate set explosion per B2/A1 review.
+        Per Issue #36 and Issue #35, item matching uses full `canonical_name` and `aliases`
+        instead of static 21-token substring splitting.
         """
-        keywords: list[str] = []
-
-        # Segment canonical name into meaningful tokens
-        common_tokens = [
-            "鮮乳",
-            "鮮奶",
-            "全脂",
-            "低脂",
-            "豆漿",
-            "無糖",
-            "高纖",
-            "衛生紙",
-            "抽取式",
-            "衛生棉",
-            "蘋果",
-            "可樂",
-            "汽水",
-            "醬油",
-            "白米",
-            "燕麥",
-            "洗髮精",
-            "沐浴乳",
-            "牙膏",
-            "沙拉油",
-            "橄欖油",
-        ]
-        for token in common_tokens:
-            if token in canonical_name and token not in keywords:
-                keywords.append(token)
-
-        # Ensure canonical name itself or whole words are included if not present
-        if not keywords and canonical_name:
-            keywords.append(canonical_name)
-
-        return keywords
+        del canonical_name, brand
+        return []
 
     def generate_aliases(self, canonical_name: str, brand: str | None) -> list[str]:
-        """Generate common user search aliases and synonym expressions."""
-        aliases: list[str] = []
-
-        if brand:
-            aliases.append(f"{brand}{canonical_name}")
-
-        if "鮮乳" in canonical_name:
-            aliases.append(canonical_name.replace("鮮乳", "鮮奶"))
-        elif "鮮奶" in canonical_name:
-            aliases.append(canonical_name.replace("鮮奶", "鮮乳"))
-
-        return aliases
+        """Generate brand-prefixed expression without static synonym tables (Issue #36 Plan B)."""
+        if brand and canonical_name and not canonical_name.startswith(brand):
+            return [f"{brand}{canonical_name}"]
+        return []
 
     def normalize(
         self, raw_text: str, fallback_quantity: float = 1.0, fallback_unit: str | None = None

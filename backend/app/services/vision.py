@@ -9,13 +9,10 @@ from typing import Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 from app.models.vision import (
-    CandidateMatch,
     DetectedItem,
-    MatchStatus,
     SceneType,
     VisionAnalysisResult,
 )
-from app.services.interfaces import InventoryService
 from app.services.normalizer import ItemNormalizer
 from app.services.provisional_storage.interfaces import MediaStorageService
 
@@ -83,10 +80,15 @@ class VisionService(Protocol):
 
 
 class MockVisionService:
-    """Mock vision provider for local development and deterministic testing."""
+    """Mock vision provider for local development and deterministic testing.
 
-    def __init__(self, inventory_service: InventoryService) -> None:
-        self.inventory_service = inventory_service
+    Per Issue #44, A2 returns pure perception observations and never reads inventory.
+    `inventory_service` is accepted only as an ignored compatibility parameter for
+    existing composition callers.
+    """
+
+    def __init__(self, inventory_service: object | None = None) -> None:
+        del inventory_service
 
     async def analyze_image(
         self,
@@ -94,65 +96,23 @@ class MockVisionService:
         image_ref: str,
         scene_type: SceneType | None = None,
     ) -> VisionAnalysisResult:
+        del household_id
         if not image_ref or not image_ref.strip():
             raise ValueError("image_ref must be a non-empty string reference.")
 
         effective_scene = scene_type or SceneType.SINGLE_ITEM
-        existing_items = await self.inventory_service.list_items(household_id)
 
-        # Baseline mock recognition scenario
+        # Baseline mock recognition scenario (pure observation, no inventory matching)
         raw_name = "統一陽光高纖無糖豆漿 450ml"
         canonical_name = "高纖無糖豆漿"
-        keywords = ["豆漿", "無糖", "高纖"]
-
-        # Match against inventory
-        matched_id: str | None = None
-        match_status = MatchStatus.NEW_ITEM
-        candidate_matches: list[CandidateMatch] = []
-
-        # 1. Exact or alias match
-        for item in existing_items:
-            if item.name == canonical_name:
-                matched_id = item.item_id
-                match_status = MatchStatus.EXACT_MATCH
-                break
-            if item.aliases and canonical_name in item.aliases:
-                matched_id = item.item_id
-                match_status = MatchStatus.ALIAS_MATCH
-                break
-
-        # 2. If not exact/alias, check for fuzzy candidates based on feature_keywords overlap
-        if matched_id is None:
-            fuzzy_hits: list[CandidateMatch] = []
-            for item in existing_items:
-                matching_kw = [
-                    kw
-                    for kw in keywords
-                    if kw in item.name or (item.aliases and any(kw in a for a in item.aliases))
-                ]
-                if matching_kw:
-                    score = min(1.0, 0.5 + 0.15 * len(matching_kw))
-                    fuzzy_hits.append(
-                        CandidateMatch(item_id=item.item_id, name=item.name, score=score)
-                    )
-
-            if fuzzy_hits:
-                match_status = MatchStatus.FUZZY_CANDIDATE
-                candidate_matches = fuzzy_hits
-                if len(candidate_matches) == 1:
-                    matched_id = candidate_matches[0].item_id
 
         item = DetectedItem(
             raw_detected_name=raw_name,
             canonical_name=canonical_name,
-            feature_keywords=keywords,
             quantity=1.0,
             unit="瓶",
             unit_confirmed=True,
             confidence=0.95,
-            matched_inventory_id=matched_id,
-            candidate_matches=candidate_matches,
-            match_status=match_status,
         )
 
         return VisionAnalysisResult(
@@ -164,20 +124,26 @@ class MockVisionService:
 
 
 class AzureOpenAIVisionService:
-    """Azure OpenAI GPT-4o multimodal vision adapter with graceful fallback."""
+    """Azure OpenAI GPT-4o multimodal vision adapter.
+
+    Per Issue #44, outputs pure perception observations without reading inventory.
+    """
 
     def __init__(
         self,
         settings: VisionOpenAISettings,
-        inventory_service: InventoryService,
-        media_storage: MediaStorageService,
+        inventory_service: object | None = None,
+        media_storage: MediaStorageService | None = None,
         mock_fallback: bool = False,
     ) -> None:
+        if media_storage is None and isinstance(inventory_service, MediaStorageService):
+            media_storage = inventory_service
+        if media_storage is None:
+            raise ValueError("media_storage is required for AzureOpenAIVisionService.")
         self.settings = settings
-        self.inventory_service = inventory_service
         self.media_storage = media_storage
         self.mock_fallback = mock_fallback
-        self._fallback_service = MockVisionService(inventory_service)
+        self._fallback_service = MockVisionService()
         self._normalizer = ItemNormalizer()
 
     async def analyze_image(
@@ -265,8 +231,7 @@ class AzureOpenAIVisionService:
                 content = body["choices"][0]["message"]["content"]
                 parsed = json.loads(content)
 
-            # Match extracted items with inventory
-            existing_items = await self.inventory_service.list_items(household_id)
+            # Build pure perception observations without reading inventory (Issue #44)
             detected_items: list[DetectedItem] = []
             for raw_item in parsed.get("items", []):
                 raw_name = raw_item.get("raw_name", "").strip()
@@ -282,43 +247,12 @@ class AzureOpenAIVisionService:
                 unit = raw_item.get("unit") or norm.unit
                 unit_confirmed = bool(unit)
 
-                matched_id = None
-                match_status = MatchStatus.NEW_ITEM
-                candidate_matches = []
-
-                for item in existing_items:
-                    has_alias = item.aliases and canonical_name in item.aliases
-                    if item.name == canonical_name or has_alias:
-                        matched_id = item.item_id
-                        match_status = MatchStatus.EXACT_MATCH
-                        break
-
-                if matched_id is None:
-                    fuzzy_hits = []
-                    for item in existing_items:
-                        matching_kw = [
-                            kw
-                            for kw in keywords
-                            if kw in item.name
-                            or (item.aliases and any(kw in a for a in item.aliases))
-                        ]
-                        if matching_kw:
-                            score = min(1.0, 0.5 + 0.15 * len(matching_kw))
-                            fuzzy_hits.append(
-                                CandidateMatch(item_id=item.item_id, name=item.name, score=score)
-                            )
-                    if fuzzy_hits:
-                        match_status = MatchStatus.FUZZY_CANDIDATE
-                        candidate_matches = fuzzy_hits
-                        if len(candidate_matches) == 1:
-                            matched_id = candidate_matches[0].item_id
-
                 raw_conf = raw_item.get("confidence")
                 try:
-                    confidence = float(raw_conf) if raw_conf is not None else 0.85
+                    confidence = float(raw_conf) if raw_conf is not None else 0.5
                     confidence = max(0.0, min(1.0, round(confidence, 2)))
                 except (ValueError, TypeError):
-                    confidence = 0.85
+                    confidence = 0.5
 
                 detected_items.append(
                     DetectedItem(
@@ -329,9 +263,6 @@ class AzureOpenAIVisionService:
                         unit=unit,
                         unit_confirmed=unit_confirmed,
                         confidence=confidence,
-                        matched_inventory_id=matched_id,
-                        candidate_matches=candidate_matches,
-                        match_status=match_status,
                     )
                 )
 

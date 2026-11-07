@@ -59,9 +59,9 @@ def test_item_normalizer_resolves_single_package_and_capacity():
     assert res.unit == "瓶"
     assert res.unit_confirmed is True
     assert res.capacity_spec == "936ml"
-    assert "鮮乳" in res.feature_keywords
-    # Brand must NOT leak into feature keywords per B2/A1 review
-    assert "義美" not in res.feature_keywords
+    # Issue #36 Plan B retires feature_keywords substring splitting and static synonym tables
+    assert res.feature_keywords == []
+    assert res.aliases == ["義美全脂鮮乳"]
 
 
 def test_item_normalizer_resolves_multi_piece_box():
@@ -96,7 +96,7 @@ def test_item_normalizer_fallback_defaults_leaves_unit_unconfirmed():
     assert res.quantity == 1.0
     assert res.unit is None
     assert res.unit_confirmed is False
-    assert "蘋果" in res.feature_keywords
+    assert res.feature_keywords == []
 
 
 def test_item_normalizer_explicit_fallback_unit():
@@ -122,3 +122,23 @@ def test_item_normalizer_rejects_empty_input():
     normalizer = ItemNormalizer()
     with pytest.raises(ValueError):
         normalizer.normalize("   ")
+
+
+@pytest.mark.parametrize(
+    ("raw_text", "expected_canonical", "wrong_truncated"),
+    [
+        ("萬家香醬油膏 500ml", "醬油膏", "醬油"),
+        ("義美100%純蘋果汁 900ml", "100%純蘋果汁", "蘋果"),
+        ("日式起司可樂餅 4入", "日式起司可樂餅", "可樂"),
+        ("新竹純白米粉 300g", "新竹純白米粉", "白米"),
+    ],
+)
+def test_item_normalizer_preserves_full_canonical_name_without_suffix_truncation(
+    raw_text: str, expected_canonical: str, wrong_truncated: str
+):
+    """Issue #35 & #36 Plan B: retiring 21-token substring splitting prevents false truncation."""
+    normalizer = ItemNormalizer()
+    res = normalizer.normalize(raw_text)
+    assert res.canonical_name == expected_canonical
+    assert res.canonical_name != wrong_truncated
+    assert res.feature_keywords == []

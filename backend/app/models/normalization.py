@@ -8,7 +8,8 @@ class NormalizedItem(ContractModel):
 
     Invariants:
     - Never mutates domain inventory directly without HITL approval.
-    - feature_keywords serves as exact snapshot for Transaction and Cosmos indexing.
+    - Focuses on marketing noise stripping, package quantity/unit/capacity parsing,
+      and canonical name extraction (Issue #36 Plan B).
     - unit strictly conforms to canonical household units.
     """
 

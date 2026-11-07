@@ -45,7 +45,7 @@ class DetectedItem(ContractModel):
     expiry_date: date | None = None
     matched_inventory_id: str | None = None
     candidate_matches: list[CandidateMatch] = Field(default_factory=list)
-    match_status: MatchStatus
+    match_status: MatchStatus = MatchStatus.NEW_ITEM
 
 
 class VisionAnalysisResult(ContractModel):

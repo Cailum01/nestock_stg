@@ -24,6 +24,25 @@ class MockAgentClient implements AgentClient {
 
   @override
   Future<AgentReply> send(String message) async {
+    if (message.trim() == '/confirmation-demo') {
+      return const AgentReply(
+        message: '確認卡片示範',
+        mockConfirmationItems: [
+          ConfirmationItemView(
+            name: '高纖無糖豆漿',
+            quantity: 1,
+            unit: '瓶',
+            location: '冰箱',
+          ),
+          ConfirmationItemView(
+            name: '衛生紙',
+            quantity: 2,
+            unit: '包',
+            location: '儲藏櫃',
+          ),
+        ],
+      );
+    }
     if (message.trim() == '/vision-demo') {
       const items = [
         (name: '衛生紙', quantity: '3 包', location: '儲藏櫃'),

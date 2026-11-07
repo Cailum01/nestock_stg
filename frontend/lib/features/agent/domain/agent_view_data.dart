@@ -32,12 +32,29 @@ class ApprovalView {
   final List<OperationView> operations;
 }
 
+/// Local-only card content for the Confirmation Card presentation prototype.
+/// This is not an approval wire model or a request to persist any change.
+class ConfirmationItemView {
+  const ConfirmationItemView({
+    required this.name,
+    required this.quantity,
+    required this.unit,
+    required this.location,
+  });
+
+  final String name;
+  final num quantity;
+  final String unit;
+  final String location;
+}
+
 class AgentReply {
   const AgentReply({
     required this.message,
     this.results = const [],
     this.approval,
     this.mockVisionItems,
+    this.mockConfirmationItems,
   });
   final String message;
   final List<AgentResultView> results;
@@ -46,4 +63,7 @@ class AgentReply {
   /// Offline UI fixture only; not an A2 wire or persistence model.
   final List<({String name, String quantity, String location})>?
   mockVisionItems;
+
+  /// Development-only Confirmation Card fixture; it has no backend lifecycle.
+  final List<ConfirmationItemView>? mockConfirmationItems;
 }

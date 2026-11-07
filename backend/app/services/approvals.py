@@ -387,29 +387,22 @@ class ApprovalService:
 
     @staticmethod
     def to_pending_approval(record: ApprovalRecord) -> PendingApproval:
-        """Public card for the App.
-
-        PROVISIONAL: purchase options are shown under `values["options"]` until A1 and
-        C2 agree on the wire shape (PR #47 section 9).
-        """
+        """Public card for the App. Purchase options sit on the card, as in v8 section 12."""
         # The card's own option_id comes last, so the App always sends back an ID on this card.
         options = [{**o.values, "option_id": o.option_id} for o in record.options]
-        operations = []
-        for operation in record.operations:
-            values = dict(operation.values)
-            if options:
-                values["options"] = options
-            operations.append(
-                ProposedOperation(
-                    operation_id=operation.operation_id,
-                    description=operation.description,
-                    values=values,
-                )
+        operations = [
+            ProposedOperation(
+                operation_id=operation.operation_id,
+                description=operation.description,
+                values=dict(operation.values),
             )
+            for operation in record.operations
+        ]
         return PendingApproval(
             approval_id=record.approval_id,
             presentation=record.presentation,
             operations=operations,
+            options=options,
         )
 
     async def list_open(self, *, household_id: str) -> list[ApprovalRecord]:

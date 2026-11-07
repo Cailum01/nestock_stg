@@ -27,7 +27,7 @@ Stable operation identity is necessary for future durable idempotency.
 | AgentRequest | household scope and natural-language message |
 | AgentResponse | speech, result list, optional pending approval |
 | AgentResult | kind, display summary, provisional structured data |
-| PendingApproval | identity, presentation, proposed operation group |
+| PendingApproval | identity, presentation, proposed operation group, purchase options (`purchase_options` only) |
 | ProposedOperation | stable identity, description, resolved values for display |
 | ResumeRequest | scope, approval identity, approve/reject decision, and the user's selection (`approved_operation_ids` for batch, `selected_option_id` for purchase options; D-10) |
 
@@ -64,6 +64,26 @@ ignored when `approved` is false:
 ```json
 {"household_id":"demo-household","approval_id":"demo-approval-2","approved":true,"approved_operation_ids":["op-101"]}
 {"household_id":"demo-household","approval_id":"demo-approval-3","approved":true,"selected_option_id":"option-001"}
+```
+
+A `purchase_options` card lists its options on the card itself (v8 section 12);
+`options` is empty for the other presentations. The App sends back one
+`option_id` as `selected_option_id`:
+
+```json
+{
+  "approval_id": "demo-approval-3",
+  "presentation": "purchase_options",
+  "operations": [{
+    "operation_id": "op-purchase-001",
+    "description": "Add toilet paper to the Shopping List",
+    "values": {"name": "衛生紙"}
+  }],
+  "options": [
+    {"option_id": "option-001", "store": "Store A", "price": 99, "url": "https://example.com/a", "source": "live"},
+    {"option_id": "option-002", "store": "Store B", "price": 109, "url": "https://example.com/b", "source": "live"}
+  ]
+}
 ```
 
 Never execute generic `values` or trust `approved` alone. Future implementation

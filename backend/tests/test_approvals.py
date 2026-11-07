@@ -452,7 +452,7 @@ def test_option_values_may_not_carry_their_own_option_id():
 
 
 def test_public_card_shows_operations_and_purchase_options():
-    service, _, _, _, _ = setup()
+    service, _, _, _, etag = setup()
     record = make_purchase(service)
 
     card = ApprovalService.to_pending_approval(record)
@@ -460,10 +460,10 @@ def test_public_card_shows_operations_and_purchase_options():
     assert card.approval_id == record.approval_id
     assert card.presentation is ApprovalPresentation.PURCHASE_OPTIONS
     assert card.operations[0].operation_id == record.operation_ids[0]
-    assert [option["option_id"] for option in card.operations[0].values["options"]] == [
-        "option_001",
-        "option_002",
-    ]
+    # v8 section 12: options sit on the card, not inside the operation's values.
+    assert [option["option_id"] for option in card.options] == ["option_001", "option_002"]
+    assert "options" not in card.operations[0].values
+    assert ApprovalService.to_pending_approval(make_single(service, etag)).options == []
 
 
 def test_public_card_always_shows_the_cards_own_option_id():
@@ -474,8 +474,7 @@ def test_public_card_always_shows_the_cards_own_option_id():
 
     card = ApprovalService.to_pending_approval(ApprovalRecord.from_document(document))
 
-    shown = card.operations[0].values["options"]
-    assert [option["option_id"] for option in shown] == ["option_001", "option_002"]
+    assert [option["option_id"] for option in card.options] == ["option_001", "option_002"]
 
 
 def test_document_round_trip_ignores_cosmos_system_fields():

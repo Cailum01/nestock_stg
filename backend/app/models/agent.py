@@ -55,6 +55,9 @@ class PendingApproval(ContractModel):
     approval_id: str
     presentation: ApprovalPresentation
     operations: list[ProposedOperation] = Field(min_length=1)
+    options: list[dict[str, JsonValue]] = Field(default_factory=list)
+    """purchase_options only: each option is its `option_id` plus the values shown
+    (store, price, url, source, ...), as in v8 section 12. Empty for other cards."""
 
 
 class AgentResponse(ContractModel):

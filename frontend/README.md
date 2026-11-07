@@ -20,6 +20,11 @@ retain the returned `image_ref`. The composer also supports push-to-talk recordi
 and sends audio to `POST /api/speech/transcribe`; the transcript is inserted into
 the input for review and manual sending.
 
+For a physical Android device using `adb reverse tcp:8000 tcp:8000`, set
+`MEDIA_API_BASE` to `http://127.0.0.1:8000`. Local staging upload URLs remain
+on localhost. With the emulator default `http://10.0.2.2:8000`, local staging
+upload URLs are adapted to the emulator host address.
+
 For local Agent fixtures, use `--dart-define=AGENT_TRANSPORT=mock` and optionally
 select `--dart-define=MOCK_SCENARIO=batchAction`. Scenarios are `conversation`
 (default), `completed`, `singleAction`, `batchAction`, `purchaseOptions`,

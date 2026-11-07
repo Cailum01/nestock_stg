@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../domain/agent_view_data.dart';
+import 'vision_result_items.dart';
 
 /// Extend with typed renderers after the result payload contract is agreed.
 class AgentResultCard extends StatelessWidget {
@@ -27,6 +28,8 @@ class AgentResultCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(result.summary),
+          if (result.kind == ResultKind.vision)
+            VisionResultItems(data: result.data),
           if (result.kind == ResultKind.inventory &&
               result.data['items'] is List)
             for (final item in result.data['items'] as List)

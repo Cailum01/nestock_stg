@@ -963,11 +963,12 @@ def test_open_cards_for_reminders_and_expired_ones_are_recorded():
     [
         ("read_pending_approval", {"household_id", "approval_id"}),
         ("read_operation_receipt", {"household_id", "operation_id"}),
+        ("list_open_approvals", {"household_id"}),
         ("execute_idempotent_batches", {"household_id", "operations_by_id", "shared_operations"}),
     ],
 )
 def test_b1_repository_methods_match_the_port(method, keywords):
-    """PR #51 methods; add create/replace (PR #54) and list_open_approvals when merged."""
+    """Verify B1 storage methods match the A1 approval service port."""
     parameters = inspect.signature(getattr(CosmosWriteRepository, method)).parameters
 
     assert keywords <= set(parameters)

@@ -62,6 +62,22 @@ class FakeTransactionalBatchClient:
         return self.documents.get((partition_key, item_id))
 
 
+class FakeApprovalQueryClient:
+    def __init__(self, documents):
+        self.documents = documents
+        self.calls = []
+
+    async def query_items(self, *, query, parameters, partition_key):
+        self.calls.append(
+            {
+                "query": query,
+                "parameters": parameters,
+                "partition_key": partition_key,
+            }
+        )
+        return self.documents
+
+
 def inventory_document(*, quantity=2, household_id="home"):
     return {
         "id": "inventory_item:rice",
@@ -443,6 +459,99 @@ def test_pending_approval_read_requires_etag_for_conditional_batch_updates():
 
     with pytest.raises(ValueError, match="no valid Cosmos _etag"):
         asyncio.run(repository.read_pending_approval(household_id="home", approval_id="approval-1"))
+
+
+def test_list_open_approvals_queries_one_household_and_returns_pending_and_confirmed():
+    documents = [
+        {
+            "id": f"pending_approval:{status}-1",
+            "record_type": "pending_approval",
+            "household_id": "home",
+            "approval_id": f"{status}-1",
+            "status": status,
+            "_etag": f'"etag-{status}"',
+        }
+        for status in ("pending", "confirmed")
+    ]
+    query_client = FakeApprovalQueryClient(documents)
+    repository = CosmosWriteRepository(FakeTransactionalBatchClient(), query_client=query_client)
+
+    approvals = asyncio.run(repository.list_open_approvals(household_id="home"))
+
+    assert [approval.approval_id for approval in approvals] == ["pending-1", "confirmed-1"]
+    assert [approval.etag for approval in approvals] == ['"etag-pending"', '"etag-confirmed"']
+    assert query_client.calls == [
+        {
+            "query": (
+                "SELECT * FROM c WHERE c.record_type = @record_type "
+                "AND c.household_id = @household_id "
+                "AND c.status IN (@pending_status, @confirmed_status)"
+            ),
+            "parameters": (
+                {"name": "@record_type", "value": "pending_approval"},
+                {"name": "@household_id", "value": "home"},
+                {"name": "@pending_status", "value": "pending"},
+                {"name": "@confirmed_status", "value": "confirmed"},
+            ),
+            "partition_key": "home",
+        }
+    ]
+
+
+def test_list_open_approvals_requires_a_household_scoped_query_client():
+    repository = CosmosWriteRepository(FakeTransactionalBatchClient())
+
+    with pytest.raises(RuntimeError, match="requires a household-scoped query client"):
+        asyncio.run(repository.list_open_approvals(household_id="home"))
+
+
+@pytest.mark.parametrize(
+    ("household_id", "document", "message"),
+    [
+        ("", {}, "household_id must not be empty"),
+        (
+            "home",
+            {
+                "id": "pending_approval:approval-1",
+                "record_type": "pending_approval",
+                "household_id": "other",
+                "approval_id": "approval-1",
+                "status": "pending",
+                "_etag": '"etag-1"',
+            },
+            "does not match its partition key",
+        ),
+        (
+            "home",
+            {
+                "id": "pending_approval:approval-1",
+                "record_type": "pending_approval",
+                "household_id": "home",
+                "approval_id": "approval-1",
+                "status": "completed",
+                "_etag": '"etag-1"',
+            },
+            "non-open record",
+        ),
+        (
+            "home",
+            {
+                "id": "pending_approval:approval-1",
+                "record_type": "pending_approval",
+                "household_id": "home",
+                "approval_id": "approval-1",
+                "status": "pending",
+            },
+            "no valid Cosmos _etag",
+        ),
+    ],
+)
+def test_list_open_approvals_rejects_invalid_scope_or_records(household_id, document, message):
+    query_client = FakeApprovalQueryClient([document])
+    repository = CosmosWriteRepository(FakeTransactionalBatchClient(), query_client=query_client)
+
+    with pytest.raises(ValueError, match=message):
+        asyncio.run(repository.list_open_approvals(household_id=household_id))
 
 
 def test_retry_after_lost_success_response_is_reported_as_already_applied():

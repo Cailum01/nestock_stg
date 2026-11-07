@@ -11,6 +11,10 @@ abstract interface class PhotoUpload {
 /// Configuration is explicit; only the provisional local origin is adapted.
 class PhotoNetworkConfig {
   const PhotoNetworkConfig({required this.apiBase, this.emulatorHost});
+  factory PhotoNetworkConfig.forApiBase(Uri apiBase) => PhotoNetworkConfig(
+    apiBase: apiBase,
+    emulatorHost: apiBase.host == '10.0.2.2' ? '10.0.2.2' : null,
+  );
   final Uri apiBase;
   final String? emulatorHost;
 

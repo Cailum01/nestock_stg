@@ -62,4 +62,18 @@ void main() {
     final remote = Uri.parse('https://example.blob.core.windows.net/a?sig=abc');
     expect(config.adaptUploadUrl(remote), remote);
   });
+  test('routing follows the configured development host', () {
+    final local = Uri.parse('http://127.0.0.1:8000/staging/upload/token');
+    final emulator = PhotoNetworkConfig.forApiBase(
+      Uri.parse('http://10.0.2.2:8000'),
+    );
+    final device = PhotoNetworkConfig.forApiBase(
+      Uri.parse('http://127.0.0.1:8000'),
+    );
+    expect(emulator.adaptUploadUrl(local).host, '10.0.2.2');
+    expect(device.adaptUploadUrl(local), local);
+    final remote = Uri.parse('https://example.blob.core.windows.net/object');
+    expect(emulator.adaptUploadUrl(remote), remote);
+    expect(device.adaptUploadUrl(remote), remote);
+  });
 }

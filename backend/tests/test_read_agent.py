@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import UTC, date, datetime
 
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, ToolMessage
@@ -10,7 +11,8 @@ from app.agent.read_agent import ReadAgent, get_read_agent, load_system_prompt
 from app.core.dependencies import get_inventory_service, get_shopping_service
 from app.main import create_app
 from app.models.agent import AgentRequest, ResultKind
-from app.models.vision import SceneType
+from app.models.domain import InventoryItem
+from app.models.vision import DetectedItem, MatchStatus, SceneType, VisionAnalysisResult
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
 from app.services.vision import MockVisionService
 from app.tools.queries import QueryTools
@@ -268,3 +270,162 @@ def test_analyze_photo_without_a_photo_reads_nothing():
     assert "沒有附照片" in tool_message.content
     assert vision.calls == []
     assert response.results == []
+
+
+# --- A1 matches photo items itself (Issue #36 layers 2-3, Issue #44) --------
+
+_T = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def _inventory_item(item_id: str, name: str, *aliases: str, unit: str = "瓶") -> InventoryItem:
+    return InventoryItem(
+        item_id=item_id,
+        household_id=HOUSEHOLD,
+        name=name,
+        quantity=1,
+        unit=unit,
+        created_at=_T,
+        updated_at=_T,
+        aliases=list(aliases) or None,
+    )
+
+
+class _Inventory:
+    def __init__(self, *items: InventoryItem) -> None:
+        self.items = list(items)
+
+    async def list_items(self, household_id: str):
+        return list(self.items) if household_id == HOUSEHOLD else []
+
+
+class _Shopping:
+    async def list_items(self, household_id: str):
+        return []
+
+
+def _detected(name: str, **overrides) -> DetectedItem:
+    values = dict(
+        raw_detected_name=f"{name}（照片上的字）",
+        canonical_name=name,
+        quantity=1,
+        unit="瓶",
+        unit_confirmed=True,
+        confidence=0.9,
+        # A2's own guess, deliberately wrong: the Agent must not use it (Issue #44).
+        matched_inventory_id="a2-guess",
+        match_status=MatchStatus.EXACT_MATCH,
+    )
+    values.update(overrides)
+    return DetectedItem(**values)
+
+
+class _StubVision:
+    def __init__(self, *items: DetectedItem) -> None:
+        self.items = items
+
+    async def analyze_image(self, household_id, image_ref, scene_type=None):
+        return VisionAnalysisResult(
+            image_ref=image_ref, scene_type=SceneType.PANTRY_SCENE, detected_items=list(self.items)
+        )
+
+
+def _matching_agent(model: ScriptedModel, inventory: _Inventory, *detected: DetectedItem):
+    media = LocalStagingMediaStorage()
+    asyncio.run(media.simulate_client_upload(HOUSEHOLD, PHOTO, b"jpeg-bytes"))
+    tools = QueryTools(inventory, _Shopping())
+    return ReadAgent(model, tools, load_system_prompt(), vision=_StubVision(*detected), media=media)
+
+
+def _seen_by_model(model: ScriptedModel) -> dict:
+    return json.loads([m for m in model.seen[-1] if isinstance(m, ToolMessage)][-1].content)
+
+
+def _photo_reply(*detected: DetectedItem, inventory: _Inventory):
+    model = ScriptedModel(_call("analyze_photo"), AIMessage(content="好的。"))
+    agent = _matching_agent(model, inventory, *detected)
+    response = _ask_photo(agent)
+    return _seen_by_model(model), response
+
+
+def test_photo_item_is_matched_by_a1_not_by_a2():
+    soy = _inventory_item("soy", "醬油", "龜甲萬")
+    seen, response = _photo_reply(_detected("龜甲萬"), inventory=_Inventory(soy))
+
+    match = seen["items"][0]["match"]
+    assert match == {"method": "alias", "item_id": "soy", "item_name": "醬油", "item_unit": "瓶"}
+    assert "a2-guess" not in json.dumps(seen, ensure_ascii=False)
+    assert "household_items" not in seen  # everything matched: no list for layer 3
+    data = response.results[-1].data
+    assert data["items"][0]["match"]["item_id"] == "soy"
+    assert "a2-guess" not in json.dumps(data, ensure_ascii=False)
+
+
+def test_unmatched_photo_item_hands_the_household_list_to_the_model():
+    soy = _inventory_item("soy", "醬油", "龜甲萬")
+    seen, response = _photo_reply(_detected("萬家香"), inventory=_Inventory(soy))
+
+    assert seen["items"][0]["match"] == {"method": "none"}
+    assert seen["household_items"] == [
+        {"item_id": "soy", "name": "醬油", "aliases": ["龜甲萬"], "unit": "瓶"}
+    ]
+    assert "household_items" not in response.results[-1].data  # model input only
+    assert response.pending_approval is None  # still display only
+
+
+def test_same_name_items_are_offered_as_choices():
+    a = _inventory_item("a", "金蘭醬油", "醬油")
+    b = _inventory_item("b", "萬字醬油", "醬油")
+    seen, _ = _photo_reply(_detected("醬油"), inventory=_Inventory(a, b))
+
+    assert seen["items"][0]["match"] == {
+        "method": "alias",
+        "choices": [
+            {"item_id": "a", "item_name": "金蘭醬油"},
+            {"item_id": "b", "item_name": "萬字醬油"},
+        ],
+    }
+
+
+def test_unsure_unit_and_low_confidence_are_flagged():
+    seen, _ = _photo_reply(
+        _detected("咖啡豆", unit=None, unit_confirmed=False, confidence=0.4),
+        inventory=_Inventory(),
+    )
+    item = seen["items"][0]
+    assert item["unit"] is None
+    assert item["unit_confirmed"] is False
+    assert item["low_confidence"] is True
+
+
+def test_expiry_date_reaches_the_app():
+    seen, response = _photo_reply(
+        _detected("牛奶", expiry_date=date(2026, 11, 20)),
+        _detected("白米"),
+        inventory=_Inventory(),
+    )
+
+    data_items = response.results[-1].data["items"]
+    assert [i["expiry_date"] for i in data_items] == ["2026-11-20", None]
+    assert seen["items"][0]["expiry_date"] == "2026-11-20"
+
+
+def test_several_items_are_matched_with_one_inventory_read():
+    class _CountingInventory(_Inventory):
+        reads = 0
+
+        async def list_items(self, household_id: str):
+            type(self).reads += 1
+            return await super().list_items(household_id)
+
+    inventory = _CountingInventory(_inventory_item("rice", "白米", unit="包"))
+    seen, _ = _photo_reply(_detected("白米"), _detected("牛奶"), inventory=inventory)
+
+    assert [i["match"]["method"] for i in seen["items"]] == ["name", "none"]
+    assert _CountingInventory.reads == 1
+
+
+def test_prompt_no_longer_reads_a2_match_fields():
+    prompt = load_system_prompt()
+    for a2_field in ("match_status", "fuzzy_candidate", "candidates"):
+        assert a2_field not in prompt
+    assert "household_items" in prompt

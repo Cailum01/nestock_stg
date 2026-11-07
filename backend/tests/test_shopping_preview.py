@@ -12,14 +12,14 @@ from app.services.shopping.preview import (
 NOW = datetime(2026, 11, 3, tzinfo=UTC)
 
 
-def items(*, outstanding=2.0, stock=3.0, **shopping_changes):
+def items(*, planned=2.0, stock=3.0, **shopping_changes):
     shopping = ShoppingItem(
         **{
             "shopping_item_id": "shopping-milk",
             "household_id": "demo-household",
             "item_id": "milk",
             "name": "牛奶",
-            "quantity": outstanding,
+            "quantity": planned,
             "unit": "瓶",
             "status": "pending",
             "created_at": NOW,
@@ -48,12 +48,13 @@ def preview(shopping, inventory, purchased=1.0, household="demo-household"):
     )
 
 
-def test_partial_purchase_and_repeated_preview_never_mutate_snapshots():
+def test_partial_purchase_completes_task_and_preserves_plan_without_mutation():
     shopping, inventory = items()
     before = (shopping.model_dump(), inventory.model_dump())
     result = preview(shopping, inventory)
-    assert result.remaining_quantity == 1
-    assert result.next_status == ShoppingStatus.PENDING
+    assert result.planned_quantity == 2
+    assert result.next_status == ShoppingStatus.COMPLETED
+    assert not hasattr(result, "remaining_quantity")
     assert result.inventory_quantity_before == 3
     assert result.inventory_quantity_after == 4
     assert result.purchased_quantity == 1
@@ -64,21 +65,19 @@ def test_partial_purchase_and_repeated_preview_never_mutate_snapshots():
 def test_full_purchase_proposes_completed_without_changing_original():
     shopping, inventory = items()
     result = preview(shopping, inventory, purchased=2)
-    assert result.remaining_quantity == 0
+    assert result.planned_quantity == 2
     assert result.next_status == ShoppingStatus.COMPLETED
     assert result.inventory_quantity_after == 5
     assert shopping.status == ShoppingStatus.PENDING
 
 
-def test_decimal_remainder_can_be_completed_without_float_dust():
-    shopping, inventory = items(outstanding=0.3, stock=0)
-    first = preview(shopping, inventory, purchased=0.1)
-    assert first.remaining_quantity == 0.2
-    next_shopping, next_inventory = items(outstanding=first.remaining_quantity, stock=0.1)
-    final = preview(next_shopping, next_inventory, purchased=0.2)
-    assert final.remaining_quantity == 0
-    assert final.next_status == ShoppingStatus.COMPLETED
-    assert final.inventory_quantity_after == 0.3
+def test_decimal_purchase_uses_actual_quantity_and_preserves_plan():
+    shopping, inventory = items(planned=0.5, stock=0.1)
+    result = preview(shopping, inventory, purchased=0.2)
+    assert result.planned_quantity == 0.5
+    assert result.purchased_quantity == 0.2
+    assert result.next_status == ShoppingStatus.COMPLETED
+    assert result.inventory_quantity_after == 0.3
 
 
 @pytest.mark.parametrize("quantity", [0, -1, float("nan"), float("inf"), True, "1"])
@@ -128,25 +127,25 @@ def test_over_purchase_is_deferred_without_clamping_actual_quantity():
         preview(*items(), purchased=3)
 
 
-@pytest.mark.parametrize("outstanding,stock", [(0, 3), (-1, 3), (2, -1)])
-def test_invalid_snapshot_quantity_rejected(outstanding, stock):
+@pytest.mark.parametrize("planned,stock", [(0, 3), (-1, 3), (2, -1)])
+def test_invalid_snapshot_quantity_rejected(planned, stock):
     with pytest.raises(ShoppingPreviewError):
-        preview(*items(outstanding=outstanding, stock=stock))
+        preview(*items(planned=planned, stock=stock))
 
 
 def test_result_overflow_rejected():
     with pytest.raises(ShoppingPreviewError):
-        preview(*items(outstanding=1e308, stock=1e308), purchased=1e308)
+        preview(*items(planned=1e308, stock=1e308), purchased=1e308)
 
 
 def test_removal_only_describes_pending_entry_without_reversing_purchase():
-    shopping, inventory = items(outstanding=1)
+    shopping, inventory = items(planned=1)
     before = (shopping.model_dump(), inventory.model_dump())
     result = ShoppingPreviewService().preview_removal(
         household_id="demo-household", shopping=shopping
     )
     assert result.shopping_item_id == shopping.shopping_item_id
-    assert result.remaining_quantity == 1
+    assert result.planned_quantity == 1
     assert (shopping.model_dump(), inventory.model_dump()) == before
     assert not hasattr(result, "inventory_quantity_after")
 

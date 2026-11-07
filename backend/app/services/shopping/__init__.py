@@ -1,1 +1,1 @@
-"""C1 shopping workflow previews; no persistence or public write API."""
+"""C1 shopping previews and domain plans; no persistence or public write API."""

@@ -13,8 +13,10 @@ Agent/HITL models remain provisional (AGENTS.md). Field names here may be refine
 during implementation, but the rules below are decided. Public models stay in
 `backend/app/models/agent.py`; this document does not change them.
 
-Current status: not implemented. `POST /agent/resume` returns 501 until B1's
-batch write exists.
+Current status: A1's service `backend/app/services/approvals.py` implements these
+rules against storage ports and is tested with fakes. It is not wired to HTTP:
+`POST /agent/resume` returns 501 until B1's write adapter and the C1/B1 domain
+write builders exist.
 
 ## 1. Sources
 
@@ -107,6 +109,17 @@ Rules for a `confirmed` card that is not yet `completed` (#48; A1 decision):
 Every status change is a conditional update on the record's ETag, so a card can
 leave `pending` only once (#41). Cosmos TTL only removes records that can no
 longer be confirmed or retried; it is not the authorization check (#39).
+
+Cosmos `ttl` by status (A1 decision). Cosmos counts TTL from the record's last
+write, and the container needs TTL turned on with default `-1` (keep records
+that have no finite `ttl`):
+
+| Status | `ttl` | Why |
+| --- | --- | --- |
+| `pending` | lifetime + 24 hours | Kept a while after `expires_at`, then removed |
+| `confirmed` | `-1` (kept) | A retry must always find the card |
+| `completed` | `-1` (kept) | Kept with the business records it explains (B1 design doc §8.3) |
+| `cancelled`, `expired` | 24 hours | Same window as orphaned media (#30) |
 
 Expired or cancelled cards create no Transaction (#39).
 

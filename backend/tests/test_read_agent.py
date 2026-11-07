@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, ToolMessage
@@ -395,6 +395,18 @@ def test_unsure_unit_and_low_confidence_are_flagged():
     assert item["unit"] is None
     assert item["unit_confirmed"] is False
     assert item["low_confidence"] is True
+
+
+def test_expiry_date_reaches_the_app():
+    seen, response = _photo_reply(
+        _detected("牛奶", expiry_date=date(2026, 11, 20)),
+        _detected("白米"),
+        inventory=_Inventory(),
+    )
+
+    data_items = response.results[-1].data["items"]
+    assert [i["expiry_date"] for i in data_items] == ["2026-11-20", None]
+    assert seen["items"][0]["expiry_date"] == "2026-11-20"
 
 
 def test_several_items_are_matched_with_one_inventory_read():

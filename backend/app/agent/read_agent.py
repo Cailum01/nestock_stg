@@ -159,6 +159,7 @@ def _vision_view(
                 "unit_confirmed": detected.unit_confirmed,
                 "confidence": detected.confidence,
                 "low_confidence": detected.confidence < LOW_CONFIDENCE,
+                "expiry_date": detected.expiry_date.isoformat() if detected.expiry_date else None,
                 "match": _match_view(match),
             }
         )

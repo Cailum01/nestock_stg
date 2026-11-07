@@ -511,6 +511,7 @@ def test_repository_factory_shares_container_and_sdk_client_between_repositories
     assert isinstance(read_repository, CosmosReadRepository)
     assert read_repository._client._container is container
     assert write_repository._client._container is container
+    assert write_repository._query_client._container is container
     close()
     assert sdk_client.closed
     assert credential.closed

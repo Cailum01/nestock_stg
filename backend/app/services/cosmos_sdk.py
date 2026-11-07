@@ -345,7 +345,10 @@ def create_azure_cosmos_repositories(
         container_name=container_name,
     )
     read_repository = CosmosReadRepository(AzureCosmosDocumentQueryClient(container))
-    write_repository = CosmosWriteRepository(AzureCosmosTransactionalBatchClient(container))
+    write_repository = CosmosWriteRepository(
+        AzureCosmosTransactionalBatchClient(container),
+        query_client=AzureCosmosDocumentQueryClient(container),
+    )
     return read_repository, write_repository, close
 
 

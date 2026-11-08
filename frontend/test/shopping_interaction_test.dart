@@ -73,7 +73,7 @@ void main() {
       expect(find.byKey(const Key('shopping-overlay')), findsNothing);
       expect(find.text('測試'), findsOneWidget);
       await open();
-      await tester.tap(find.text('拍照／照片'));
+      await tester.tap(find.text('拍照'));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('shopping-overlay')), findsNothing);
       expect(testCamera.calls, 1);

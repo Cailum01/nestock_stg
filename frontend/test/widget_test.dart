@@ -72,7 +72,7 @@ void main() {
     expect(find.text('牛奶'), findsOneWidget);
     await tester.tap(find.byTooltip('關閉購物清單'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('拍照／照片'));
+    await tester.tap(find.text('拍照'));
     await tester.pumpAndSettle();
     expect(testCamera.calls, 1);
   });

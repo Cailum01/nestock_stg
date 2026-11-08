@@ -71,7 +71,7 @@ void main() {
         matching: find.byType(TextField),
       );
       await tester.enterText(input, '照片備註');
-      await tester.tap(find.text('拍照／照片'));
+      await tester.tap(find.text('拍照'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('送出'));
       await tester.pumpAndSettle();

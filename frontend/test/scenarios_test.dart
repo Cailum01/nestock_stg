@@ -55,7 +55,7 @@ void main() {
         cameraCapture: camera,
       ),
     );
-    await tester.tap(find.text('拍照／照片'));
+    await tester.tap(find.text('拍照'));
     await tester.pumpAndSettle();
     expect(find.text('無法開啟相機，請稍後再試。'), findsOneWidget);
   });

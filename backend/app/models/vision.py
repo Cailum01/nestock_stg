@@ -38,14 +38,14 @@ class DetectedItem(ContractModel):
     raw_detected_name: str = Field(min_length=1)
     canonical_name: str = Field(min_length=1)
     feature_keywords: list[str] = Field(default_factory=list)
-    quantity: float = Field(gt=0)
+    quantity: int = Field(gt=0)
     unit: str | None = None
     unit_confirmed: bool = True
     confidence: float = Field(ge=0.0, le=1.0)
     expiry_date: date | None = None
     matched_inventory_id: str | None = None
     candidate_matches: list[CandidateMatch] = Field(default_factory=list)
-    match_status: MatchStatus
+    match_status: MatchStatus = MatchStatus.NEW_ITEM
 
 
 class VisionAnalysisResult(ContractModel):

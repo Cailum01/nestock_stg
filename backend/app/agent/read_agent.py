@@ -31,6 +31,7 @@ from app.core.dependencies import (
     get_inventory_service,
     get_media_storage_service,
     get_shopping_service,
+    get_vision_service,
 )
 from app.models.agent import AgentRequest, AgentResponse, AgentResult, ResultKind
 from app.models.domain import InventoryItem
@@ -307,16 +308,13 @@ def get_read_agent() -> ReadAgent | None:
     settings = load_azure_settings()
     if settings is None:
         return None
-    from app.services.vision import MockVisionService
 
     inventory = get_inventory_service()
     tools = QueryTools(inventory, get_shopping_service())
-    # A2 has no registered vision dependency yet; use A2's mock until it does.
-    vision = MockVisionService(inventory)
     return ReadAgent(
         build_chat_model(settings),
         tools,
         load_system_prompt(),
-        vision=vision,
+        vision=get_vision_service(),
         media=get_media_storage_service(),
     )

@@ -321,3 +321,61 @@ def test_main_app_mounts_read_only_forecast_routes():
         assert [f["item_id"] for f in response.json()] == ["demo-rice"]
         assert client.get("/forecast/not-an-item").status_code == 404
         assert client.post("/forecast/demo-rice").status_code == 405
+
+
+def test_media_upload_authorization_dynamic_host_lan_and_emulator():
+    # Issue #76: physical device over LAN or emulator gets corresponding accessible upload URL
+    with TestClient(create_app()) as client:
+        # LAN physical device simulation
+        lan_res = client.post(
+            "/api/media/upload-authorization",
+            headers={"Host": "192.168.1.50:8000"},
+            json={
+                "household_id": "demo-household",
+                "filename": "apple.jpg",
+                "content_type": "image/jpeg",
+                "file_size_bytes": 1024 * 20,
+            },
+        )
+        assert lan_res.status_code == 200
+        lan_url = lan_res.json()["upload_url"]
+        assert lan_url.startswith("http://192.168.1.50:8000/staging/upload/staging-token-")
+
+        # Android emulator simulation
+        emu_res = client.post(
+            "/api/media/upload-authorization",
+            headers={"Host": "10.0.2.2:8000"},
+            json={
+                "household_id": "demo-household",
+                "filename": "apple.jpg",
+                "content_type": "image/jpeg",
+                "file_size_bytes": 1024 * 20,
+            },
+        )
+        assert emu_res.status_code == 200
+        emu_url = emu_res.json()["upload_url"]
+        assert emu_url.startswith("http://10.0.2.2:8000/staging/upload/staging-token-")
+
+
+def test_media_upload_authorization_env_override(monkeypatch):
+    # Issue #76: NESTOCK_STAGING_BASE_URL explicitly overrides dynamic deduction
+    from app.core import dependencies
+    from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
+
+    custom_base = "https://custom.staging.nestock.local/upload"
+    storage = LocalStagingMediaStorage(base_staging_url=custom_base)
+    monkeypatch.setattr(dependencies, "media_storage_service", storage)
+
+    with TestClient(create_app()) as client:
+        res = client.post(
+            "/api/media/upload-authorization",
+            headers={"Host": "192.168.1.50:8000"},
+            json={
+                "household_id": "demo-household",
+                "filename": "apple.jpg",
+                "content_type": "image/jpeg",
+                "file_size_bytes": 1024 * 20,
+            },
+        )
+        assert res.status_code == 200
+        assert res.json()["upload_url"].startswith(f"{custom_base}/staging-token-")

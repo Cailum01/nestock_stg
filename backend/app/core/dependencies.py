@@ -73,8 +73,16 @@ def _create_vision_service(
     return None
 
 
+def _create_media_storage_service(
+    environment: Mapping[str, str] | None = None,
+) -> MediaStorageService:
+    env = os.environ if environment is None else environment
+    base_url = env.get("NESTOCK_STAGING_BASE_URL")
+    return LocalStagingMediaStorage(base_staging_url=base_url)
+
+
 inventory_service, shopping_service, cosmos_read_repository = _create_read_composition()
-media_storage_service: MediaStorageService = LocalStagingMediaStorage()
+media_storage_service: MediaStorageService = _create_media_storage_service()
 speech_service: SpeechToTextService = MockSpeechToTextService()
 _vision_service: VisionService | None = None
 _vision_service_resolved: bool = False

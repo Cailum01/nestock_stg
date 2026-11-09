@@ -11,8 +11,10 @@ from app.agent.read_agent import ReadAgent, get_read_agent, load_system_prompt
 from app.core.dependencies import get_inventory_service, get_shopping_service
 from app.main import create_app
 from app.models.agent import AgentRequest, ResultKind
+from app.models.commerce import PurchaseOption
 from app.models.domain import InventoryItem
 from app.models.vision import DetectedItem, MatchStatus, SceneType, VisionAnalysisResult
+from app.services.commerce.biggo import BigGoCommerceProvider
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
 from app.services.vision import MockVisionService
 from app.tools.queries import QueryTools
@@ -60,7 +62,12 @@ def test_only_read_tools_are_offered():
     model = ScriptedModel(AIMessage(content="你好"))
     _agent(model)
     names = {tool["function"]["name"] for tool in model.bound_tools}
-    assert names == {"list_inventory", "list_shopping", "analyze_photo"}
+    assert names == {
+        "list_inventory",
+        "list_shopping",
+        "analyze_photo",
+        "search_purchase_options",
+    }
 
 
 def test_inventory_question_looks_then_answers():
@@ -164,6 +171,191 @@ def test_route_accepts_image_ref_instead_of_422():
             "/agent/messages", json={"household_id": HOUSEHOLD, "message": "還有白米嗎"}
         )
         assert without_photo.status_code == 200  # old clients keep working
+
+
+# --- price search (v8 section 6, read only) ----------------------------------
+
+
+def _option(option_id, price, *, source="live", store="店家"):
+    return PurchaseOption(
+        option_id=option_id,
+        title=f"衛生紙 {option_id}",
+        store=store,
+        source=source,
+        estimated_price=price,
+        product_url=f"https://example.com/{option_id}",
+        unit_spec="100抽x24包",
+    )
+
+
+class FakeCommerce:
+    """Stands in for A2's BigGo provider and records the searches."""
+
+    def __init__(self, options=(), error=None):
+        self.options = list(options)
+        self.error = error
+        self.calls: list[tuple[str, int]] = []
+
+    async def search_options(self, keyword, limit=5):
+        self.calls.append((keyword, limit))
+        if self.error is not None:
+            raise self.error
+        return self.options
+
+
+def _price_agent(model: ScriptedModel, commerce=None) -> ReadAgent:
+    tools = QueryTools(get_inventory_service(), get_shopping_service())
+    return ReadAgent(model, tools, load_system_prompt(), commerce=commerce)
+
+
+def _tool_content(model: ScriptedModel) -> str:
+    return [m for m in model.seen[-1] if isinstance(m, ToolMessage)][-1].content
+
+
+def test_price_question_searches_and_the_program_marks_the_lowest_price():
+    commerce = FakeCommerce([_option("a", 389.0), _option("b", None), _option("c", 299.0)])
+    model = ScriptedModel(
+        _call("search_purchase_options", item_name=" 衛生紙 "),
+        AIMessage(content="目前找到的最低價格是 299 元。"),
+    )
+
+    response = _ask(_price_agent(model, commerce), "衛生紙哪裡買比較便宜？")
+
+    assert commerce.calls == [("衛生紙", 5)]
+    seen = json.loads(_tool_content(model))
+    assert [o["estimated_price"] for o in seen["options"]] == [299.0, 389.0, None]
+    assert [o["lowest_price_found"] for o in seen["options"]] == [True, False, False]
+    (result,) = response.results
+    assert result.kind is ResultKind.PURCHASE_OPTIONS
+    assert result.data["demo"] is False
+    assert [o["option_id"] for o in result.data["options"]] == ["c", "a", "b"]
+    assert "目前找到的價格" in result.summary
+    assert response.message == "目前找到的最低價格是 299 元。"
+
+
+def test_demo_prices_are_labelled_as_demo():
+    commerce = FakeCommerce([_option("demo-1", 389.0, source="demo")])
+    model = ScriptedModel(
+        _call("search_purchase_options", item_name="衛生紙"),
+        AIMessage(content="這是示範資料，不是即時價格。"),
+    )
+
+    response = _ask(_price_agent(model, commerce), "衛生紙多少錢？")
+
+    (result,) = response.results
+    assert result.data["demo"] is True
+    assert "示範資料" in result.summary
+    assert json.loads(_tool_content(model))["options"][0]["source"] == "demo"
+
+
+def test_price_search_failure_is_answered_instead_of_failing_the_request():
+    commerce = FakeCommerce(error=RuntimeError("BigGo is down"))
+    model = ScriptedModel(
+        _call("search_purchase_options", item_name="衛生紙"),
+        AIMessage(content="現在查不到價格，請稍後再試。"),
+    )
+
+    response = _ask(_price_agent(model, commerce), "衛生紙多少錢？")
+
+    assert json.loads(_tool_content(model)) == {"error": "price_search_failed"}
+    assert response.results == []
+    assert response.message == "現在查不到價格，請稍後再試。"
+
+
+def test_price_search_is_not_pretended_without_a_provider():
+    model = ScriptedModel(
+        _call("search_purchase_options", item_name="衛生紙"),
+        AIMessage(content="比價還沒開放。"),
+    )
+
+    response = _ask(_price_agent(model, commerce=None), "衛生紙多少錢？")
+
+    assert json.loads(_tool_content(model)) == {"error": "price_search_not_available"}
+    assert response.results == []
+
+
+def test_price_search_without_an_item_name_reads_nothing():
+    commerce = FakeCommerce([_option("a", 100.0)])
+    model = ScriptedModel(
+        _call("search_purchase_options", item_name="  "),
+        AIMessage(content="你想查哪一樣東西的價格？"),
+    )
+
+    response = _ask(_price_agent(model, commerce), "幫我比價")
+
+    assert commerce.calls == []
+    assert response.results == []
+
+
+def test_no_options_found_shows_no_result_card():
+    model = ScriptedModel(
+        _call("search_purchase_options", item_name="火星沙"),
+        AIMessage(content="目前沒有找到這樣東西的購買選項。"),
+    )
+
+    response = _ask(_price_agent(model, FakeCommerce([])), "火星沙哪裡買？")
+
+    assert json.loads(_tool_content(model)) == {"item_name": "火星沙", "options": []}
+    assert response.results == []
+
+
+def test_two_searches_in_one_message_show_two_results():
+    commerce = FakeCommerce([_option("a", 100.0)])
+    model = ScriptedModel(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "search_purchase_options", "args": {"item_name": "衛生紙"}, "id": "c1"},
+                {"name": "search_purchase_options", "args": {"item_name": "洗衣精"}, "id": "c2"},
+            ],
+        ),
+        AIMessage(content="兩樣都查到了。"),
+    )
+
+    response = _ask(_price_agent(model, commerce), "衛生紙和洗衣精多少錢？")
+
+    assert [r.data["item_name"] for r in response.results] == ["衛生紙", "洗衣精"]
+
+
+def test_price_search_through_the_route_writes_nothing():
+    commerce = FakeCommerce([_option("a", 199.0)])
+    model = ScriptedModel(
+        _call("search_purchase_options", item_name="衛生紙"),
+        AIMessage(content="目前找到的最低價格是 199 元。"),
+    )
+    app = create_app()
+    app.dependency_overrides[get_read_agent] = lambda: _price_agent(model, commerce)
+    with TestClient(app) as client:
+        before = [client.get(path).json() for path in ["/inventory", "/shopping"]]
+        response = client.post(
+            "/agent/messages", json={"household_id": HOUSEHOLD, "message": "衛生紙多少錢"}
+        )
+        assert response.status_code == 200
+        assert response.json()["results"][0]["kind"] == "purchase_options"
+        assert before == [client.get(path).json() for path in ["/inventory", "/shopping"]]
+
+
+def test_works_with_a2_provider_in_demo_mode():
+    """A2's real provider without network: demo options, labelled as demo."""
+    model = ScriptedModel(
+        _call("search_purchase_options", item_name="衛生紙"),
+        AIMessage(content="這是示範資料，不是即時價格。"),
+    )
+
+    response = _ask(_price_agent(model, BigGoCommerceProvider(demo_mode=True)), "衛生紙哪裡買？")
+
+    (result,) = response.results
+    assert result.data["demo"] is True
+    assert 1 <= len(result.data["options"]) <= 5
+    seen = json.loads(_tool_content(model))
+    assert sum(o["lowest_price_found"] for o in seen["options"]) == 1
+
+
+def test_prompt_keeps_the_v8_price_wording_rules():
+    prompt = load_system_prompt()
+    assert "目前找到的最低價格" in prompt
+    assert "全網最低" in prompt  # named as forbidden
+    assert "這是示範資料，不是即時價格" in prompt
 
 
 # --- Day 8: reading photos -------------------------------------------------

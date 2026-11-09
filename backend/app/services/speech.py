@@ -3,6 +3,7 @@ import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
@@ -11,6 +12,8 @@ import httpx
 from app.models.speech import SpeechTranscribeResponse
 
 logger = logging.getLogger(__name__)
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 MIME_TO_EXT: dict[str, str] = {
     "audio/wav": "wav",
@@ -45,12 +48,19 @@ class SpeechAzureSettings:
 def load_speech_azure_settings(
     environment: Mapping[str, str] | None = None,
 ) -> SpeechAzureSettings | None:
-    """Load speech settings without process-wide dotenv side-effects.
+    """Load speech settings from environment or backend/.env without overriding process variables.
 
     Strictly decoupled: only activates when AZURE_SPEECH_KEY is provided.
     Does NOT fall back to AZURE_OPENAI_API_KEY, avoiding credential mismatches.
     """
-    env = os.environ if environment is None else environment
+    if environment is None:
+        from dotenv import load_dotenv
+
+        load_dotenv(BACKEND_DIR / ".env", override=False)
+        env = os.environ
+    else:
+        env = environment
+
     key = env.get("AZURE_SPEECH_KEY", "").strip()
     if not key:
         return None
@@ -151,7 +161,7 @@ class AzureSpeechService:
 
         self.mock_fallback = mock_fallback
         self._external_client = client is not None
-        self._client = client or httpx.AsyncClient(timeout=10.0)
+        self._client = client or httpx.AsyncClient(timeout=25.0)
         self._fallback_service = MockSpeechToTextService()
 
     async def aclose(self) -> None:
@@ -238,6 +248,17 @@ class AzureSpeechService:
                 duration_seconds=duration_s,
             )
 
+        if res.status_code == 422:
+            logger.warning(
+                "Azure AI Speech rejected audio payload as unprocessable (HTTP 422): %s",
+                res.text,
+            )
+            return SpeechTranscribeResponse(
+                transcript="",
+                detected_language=clean_language or "zh-TW",
+                duration_seconds=0.0,
+            )
+
         logger.error(
             "Azure AI Speech Fast Transcription returned HTTP %s: %s",
             res.status_code,
@@ -250,9 +271,15 @@ class AzureSpeechService:
 
 def create_speech_service(
     environment: Mapping[str, str] | None = None,
-) -> SpeechToTextService:
-    """Factory creating AzureSpeechService when keys are configured, or Mock otherwise."""
+) -> SpeechToTextService | None:
+    """Factory creating AzureSpeechService when configured, Mock if enabled, or None."""
     settings = load_speech_azure_settings(environment=environment)
     if settings is not None:
         return AzureSpeechService(settings=settings)
-    return MockSpeechToTextService()
+
+    env = os.environ if environment is None else environment
+    mock_flag = env.get("NESTOCK_SPEECH_MOCK", "").strip().lower()
+    if mock_flag in ("1", "true", "yes"):
+        return MockSpeechToTextService()
+
+    return None

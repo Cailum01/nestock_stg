@@ -2,6 +2,8 @@ import asyncio
 
 import pytest
 
+from app.models.domain import ChangeEvent
+from app.services.cosmos_read import CosmosDocumentMapper
 from app.services.cosmos_write import (
     ApprovalIdConflict,
     BatchOperationConflict,
@@ -13,6 +15,7 @@ from app.services.cosmos_write import (
     PendingApprovalRecord,
     ReplaceDocument,
     WriteStatus,
+    change_event_create,
 )
 
 
@@ -1031,3 +1034,53 @@ def test_replace_requires_etag_but_fingerprints_only_canonical_document_values()
     )
 
     assert retry == WriteStatus.ALREADY_APPLIED
+
+
+def _change_event(operation_id="op-1"):
+    from datetime import UTC, datetime
+
+    return ChangeEvent(
+        event_id=operation_id,
+        household_id="home",
+        operation_id=operation_id,
+        approval_id="approval-1",
+        transaction_id=f"txn-{operation_id}",
+        shopping_item_id=f"shop-{operation_id}",
+        item_id="rice",
+        occurred_at=datetime(2026, 11, 7, 4, 0, tzinfo=UTC),
+        recorded_at=datetime(2026, 11, 8, 4, 0, tzinfo=UTC),
+    )
+
+
+def test_change_event_is_created_in_the_operation_batch_and_retry_is_idempotent():
+    client = FakeTransactionalBatchClient()
+    repository = CosmosWriteRepository(client)
+    event = _change_event()
+
+    def run():
+        return asyncio.run(
+            repository.execute_idempotent_batch(
+                household_id="home",
+                operation_id="op-1",
+                operations=[
+                    CreateDocument({"id": "transaction:txn-op-1", "household_id": "home"}),
+                    change_event_create(event),
+                ],
+            )
+        )
+
+    assert run() == WriteStatus.APPLIED
+    stored = client.documents[("home", "change_event:op-1")]
+    assert stored["record_type"] == "change_event"
+    assert stored["occurred_at"] == "2026-11-07T04:00:00.000000Z"
+    assert CosmosDocumentMapper.from_document(ChangeEvent, stored, household_id="home") == event
+
+    assert run() == WriteStatus.ALREADY_APPLIED
+    assert len([key for key in client.documents if key[1] == "change_event:op-1"]) == 1
+
+
+def test_change_event_create_requires_event_id_to_equal_operation_id():
+    event = _change_event().model_copy(update={"event_id": "other"})
+
+    with pytest.raises(ValueError):
+        change_event_create(event)

@@ -863,7 +863,7 @@ class _AgentHomeState extends State<AgentHome> {
                         TextButton.icon(
                           onPressed: _uploading ? null : _openPhoto,
                           icon: const Icon(Icons.camera_alt_outlined),
-                          label: const Text('拍照／照片'),
+                          label: const Text('拍照'),
                         ),
                         TextButton(
                           onPressed: () => _openInventory(),

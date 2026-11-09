@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -75,5 +76,50 @@ void main() {
     final remote = Uri.parse('https://example.blob.core.windows.net/object');
     expect(emulator.adaptUploadUrl(remote), remote);
     expect(device.adaptUploadUrl(remote), remote);
+  });
+
+  test('authorization timeout prevents a binary upload', () async {
+    var calls = 0;
+    final uploader = HttpPhotoUpload(
+      config: PhotoNetworkConfig.forApiBase(Uri.parse('http://10.0.2.2:8000')),
+      timeout: const Duration(milliseconds: 10),
+      client: MockClient((_) {
+        calls++;
+        return Completer<http.Response>().future;
+      }),
+    );
+    final input = image.encodePng(image.Image(width: 1, height: 1));
+
+    await expectLater(uploader.upload(input), throwsA(isA<TimeoutException>()));
+    expect(calls, 1);
+  });
+
+  test('binary upload timeout does not complete the image reference', () async {
+    var calls = 0;
+    final uploader = HttpPhotoUpload(
+      config: PhotoNetworkConfig.forApiBase(Uri.parse('http://10.0.2.2:8000')),
+      timeout: const Duration(milliseconds: 10),
+      client: MockClient((_) {
+        calls++;
+        if (calls == 1) {
+          return Future.value(
+            http.Response(
+              jsonEncode({
+                'upload_url': 'http://127.0.0.1:8000/staging/upload/token',
+                'image_ref': 'opaque:not-complete',
+                'expires_in_seconds': 300,
+                'required_headers': {'Content-Type': 'image/jpeg'},
+              }),
+              200,
+            ),
+          );
+        }
+        return Completer<http.Response>().future;
+      }),
+    );
+    final input = image.encodePng(image.Image(width: 1, height: 1));
+
+    await expectLater(uploader.upload(input), throwsA(isA<TimeoutException>()));
+    expect(calls, 2);
   });
 }

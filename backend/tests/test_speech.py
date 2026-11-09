@@ -84,7 +84,9 @@ async def test_mock_speech_service_silence_or_tiny_audio():
 
 
 @pytest.mark.anyio
-async def test_azure_speech_service_fallback_without_keys():
+async def test_azure_speech_service_fallback_without_keys(monkeypatch):
+    monkeypatch.delenv("AZURE_SPEECH_KEY", raising=False)
+    monkeypatch.delenv("AZURE_SPEECH_REGION", raising=False)
     azure_service = AzureSpeechService(speech_key=None, service_region=None)
     assert isinstance(azure_service, SpeechToTextService)
 
@@ -149,8 +151,12 @@ def test_load_speech_azure_settings_returns_none_when_empty():
 
 
 def test_create_speech_service_factory():
-    # Without key -> MockSpeechToTextService
-    svc_mock = create_speech_service(environment={})
+    # Without key and without mock flag -> None
+    svc_unconfigured = create_speech_service(environment={})
+    assert svc_unconfigured is None
+
+    # Without key, but with explicit NESTOCK_SPEECH_MOCK=1 -> MockSpeechToTextService
+    svc_mock = create_speech_service(environment={"NESTOCK_SPEECH_MOCK": "1"})
     assert isinstance(svc_mock, MockSpeechToTextService)
 
     # With key -> AzureSpeechService
@@ -170,24 +176,37 @@ def test_create_speech_service_factory():
     assert svc_custom.endpoint == "https://custom.endpoint.azure.com"
 
 
-def test_dependencies_get_speech_service_lazy_singleton(monkeypatch):
+def test_dependencies_get_speech_service_lazy_singleton(monkeypatch, tmp_path):
+    from app.services import speech
+
+    # 隔離本機 backend/.env 避免污染測試
+    monkeypatch.setattr(speech, "BACKEND_DIR", tmp_path)
     _reset_speech_service_for_test()
     try:
-        # Default with no environment -> resolves mock singleton
+        # Default with no environment -> resolves None (unconfigured)
         monkeypatch.delenv("AZURE_SPEECH_KEY", raising=False)
+        monkeypatch.delenv("NESTOCK_SPEECH_MOCK", raising=False)
         s1 = get_speech_service()
         s2 = get_speech_service()
-        assert isinstance(s1, MockSpeechToTextService)
-        assert isinstance(s2, MockSpeechToTextService)
-        assert s1 is s2
+        assert s1 is None
+        assert s2 is None
+
+        # Reset and provide NESTOCK_SPEECH_MOCK=1 -> resolves mock singleton
+        _reset_speech_service_for_test()
+        monkeypatch.setenv("NESTOCK_SPEECH_MOCK", "1")
+        s_mock = get_speech_service()
+        assert isinstance(s_mock, MockSpeechToTextService)
 
         # Reset and provide live key
         _reset_speech_service_for_test()
+        monkeypatch.delenv("NESTOCK_SPEECH_MOCK", raising=False)
         monkeypatch.setenv("AZURE_SPEECH_KEY", "key-xyz")
         s_live = get_speech_service()
         assert isinstance(s_live, AzureSpeechService)
     finally:
         _reset_speech_service_for_test()
+        monkeypatch.delenv("AZURE_SPEECH_KEY", raising=False)
+        monkeypatch.delenv("AZURE_SPEECH_REGION", raising=False)
 
 
 # ==============================================================================
@@ -459,7 +478,7 @@ def test_api_route_transcribe_speech_returns_502_on_upstream_failure(monkeypatch
 
     class FaultySpeechService:
         async def transcribe(self, audio_bytes, content_type, language=None):
-            raise SpeechUpstreamError("Azure 401 Unauthorized simulated")
+            raise SpeechUpstreamError("Azure 401 Unauthorized simulated: raw sensitive payload")
 
     app.dependency_overrides[get_speech_service] = lambda: FaultySpeechService()
     try:
@@ -470,6 +489,54 @@ def test_api_route_transcribe_speech_returns_502_on_upstream_failure(monkeypatch
             files={"file": ("recording.m4a", fake_audio, "audio/m4a")},
         )
         assert response.status_code == status.HTTP_502_BAD_GATEWAY
-        assert "Speech transcription failed" in response.json()["detail"]
+        detail = response.json()["detail"]
+        assert "Speech transcription failed due to upstream service error" in detail
+        # 確保 Azure 內部 raw payload 不會洩漏給用戶端
+        assert "raw sensitive payload" not in detail
     finally:
         app.dependency_overrides.clear()
+
+
+def test_api_route_transcribe_speech_returns_503_when_unconfigured():
+    """驗證未配置語音服務 (None) 時，API 端點正確回傳 HTTP 503 Service Unavailable。"""
+    app.dependency_overrides[get_speech_service] = lambda: None
+    try:
+        client = TestClient(app)
+        fake_audio = b"\x00\x00\x00\x20ftypM4A " + b"x" * 100
+        response = client.post(
+            "/api/speech/transcribe",
+            files={"file": ("recording.m4a", fake_audio, "audio/m4a")},
+        )
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        assert "Speech service is not configured" in response.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_speech_service_cold_start_loads_dotenv_when_only_in_env_file(monkeypatch, tmp_path):
+    """驗證冷啟動情境（必改 1）：
+    當環境變數清空，金鑰僅寫在 backend/.env 時，「先錄音」仍能自動載入並建立 AzureSpeechService。
+    """
+    from app.services import speech
+
+    # 確保當前環境變數無金鑰與 Mock 標記
+    monkeypatch.delenv("AZURE_SPEECH_KEY", raising=False)
+    monkeypatch.delenv("AZURE_SPEECH_REGION", raising=False)
+    monkeypatch.delenv("NESTOCK_SPEECH_MOCK", raising=False)
+
+    fake_backend_dir = tmp_path / "backend"
+    fake_backend_dir.mkdir()
+    fake_env_file = fake_backend_dir / ".env"
+    fake_env_file.write_text("AZURE_SPEECH_KEY=key-from-env-file\nAZURE_SPEECH_REGION=japaneast\n")
+
+    monkeypatch.setattr(speech, "BACKEND_DIR", fake_backend_dir)
+    _reset_speech_service_for_test()
+    try:
+        service = get_speech_service()
+        assert isinstance(service, AzureSpeechService)
+        assert service.speech_key == "key-from-env-file"
+        assert service.service_region == "japaneast"
+    finally:
+        _reset_speech_service_for_test()
+        monkeypatch.delenv("AZURE_SPEECH_KEY", raising=False)
+        monkeypatch.delenv("AZURE_SPEECH_REGION", raising=False)

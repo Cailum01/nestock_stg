@@ -26,12 +26,16 @@ class LocalStagingMediaStorage:
     [NOTE: TEMPORARY STAGING BEFORE CLOUD DATABASE & BLOB DEPLOYMENT]
     """
 
-    def __init__(self, base_staging_url: str = "http://127.0.0.1:8000/staging/upload") -> None:
-        self._base_staging_url = base_staging_url
+    def __init__(self, base_staging_url: str | None = None) -> None:
+        self._configured_base_url = base_staging_url
         # In-memory registry tracking staged items: (household_id, image_ref) -> bytes
         self._staged_media: dict[tuple[str, str], bytes] = {}
         # In-memory registry tracking pending authorization tokens
         self._pending_tokens: dict[str, dict] = {}
+
+    @property
+    def _base_staging_url(self) -> str:
+        return (self._configured_base_url or "http://127.0.0.1:8000/staging/upload").rstrip("/")
 
     def _determine_extension(self, filename: str, content_type: AllowedMediaContentType) -> str:
         suffix = Path(filename).suffix.lower()
@@ -44,7 +48,10 @@ class LocalStagingMediaStorage:
         return ".jpg"
 
     async def create_upload_authorization(
-        self, request: UploadAuthorizationRequest
+        self,
+        request: UploadAuthorizationRequest,
+        *,
+        base_staging_url: str | None = None,
     ) -> UploadAuthorizationResponse:
         """Simulate issuing a pre-signed SAS upload authorization."""
         media_id = uuid.uuid4().hex
@@ -52,8 +59,11 @@ class LocalStagingMediaStorage:
         # Format adheres strictly to agreed opaque reference standard
         image_ref = f"blob://households/{request.household_id}/media/{media_id}{ext}"
 
+        effective_base = (
+            self._configured_base_url or base_staging_url or "http://127.0.0.1:8000/staging/upload"
+        ).rstrip("/")
         upload_token = f"staging-token-{media_id}"
-        upload_url = f"{self._base_staging_url}/{upload_token}"
+        upload_url = f"{effective_base}/{upload_token}"
 
         self._pending_tokens[upload_token] = {
             "household_id": request.household_id,

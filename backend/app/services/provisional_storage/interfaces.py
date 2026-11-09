@@ -18,7 +18,10 @@ class MediaStorageService(Protocol):
     """Port for issuing upload authorization and verifying media persistence."""
 
     async def create_upload_authorization(
-        self, request: UploadAuthorizationRequest
+        self,
+        request: UploadAuthorizationRequest,
+        *,
+        base_staging_url: str | None = None,
     ) -> UploadAuthorizationResponse:
         """Issue a short-lived, narrowly scoped upload authorization and reserve image_ref."""
         ...

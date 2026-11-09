@@ -4,7 +4,6 @@ import 'package:http/http.dart' as http;
 
 import '../domain/agent_client.dart';
 import '../domain/agent_view_data.dart';
-import 'mock_agent_client.dart';
 
 class HttpAgentClient implements PhotoAwareAgentClient {
   HttpAgentClient({
@@ -24,10 +23,6 @@ class HttpAgentClient implements PhotoAwareAgentClient {
       _send(message, imageRef);
 
   Future<AgentReply> _send(String message, String? imageRef) async {
-    if ((message == '/vision-demo' || message == '/confirmation-demo') &&
-        imageRef == null) {
-      return MockAgentClient().send(message);
-    }
     final response = await client
         .post(
           baseUrl.resolve('/agent/messages'),

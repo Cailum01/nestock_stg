@@ -3,13 +3,14 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nestock/app.dart';
-import 'package:nestock/features/agent/data/http_agent_client.dart';
 import 'package:nestock/features/agent/data/mock_agent_client.dart';
 import 'package:nestock/features/agent/domain/agent_view_data.dart';
 import 'package:nestock/features/agent/presentation/confirmation_card.dart';
 import 'package:nestock/features/speech/speech_client.dart';
 import 'package:nestock/shared/data/demo_catalog.dart';
 import 'package:nestock/shared/theme/app_theme.dart';
+
+import 'agent_fixtures.dart';
 
 const _items = [
   ConfirmationItemView(name: '高纖無糖豆漿', quantity: 1, unit: '瓶', location: '冰箱'),
@@ -69,13 +70,13 @@ class _QueuedSpeechClient implements SpeechClient {
   Future<String> transcribe(Uint8List bytes) async => _transcripts.removeAt(0);
 }
 
-Future<void> _pumpConfirmationDemo(
+Future<void> _pumpConfirmationFixture(
   WidgetTester tester,
   SpeechClient speechClient,
 ) async {
   await tester.pumpWidget(
     NestockApp(
-      agentClient: MockAgentClient(scenario: MockScenario.conversation),
+      agentClient: FixtureAgentClient(confirmationFixtureReply),
       catalog: const DemoCatalog(),
       speechRecorder: _TestRecorder(),
       speechClient: speechClient,
@@ -85,7 +86,7 @@ Future<void> _pumpConfirmationDemo(
     of: find.byKey(const Key('composer')),
     matching: find.byType(TextField),
   );
-  await tester.enterText(composer, '/confirmation-demo');
+  await tester.enterText(composer, '確認項目');
   await tester.tap(find.text('送出'));
   await tester.pumpAndSettle();
 }
@@ -436,7 +437,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('confirmation demo is isolated from ordinary conversation', (
+  testWidgets('confirmation fixture is isolated from ordinary conversation', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -455,7 +456,17 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('確認加入庫存'), findsNothing);
 
-    await tester.enterText(input, '/confirmation-demo');
+    await tester.pumpWidget(
+      NestockApp(
+        agentClient: FixtureAgentClient(confirmationFixtureReply),
+        catalog: const DemoCatalog(),
+      ),
+    );
+    final fixtureInput = find.descendant(
+      of: find.byKey(const Key('composer')),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(fixtureInput, '確認項目');
     await tester.tap(find.text('送出'));
     await tester.pumpAndSettle();
     expect(find.text('確認加入庫存'), findsOneWidget);
@@ -463,12 +474,12 @@ void main() {
     expect(find.text('衛生紙'), findsOneWidget);
   });
 
-  testWidgets('http transport keeps the confirmation demo local', (
+  testWidgets('confirmation fixture renders without an HTTP shortcut', (
     tester,
   ) async {
     await tester.pumpWidget(
       NestockApp(
-        agentClient: HttpAgentClient(baseUrl: Uri.parse('http://example.test')),
+        agentClient: FixtureAgentClient(confirmationFixtureReply),
         catalog: const DemoCatalog(),
       ),
     );
@@ -476,7 +487,7 @@ void main() {
       of: find.byKey(const Key('composer')),
       matching: find.byType(TextField),
     );
-    await tester.enterText(input, '/confirmation-demo');
+    await tester.enterText(input, '確認項目');
     await tester.tap(find.text('送出'));
     await tester.pumpAndSettle();
 
@@ -487,7 +498,7 @@ void main() {
   testWidgets('speech uses the composer when no Confirmation field has focus', (
     tester,
   ) async {
-    await _pumpConfirmationDemo(tester, _QueuedSpeechClient(['一般語音']));
+    await _pumpConfirmationFixture(tester, _QueuedSpeechClient(['一般語音']));
 
     await _recordTranscript(tester);
 
@@ -503,7 +514,7 @@ void main() {
   testWidgets('focused Confirmation draft fields receive speech locally', (
     tester,
   ) async {
-    await _pumpConfirmationDemo(
+    await _pumpConfirmationFixture(
       tester,
       _QueuedSpeechClient(['新名稱', '3', '幫我查一下衛生紙', '客廳櫃']),
     );
@@ -554,7 +565,7 @@ void main() {
   testWidgets(
     'unfocused Confirmation editing never reuses a stale speech target',
     (tester) async {
-      await _pumpConfirmationDemo(tester, _QueuedSpeechClient(['回到 Noki']));
+      await _pumpConfirmationFixture(tester, _QueuedSpeechClient(['回到 Noki']));
       await tester.tap(find.byKey(const Key('confirmation-edit-0')));
       await tester.pump();
       await _focusField(tester, find.byKey(const Key('confirmation-name-0')));
@@ -583,7 +594,7 @@ void main() {
   testWidgets(
     'closing the Work Surface preserves the card without routing speech to it',
     (tester) async {
-      await _pumpConfirmationDemo(tester, _QueuedSpeechClient(['回到 Noki']));
+      await _pumpConfirmationFixture(tester, _QueuedSpeechClient(['回到 Noki']));
       await tester.tap(find.byKey(const Key('confirmation-edit-0')));
       await tester.pump();
       final name = find.byKey(const Key('confirmation-name-0'));

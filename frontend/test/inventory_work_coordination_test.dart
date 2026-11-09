@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nestock/app.dart';
-import 'package:nestock/features/agent/data/mock_agent_client.dart';
 import 'package:nestock/shared/data/demo_catalog.dart';
+
+import 'agent_fixtures.dart';
 
 void main() {
   testWidgets('inventory hides work surface without losing local edits', (
@@ -10,11 +11,11 @@ void main() {
   ) async {
     await tester.pumpWidget(
       NestockApp(
-        agentClient: MockAgentClient(scenario: MockScenario.visionDemo),
+        agentClient: FixtureAgentClient(visionFixtureReply()),
         catalog: const DemoCatalog(),
       ),
     );
-    await tester.enterText(find.byType(TextField), '/vision-demo');
+    await tester.enterText(find.byType(TextField), '查看照片');
     await tester.tap(find.text('送出'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('quantity-0')), '5');

@@ -5,7 +5,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 from app.models.vision import (
@@ -28,6 +28,7 @@ class VisionOpenAISettings:
     endpoint: str
     api_key: str
     deployment: str = "gpt-4o"
+    temperature: float | None = None
 
     @property
     def base_url(self) -> str:
@@ -44,6 +45,8 @@ def load_vision_azure_settings(
     1. Endpoint and API Key prioritize AZURE_OPENAI_VISION_*; fallback to AZURE_OPENAI_*.
     2. Deployment prioritizes AZURE_OPENAI_VISION_DEPLOYMENT; fallback to AZURE_OPENAI_DEPLOYMENT
        or default to 'gpt-4o'.
+    3. Temperature optionally loaded from AZURE_OPENAI_VISION_TEMPERATURE; defaults to None
+       (omitted from payload to adhere to strict deployment default constraints).
     """
     env = os.environ if environment is None else environment
 
@@ -64,7 +67,20 @@ def load_vision_azure_settings(
     if not endpoint or not api_key:
         return None
 
-    return VisionOpenAISettings(endpoint=endpoint, api_key=api_key, deployment=deployment)
+    raw_temperature = env.get("AZURE_OPENAI_VISION_TEMPERATURE", "").strip()
+    temperature: float | None = None
+    if raw_temperature:
+        try:
+            temperature = float(raw_temperature)
+        except ValueError:
+            temperature = None
+
+    return VisionOpenAISettings(
+        endpoint=endpoint,
+        api_key=api_key,
+        deployment=deployment,
+        temperature=temperature,
+    )
 
 
 @runtime_checkable
@@ -182,18 +198,21 @@ class AzureOpenAIVisionService:
                 "Content-Type": "application/json",
             }
             system_prompt = (
-                "You are an expert Taiwanese FMCG and retail product recognition system. "
-                "Extract recognized grocery/pantry items or receipt line items. "
+                "You are an expert household item and Taiwanese retail product "
+                "recognition system. "
+                "Extract recognized household items, consumer electronics, groceries, "
+                "pantry goods, daily necessities, or receipt line items. "
                 'Output JSON with schema: {"scene_type": "single_item"|"pantry_scene"|"receipt", '
                 '"raw_text": str, "items": [{"raw_name": str, "quantity": int, '
                 '"unit": str, "confidence": float}]}. '
                 "For confidence, provide a float between 0.0 and 1.0 representing recognition "
                 "certainty (e.g., 0.95 for clearly visible items/text, "
                 "0.45 for blurry or occluded items). "
-                "For units, use standard Taiwanese units (瓶, 罐, 包, 盒, 袋, 入, 箱, 個) or null. "
+                "For units, use standard Taiwanese units "
+                "(瓶, 罐, 包, 盒, 袋, 入, 箱, 個, 支, 台) or null. "
                 "Remove marketing noise like 特價, 買一送一."
             )
-            payload = {
+            payload: dict[str, Any] = {
                 "model": self.settings.deployment,
                 "messages": [
                     {"role": "system", "content": system_prompt},
@@ -212,8 +231,9 @@ class AzureOpenAIVisionService:
                     },
                 ],
                 "response_format": {"type": "json_object"},
-                "temperature": 0.1,
             }
+            if self.settings.temperature is not None:
+                payload["temperature"] = self.settings.temperature
 
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(url, headers=headers, json=payload)

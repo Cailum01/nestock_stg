@@ -5,13 +5,13 @@ option B): one card per approval, `pending -> confirmed -> completed`, no stored
 `failed` status, expiry decided from `expires_at`, and recovery by reading the
 card and its operation receipts before any retry.
 
-Not wired to HTTP: `POST /agent/resume` still returns 501 until B1's write adapter
-and the C1/B1 domain write builders exist. Tests use in-memory fakes.
+Not wired to HTTP: `POST /agent/resume` still returns 501 until the domain write
+builder (A1 adapter over C1's purchase plan, Issue #60) exists.
 
 Storage goes through `ApprovalStoragePort`, which uses the same method names and
-arguments as B1's `CosmosWriteRepository` (PR #51 merged; `create_pending_approval`
-and `replace_pending_approval` in PR #54), so that repository fits without an
-adapter. `list_open_approvals` is A1's proposal for B1 (not in PR #51 or #54).
+arguments as B1's `CosmosWriteRepository` (PR #51, #54; `list_open_approvals` in
+PR #61, with its query client wired in PR #72), so that repository fits without an
+adapter. `tests/test_approvals_cosmos_write.py` runs this service on that repository.
 
 What each approved operation writes (inventory, transaction, shopping status,
 alias) belongs to the domain owners (C1, B1) through `DomainWriteBuilder`; this
@@ -186,6 +186,9 @@ class DomainWritePlan:
     """What the approved operations write, built by the domain owners (C1, B1)."""
 
     operations_by_id: Mapping[str, Sequence[BatchOperation]]
+    shared_operations: Sequence[BatchOperation] = ()
+    """Writes shared by several operations, such as one merged inventory update when two
+    approved items add to the same inventory record (B1's mapping in Issue #60)."""
     outcome: Mapping[str, JsonValue] = field(default_factory=dict)
     """Result of each operation, stored on the card and returned on retries."""
 
@@ -239,7 +242,7 @@ class ApprovalStoragePort(Protocol):
         """
         ...
 
-    # A1's proposal for B1 (not in PR #51 or #54).
+    # Same name and arguments as CosmosWriteRepository in PR #61.
     async def list_open_approvals(self, *, household_id: str) -> Sequence[StoredApproval]:
         """Cards whose stored status is `pending` or `confirmed`."""
         ...
@@ -450,15 +453,19 @@ class ApprovalService:
             if record.is_past_expiry(now):
                 return await self._record_expired(record, etag)
             approved_ids, option_id = _selection_for(record, request)
+            # decided_at is fixed before planning, so the builder can use it (for example as
+            # the change event's recorded_at, Issue #60) and a retry plans with the same value.
             selected = record.model_copy(
-                update={"approved_operation_ids": approved_ids, "selected_option_id": option_id}
+                update={
+                    "approved_operation_ids": approved_ids,
+                    "selected_option_id": option_id,
+                    "decided_at": now,
+                }
             )
             plan = await self._plan(selected, etag)
             if isinstance(plan, ResumeResult):
                 return plan
-            confirmed = selected.model_copy(
-                update={"status": ApprovalStatus.CONFIRMED, "decided_at": now}
-            )
+            confirmed = selected.model_copy(update={"status": ApprovalStatus.CONFIRMED})
             try:
                 stored_confirmed = await self._storage.replace_pending_approval(
                     household_id=record.household_id,
@@ -494,7 +501,12 @@ class ApprovalService:
         approved = set(record.approved_operation_ids or ())
         if set(plan.operations_by_id) != approved:
             raise ValueError("The write plan must cover exactly the approved operations.")
-        size = len(plan.operations_by_id) + sum(len(ops) for ops in plan.operations_by_id.values())
+        size = (
+            len(plan.operations_by_id)
+            + sum(len(ops) for ops in plan.operations_by_id.values())
+            + len(plan.shared_operations)
+        )
+        # The completed card is one more write in the same batch.
         if size + 1 > MAX_BATCH_OPERATIONS:
             raise BatchTooLarge(
                 f"{size + 1} operations exceed the Cosmos batch limit of {MAX_BATCH_OPERATIONS}."
@@ -515,12 +527,14 @@ class ApprovalService:
         receipts = len(plan.operations_by_id)
         domain_writes = sum(len(ops) for ops in plan.operations_by_id.values())
         # PR #51 orders a batch as: receipts, per-operation writes, shared writes.
-        approval_index = receipts + domain_writes
+        # The completed card goes last, after the plan's own shared writes.
+        approval_index = receipts + domain_writes + len(plan.shared_operations)
         try:
             status = await self._storage.execute_idempotent_batches(
                 household_id=confirmed.household_id,
                 operations_by_id=plan.operations_by_id,
                 shared_operations=(
+                    *plan.shared_operations,
                     ReplaceDocument(completed.to_document(self._lifetime), if_match_etag=etag),
                 ),
             )

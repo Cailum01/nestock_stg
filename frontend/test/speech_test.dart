@@ -11,10 +11,20 @@ import 'package:nestock/features/speech/speech_client.dart';
 import 'package:nestock/shared/data/demo_catalog.dart';
 
 class TestRecorder implements SpeechRecorder {
+  int startCalls = 0;
+  int stopCalls = 0;
+
   @override
-  Future<void> start() async {}
+  Future<void> start() async {
+    startCalls++;
+  }
+
   @override
-  Future<Uint8List> stop() async => Uint8List.fromList([1, 2, 3]);
+  Future<Uint8List> stop() async {
+    stopCalls++;
+    return Uint8List.fromList([1, 2, 3]);
+  }
+
   @override
   Future<void> dispose() async {}
 }
@@ -33,6 +43,46 @@ class FailingSpeech implements SpeechClient {
 }
 
 void main() {
+  testWidgets(
+    'manual microphone Tooltip preserves press-hold-release recording',
+    (tester) async {
+      final recorder = TestRecorder();
+      await tester.pumpWidget(
+        NestockApp(
+          agentClient: MockAgentClient(scenario: MockScenario.conversation),
+          catalog: const DemoCatalog(),
+          speechRecorder: recorder,
+          speechClient: TestSpeech('語音內容'),
+        ),
+      );
+      final microphone = find.byTooltip('語音輸入');
+      final tooltip = tester.widget<Tooltip>(find.byType(Tooltip));
+      expect(tooltip.triggerMode, TooltipTriggerMode.manual);
+
+      final gesture = await tester.startGesture(tester.getCenter(microphone));
+      await tester.pump();
+      expect(recorder.startCalls, 1);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(recorder.stopCalls, 0);
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(recorder.stopCalls, 1);
+      expect(
+        tester
+            .widget<TextField>(
+              find.descendant(
+                of: find.byKey(const Key('composer')),
+                matching: find.byType(TextField),
+              ),
+            )
+            .controller!
+            .text,
+        '語音內容',
+      );
+    },
+  );
+
   testWidgets('backend error preserves draft and re-enables Send', (
     tester,
   ) async {

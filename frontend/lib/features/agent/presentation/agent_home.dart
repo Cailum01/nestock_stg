@@ -833,6 +833,7 @@ class _AgentHomeState extends State<AgentHome> {
                                 onTapCancel: _stopRecording,
                                 child: Tooltip(
                                   message: '語音輸入',
+                                  triggerMode: TooltipTriggerMode.manual,
                                   child: Padding(
                                     padding: const EdgeInsets.all(12),
                                     child: Icon(

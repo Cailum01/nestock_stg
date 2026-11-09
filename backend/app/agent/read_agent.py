@@ -12,10 +12,10 @@
   (Issue #44): exact name/alias here, and the model compares an unmatched name
   with the household item list in the same call (Issue #36 layers 2 and 3).
 - Recognition results are shown only. Nothing is written to inventory here.
+- Tools call the same services as the API routes (AGENTS.md architecture rule).
 - Forecasts come from B2's ForecastService (the same service as `/forecast`). They are
   estimates for "what is running low" and "how long will X last"; the program, not
   the model, picks the items to restock and rounds the days. Nothing is written.
-- Tools call the same services as the API routes (AGENTS.md architecture rule).
 """
 
 from __future__ import annotations

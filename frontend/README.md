@@ -28,14 +28,14 @@ upload URLs are adapted to the emulator host address.
 For local Agent fixtures, use `--dart-define=AGENT_TRANSPORT=mock` and optionally
 select `--dart-define=MOCK_SCENARIO=batchAction`. Scenarios are `conversation`
 (default), `completed`, `singleAction`, `batchAction`, `purchaseOptions`,
-`partialSuccess`, `error`, `timeout`, `visionDemo`, and `visionMany`. These are
+`partialSuccess`, `error`, and `timeout`. These are
 presentation fixtures, not backend lifecycle or wire statuses. Selecting the mock
 Agent does not disable the independently configured photo or speech HTTP clients.
 
-Enter `/vision-demo` to open the local Vision review fixture. With mock transport,
-`visionMany` provides seven items for scrolling checks. Ordinary conversation does
-not automatically open the fixture. Confirmation remains a no-write demonstration;
-the fixture is not a Vision or upload contract.
+Vision and Confirmation presentation fixtures are test-only injected `AgentClient`
+responses under `test/agent_fixtures.dart`; no user-entered runtime command opens
+either fixture. Confirmation remains a no-write demonstration; its fixture is not
+a Vision or upload contract.
 
 The HTTP client does not implement `/agent/resume` and rejects pending approvals.
 Persistent HITL writes and Cosmos writes are not implemented in the frontend;

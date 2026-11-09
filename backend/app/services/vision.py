@@ -182,15 +182,15 @@ class AzureOpenAIVisionService:
                 "Content-Type": "application/json",
             }
             system_prompt = (
-                "You are an expert Taiwanese FMCG and retail product recognition system. "
-                "Extract recognized grocery/pantry items or receipt line items. "
+                "You are an expert household item and Taiwanese retail product recognition system. "
+                "Extract recognized household items, consumer electronics, groceries, pantry goods, daily necessities, or receipt line items. "
                 'Output JSON with schema: {"scene_type": "single_item"|"pantry_scene"|"receipt", '
                 '"raw_text": str, "items": [{"raw_name": str, "quantity": int, '
                 '"unit": str, "confidence": float}]}. '
                 "For confidence, provide a float between 0.0 and 1.0 representing recognition "
                 "certainty (e.g., 0.95 for clearly visible items/text, "
                 "0.45 for blurry or occluded items). "
-                "For units, use standard Taiwanese units (瓶, 罐, 包, 盒, 袋, 入, 箱, 個) or null. "
+                "For units, use standard Taiwanese units (瓶, 罐, 包, 盒, 袋, 入, 箱, 個, 支, 台) or null. "
                 "Remove marketing noise like 特價, 買一送一."
             )
             payload = {

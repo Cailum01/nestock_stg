@@ -197,11 +197,11 @@ def test_load_vision_azure_settings_does_not_mutate_os_environ():
     assert marker not in os.environ
 
 
-def test_create_vision_service_falls_back_to_mock():
+def test_create_vision_service_returns_none_when_unconfigured():
     inventory = DummyInventoryService([])
     media = LocalStagingMediaStorage()
     service = _create_vision_service(inventory, media, environment={})
-    assert isinstance(service, MockVisionService)
+    assert service is None
 
 
 def test_create_vision_service_creates_azure_adapter_when_configured():
@@ -217,10 +217,13 @@ def test_create_vision_service_creates_azure_adapter_when_configured():
 
 def test_dependencies_get_vision_service():
     _reset_vision_service_for_test()
-    service = get_vision_service()
+    env = {
+        "AZURE_OPENAI_VISION_ENDPOINT": "https://test-vision.openai.azure.com/",
+        "AZURE_OPENAI_VISION_API_KEY": "vision-secret",
+    }
+    service = get_vision_service(environment=env)
     assert isinstance(service, VisionService)
-    # Subsequent calls should return the same singleton instance
-    assert get_vision_service() is service
+    _reset_vision_service_for_test()
 
 
 def test_dependencies_get_vision_service_lazy_resolution_with_env():
@@ -232,11 +235,41 @@ def test_dependencies_get_vision_service_lazy_resolution_with_env():
     custom_service = get_vision_service(environment=env)
     assert isinstance(custom_service, AzureOpenAIVisionService)
 
-    # Calling without environment after reset should fallback to Mock if env not set
+    # Calling with empty environment after reset should return None (no silent fallback to Mock)
     _reset_vision_service_for_test()
     fallback_service = get_vision_service(environment={})
-    assert isinstance(fallback_service, MockVisionService)
+    assert fallback_service is None
     _reset_vision_service_for_test()
+
+
+@pytest.mark.anyio
+async def test_real_agent_composition_without_vision_does_not_fake_success():
+    _reset_vision_service_for_test()
+    from app.agent.read_agent import ReadAgent, load_system_prompt
+    from app.models.agent import AgentRequest, ResultKind
+    from app.services.demo import DemoShoppingService
+    from app.tools.queries import QueryTools
+    from tests.test_read_agent import AIMessage, ScriptedModel
+
+    model = ScriptedModel(AIMessage(content="照片辨識還沒開放，目前只能用文字查詢。"))
+    tools = QueryTools(DummyInventoryService([]), DemoShoppingService())
+
+    agent = ReadAgent(
+        model=model,
+        tools=tools,
+        system_prompt=load_system_prompt(),
+        vision=get_vision_service(environment={}),
+        media=LocalStagingMediaStorage(),
+    )
+
+    request = AgentRequest(
+        household_id="demo-household",
+        message="這張照片裡有什麼？",
+        image_ref="blob://households/demo-household/media/photo.jpg",
+    )
+    response = await agent.respond(request)
+
+    assert not any(r.kind == ResultKind.VISION for r in response.results)
 
 
 @pytest.mark.anyio

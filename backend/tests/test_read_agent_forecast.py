@@ -54,7 +54,7 @@ def _seen(model: ScriptedModel):
 
 
 def _real_forecast(*, switch_on: bool) -> ForecastService:
-    """B2's service on the demo data. `switch_on` = the time-semantics switch (W-42)."""
+    """B2's service on the demo data. `switch_on` = B2's `time_semantics_confirmed` setting."""
     return ForecastService(
         get_inventory_service(),
         DemoTransactionHistory(clock=lambda: NOW),

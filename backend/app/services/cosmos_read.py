@@ -9,10 +9,16 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Generic, Protocol, TypeVar
 
-from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus, Transaction
+from app.models.domain import (
+    ChangeEvent,
+    InventoryItem,
+    ShoppingItem,
+    ShoppingStatus,
+    Transaction,
+)
 
-DomainRecord = InventoryItem | ShoppingItem | Transaction
-RecordT = TypeVar("RecordT", InventoryItem, ShoppingItem, Transaction)
+DomainRecord = InventoryItem | ShoppingItem | Transaction | ChangeEvent
+RecordT = TypeVar("RecordT", InventoryItem, ShoppingItem, Transaction, ChangeEvent)
 
 _RECORD_METADATA = frozenset(
     {"id", "record_type", "deleted_at", "_rid", "_self", "_etag", "_attachments", "_ts"}
@@ -21,6 +27,7 @@ _RECORD_IDENTITIES: dict[type[DomainRecord], tuple[str, str]] = {
     InventoryItem: ("inventory_item", "item_id"),
     ShoppingItem: ("shopping_item", "shopping_item_id"),
     Transaction: ("transaction", "transaction_id"),
+    ChangeEvent: ("change_event", "event_id"),
 }
 _COSMOS_SYSTEM_FIELDS = frozenset({"_rid", "_self", "_etag", "_attachments", "_ts"})
 
@@ -53,7 +60,7 @@ class CosmosDocumentMapper:
         document["id"] = _expected_id(record_type, public_id)
         document["record_type"] = record_type
 
-        for timestamp_field in ("created_at", "updated_at"):
+        for timestamp_field in ("created_at", "updated_at", "occurred_at", "recorded_at"):
             timestamp = getattr(record, timestamp_field, None)
             if timestamp is not None:
                 document[timestamp_field] = _utc_isoformat(timestamp)

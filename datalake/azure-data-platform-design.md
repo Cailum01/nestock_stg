@@ -986,6 +986,24 @@ This provides an exportable event document only for committed changes. Do not us
 Cosmos Change Feed alone as an audit log: ordinary item updates can be coalesced
 to the latest state, and deletes require explicit handling.
 
+**Provisional contract per [Issue #60](https://github.com/nestock-app/nestock/issues/60).**
+B1 defines `ChangeEvent` (`backend/app/models/domain.py`) and builds its create
+operation with `change_event_create()` (`backend/app/services/cosmos_write.py`):
+
+- One event per `operation_id`; `event_id` equals `operation_id` and the Cosmos
+  document id is `change_event:{operation_id}`, so a retry maps to the same
+  document and the operation receipt de-duplicates it.
+- Fields: `household_id`, `operation_id`, `approval_id`, `transaction_id`,
+  `shopping_item_id`, `item_id`, `occurred_at` (purchase time) and `recorded_at`
+  (approval decision time). Timestamps are stored as UTC.
+- Batch placement for a purchase: the merged inventory update goes in
+  `shared_operations`; each purchased item's shopping-item update, Transaction and
+  change event go in `operations_by_id[operation_id]`. Replace operations require
+  `if_match_etag`, and a batch holds at most 100 operations.
+- `Transaction.created_at` means the event time (`occurred_at`). B2 decides when
+  time-based forecasting is enabled.
+- Append-only: the event is never replaced or deleted by application code.
+
 ### 9.2 Lake activation criteria
 
 ADLS Gen2 is optional and should be activated only when one or more are approved:

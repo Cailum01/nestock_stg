@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-from app.services.cosmos_read import DocumentQueryClient
+from app.models.domain import ChangeEvent
+from app.services.cosmos_read import CosmosDocumentMapper, DocumentQueryClient
 
 
 class BatchOperationConflict(Exception):
@@ -43,6 +44,13 @@ class WriteStatus(StrEnum):
 @dataclass(frozen=True)
 class CreateDocument:
     document: Mapping[str, object]
+
+
+def change_event_create(event: ChangeEvent) -> CreateDocument:
+    """Build the append-only change_event create for an operation's batch."""
+    if event.event_id != event.operation_id:
+        raise ValueError("ChangeEvent.event_id must equal operation_id.")
+    return CreateDocument(CosmosDocumentMapper.to_document(event))
 
 
 @dataclass(frozen=True)

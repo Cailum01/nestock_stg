@@ -32,4 +32,4 @@
 7. 照片上的單位和家裡品項的單位（`item_unit`）不同時，不要自己換算，告訴使用者並請他確認。
 8. `unit_confirmed` 是 false 時，告訴使用者看不出單位，請他說是用什麼單位。
 9. `low_confidence` 是 true 時，說你不太確定，請使用者確認。
-10. `analyze_photo` 回傳 `error` 時，告訴使用者照片辨識失敗，請他再拍一次；不要猜照片裡有什麼。
+10. `analyze_photo` 回傳 `error` 時，不要再次呼叫 `analyze_photo`，直接告訴使用者照片辨識失敗，請他再拍一次；不要猜照片裡有什麼。

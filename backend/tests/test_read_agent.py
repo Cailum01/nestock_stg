@@ -641,3 +641,8 @@ def test_prompt_no_longer_reads_a2_match_fields():
     for a2_field in ("match_status", "fuzzy_candidate", "candidates"):
         assert a2_field not in prompt
     assert "household_items" in prompt
+
+
+def test_prompt_says_not_to_retry_a_failed_photo():
+    """PR #67 review: after a failed recognition, answer instead of calling the tool again."""
+    assert "不要再次呼叫 `analyze_photo`" in load_system_prompt()

@@ -1,7 +1,7 @@
 """A1 read-only Agent (Day 5, photo reading Day 8): understand, look, answer.
 
-- Read tools only: inventory, shopping list and photo recognition. No write tool
-  exists here, so no approval/pause is needed (AGENTS.md HITL rule 1).
+- Read tools only: inventory, shopping list, photo recognition and price search.
+  No write tool exists here, so no approval/pause is needed (AGENTS.md HITL rule 1).
 - household_id and image_ref always come from the request, never from the
   model's arguments.
 - A photo is used only after the media is verified to belong to the request's
@@ -12,6 +12,8 @@
   (Issue #44): exact name/alias here, and the model compares an unmatched name
   with the household item list in the same call (Issue #36 layers 2 and 3).
 - Recognition results are shown only. Nothing is written to inventory here.
+- Price search uses A2's provider (v8 section 6): options are shown only, prices are
+  never stored, and the program, not the model, marks the lowest price found.
 - Tools call the same services as the API routes (AGENTS.md architecture rule).
 """
 
@@ -21,7 +23,7 @@ import json
 import logging
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Any, Awaitable, Callable, TypedDict
+from typing import Annotated, Any, Awaitable, Callable, Protocol, TypedDict
 
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
@@ -35,8 +37,10 @@ from app.core.dependencies import (
     get_vision_service,
 )
 from app.models.agent import AgentRequest, AgentResponse, AgentResult, ResultKind
+from app.models.commerce import PurchaseOption
 from app.models.domain import InventoryItem
 from app.models.vision import SceneType, VisionAnalysisResult
+from app.services.commerce.biggo import BigGoCommerceProvider
 from app.services.item_matching import ItemMatch, ItemMatcher, MatchMethod, match_term
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.vision import VisionService
@@ -44,6 +48,11 @@ from app.tools.queries import QueryTools
 
 PROMPT_PATH = Path(__file__).resolve().parents[3] / "prompts" / "agent_system.md"
 MAX_STEPS = 8  # graph steps per message; stops endless tool loops
+MAX_PURCHASE_OPTIONS = 5
+PRICE_NOT_SUPPORTED = json.dumps({"error": "price_search_not_available"})
+PRICE_FAILED = json.dumps({"error": "price_search_failed"})
+"""Tool result when A2's price search raises: the Agent still answers (no 502)."""
+NO_ITEM_NAME = "沒有指定要查價的品名。"
 PHOTO_NOT_SUPPORTED = (
     "使用者這次附了一張照片，但你目前看不到照片內容（照片辨識還沒接上）。"
     "請先清楚告訴使用者：照片辨識還沒開放，目前只能用文字查詢；"
@@ -100,7 +109,33 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_purchase_options",
+            "description": (
+                "查某樣東西目前找得到的購買選項和價格（比價）。"
+                "使用者問哪裡買、多少錢、哪裡比較便宜時才呼叫。只查詢，不會下單或加入待購。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item_name": {
+                        "type": "string",
+                        "description": "要查價的品名，例如「衛生紙」。",
+                    }
+                },
+                "required": ["item_name"],
+            },
+        },
+    },
 ]
+
+
+class PurchaseOptionSearch(Protocol):
+    """A2's price search (`BigGoCommerceProvider.search_options`)."""
+
+    async def search_options(self, keyword: str, limit: int = 5) -> list[PurchaseOption]: ...
 
 
 class _State(TypedDict, total=False):
@@ -109,6 +144,7 @@ class _State(TypedDict, total=False):
     image_ref: str
     inventory: list[dict[str, Any]]
     vision: dict[str, Any]
+    purchase_options: list[dict[str, Any]]
 
 
 def load_system_prompt() -> str:
@@ -182,6 +218,44 @@ def _vision_view(
     return model_view, data
 
 
+def _by_price(options: list[PurchaseOption]) -> list[PurchaseOption]:
+    """Cheapest first; options without a price go last in their original order."""
+    priced = sorted((o for o in options if o.estimated_price is not None), key=_price)
+    return priced + [o for o in options if o.estimated_price is None]
+
+
+def _price(option: PurchaseOption) -> float:
+    return option.estimated_price if option.estimated_price is not None else 0.0
+
+
+def _price_view(
+    item_name: str, options: list[PurchaseOption]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """(view for the model, data for the App). Nothing here is stored."""
+    ordered = _by_price(options)
+    lowest = next((o.option_id for o in ordered if o.estimated_price is not None), None)
+    model_view = {
+        "item_name": item_name,
+        "options": [
+            {
+                "title": option.title,
+                "store": option.store,
+                "estimated_price": option.estimated_price,
+                "unit_spec": option.unit_spec,
+                "source": option.source,
+                "lowest_price_found": option.option_id == lowest,
+            }
+            for option in ordered
+        ],
+    }
+    data = {
+        "item_name": item_name,
+        "demo": any(option.source == "demo" for option in ordered),
+        "options": [option.model_dump(mode="json") for option in ordered],
+    }
+    return model_view, data
+
+
 def _text(message: AnyMessage) -> str:
     text = getattr(message, "text", message.content)
     return str(text) if isinstance(text, str) else text()
@@ -198,6 +272,7 @@ class ReadAgent:
         vision: VisionService | None = None,
         media: MediaStorageService | None = None,
         matcher: ItemMatcher | None = None,
+        commerce: PurchaseOptionSearch | None = None,
     ) -> None:
         self._model = model.bind_tools(TOOL_SCHEMAS)
         self._handlers: dict[str, Callable[[str], Awaitable[list[Any]]]] = {
@@ -207,6 +282,7 @@ class ReadAgent:
         self._system_prompt = system_prompt
         self._vision = vision
         self._media = media
+        self._commerce = commerce
         self._matcher = matcher or ItemMatcher(tools.inventory, tools.shopping)
         self._graph = self._build_graph()
 
@@ -227,6 +303,11 @@ class ReadAgent:
                     content, vision = await self._analyze(state, call.get("args") or {})
                     if vision is not None:
                         update["vision"] = vision
+                elif call["name"] == "search_purchase_options":
+                    content, found = await self._search_prices(call.get("args") or {})
+                    if found is not None:
+                        earlier = update.get("purchase_options", state.get("purchase_options", []))
+                        update["purchase_options"] = [*earlier, found]
                 elif handler is None:
                     content = f"沒有這個工具：{call['name']}"
                 else:
@@ -272,6 +353,23 @@ class ReadAgent:
         model_view, data = _vision_view(result, matches, household_items)
         return json.dumps(model_view, ensure_ascii=False), data
 
+    async def _search_prices(self, args: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        """Run A2's price search. Read only: no price or option is stored."""
+        item_name = str(args.get("item_name") or "").strip()
+        if not item_name:
+            return NO_ITEM_NAME, None
+        if self._commerce is None:
+            return PRICE_NOT_SUPPORTED, None
+        try:
+            options = await self._commerce.search_options(item_name, limit=MAX_PURCHASE_OPTIONS)
+        except Exception:  # A2's provider failed; nothing was read or written
+            logging.getLogger(__name__).warning(
+                "Price search failed for %r", item_name, exc_info=True
+            )
+            return PRICE_FAILED, None
+        model_view, data = _price_view(item_name, options[:MAX_PURCHASE_OPTIONS])
+        return json.dumps(model_view, ensure_ascii=False), (data if options else None)
+
     async def respond(self, request: AgentRequest) -> AgentResponse:
         messages: list[AnyMessage] = [SystemMessage(self._system_prompt)]
         start: _State = {"household_id": request.household_id}
@@ -307,6 +405,15 @@ class ReadAgent:
                     data=final["vision"],
                 )
             )
+        for found in final.get("purchase_options", []):
+            demo = "示範資料，不是即時價格" if found["demo"] else "目前找到的價格"
+            results.append(
+                AgentResult(
+                    kind=ResultKind.PURCHASE_OPTIONS,
+                    summary=f"{found['item_name']} 比價結果（{demo}，僅供參考、不會存起來）",
+                    data=found,
+                )
+            )
         return AgentResponse(message=_text(final["messages"][-1]), results=results)
 
 
@@ -327,4 +434,6 @@ def get_read_agent() -> ReadAgent | None:
         load_system_prompt(),
         vision=get_vision_service(),
         media=get_media_storage_service(),
+        # Built after load_azure_settings() read backend/.env, so BigGo keys there apply.
+        commerce=BigGoCommerceProvider(),
     )

@@ -101,13 +101,10 @@ async def create_upload_authorization(
     storage: Annotated[MediaStorageService, Depends(get_media_storage_service)],
 ) -> UploadAuthorizationResponse:
     dynamic_staging_base = f"{str(http_request.base_url).rstrip('/')}/staging/upload"
-    try:
-        return await storage.create_upload_authorization(
-            request,
-            base_staging_url=dynamic_staging_base,
-        )
-    except TypeError:
-        return await storage.create_upload_authorization(request)
+    return await storage.create_upload_authorization(
+        request,
+        base_staging_url=dynamic_staging_base,
+    )
 
 
 @router.put(

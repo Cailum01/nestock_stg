@@ -27,7 +27,7 @@ Stable operation identity is necessary for future durable idempotency.
 | AgentRequest | household scope and natural-language message |
 | AgentResponse | speech, result list, optional pending approval |
 | AgentResult | kind, display summary, provisional structured data |
-| PendingApproval | identity, presentation, proposed operation group |
+| PendingApproval | identity, presentation, proposed operation group, purchase options (`purchase_options` only) |
 | ProposedOperation | stable identity, description, resolved values for display |
 | ResumeRequest | scope, approval identity, approve/reject decision, and the user's selection (`approved_operation_ids` for batch, `selected_option_id` for purchase options; D-10) |
 
@@ -65,6 +65,32 @@ ignored when `approved` is false:
 {"household_id":"demo-household","approval_id":"demo-approval-2","approved":true,"approved_operation_ids":["op-101"]}
 {"household_id":"demo-household","approval_id":"demo-approval-3","approved":true,"selected_option_id":"option-001"}
 ```
+
+A `purchase_options` card lists its options on the card itself (v8 section 12);
+`options` is empty for the other presentations. The App sends back one
+`option_id` as `selected_option_id`:
+
+```json
+{
+  "approval_id": "demo-approval-3",
+  "presentation": "purchase_options",
+  "operations": [{
+    "operation_id": "op-purchase-001",
+    "description": "Add toilet paper to the Shopping List",
+    "values": {"name": "衛生紙"}
+  }],
+  "options": [
+    {"option_id": "option-001", "title": "舒潔 抽取式衛生紙 100抽", "store": "momo", "source": "live",
+     "estimated_price": 299, "product_url": "https://example.com/a", "unit_spec": "100抽 x 12包"},
+    {"option_id": "option-002", "title": "舒潔 抽取式衛生紙 110抽", "store": "Coupang", "source": "live",
+     "estimated_price": 319, "product_url": "https://example.com/b", "unit_spec": "110抽 x 12包"}
+  ]
+}
+```
+
+Option fields follow A2's `PurchaseOption` (`backend/app/models/commerce.py`).
+`raw_title`, `image_url` and `updated_at` may also appear; `estimated_price` and
+`unit_spec` may be null.
 
 Never execute generic `values` or trust `approved` alone. Future implementation
 must load the exact server-side resolved proposal, validate scope and values,

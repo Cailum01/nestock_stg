@@ -12,11 +12,15 @@
   (Issue #44): exact name/alias here, and the model compares an unmatched name
   with the household item list in the same call (Issue #36 layers 2 and 3).
 - Recognition results are shown only. Nothing is written to inventory here.
+- Forecasts come from B2's ForecastService (the same service as `/forecast`). They are
+  estimates for "what is running low" and "how long will X last"; the program, not
+  the model, picks the items to restock and rounds the days. Nothing is written.
 - Tools call the same services as the API routes (AGENTS.md architecture rule).
 """
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 from functools import lru_cache
@@ -59,6 +63,17 @@ answers and asks for another photo instead of the whole request failing (502).""
 
 logger = logging.getLogger(__name__)
 
+FORECAST_TOOLS = {"get_reorder_candidates", "get_consumption_forecast"}
+FORECAST_NOT_AVAILABLE = json.dumps({"error": "forecast_not_available"})
+FORECAST_FAILED = json.dumps({"error": "forecast_failed"})
+"""Tool result when B2's forecast raises: the Agent still answers (no 502)."""
+NO_FORECAST_ITEM = "沒有指定要預估的品名。"
+
+
+def _utc_now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.UTC)
+
+
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -74,6 +89,37 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "list_shopping",
             "description": "查詢待購清單：還要買的東西、數量、狀態。",
             "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_reorder_candidates",
+            "description": (
+                "查家裡哪些東西快用完、建議補貨（預估，不會改庫存）。"
+                "使用者問什麼快用完了、要補什麼時才呼叫。"
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_consumption_forecast",
+            "description": (
+                "查某樣東西預估還能用幾天（預估，不會改庫存）。"
+                "使用者明確問某樣東西還能用多久、什麼時候用完時才呼叫。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item_name": {
+                        "type": "string",
+                        "description": "要預估的品名，例如「衛生紙」。",
+                    }
+                },
+                "required": ["item_name"],
+            },
         },
     },
     {
@@ -107,6 +153,7 @@ class _State(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
     household_id: str
     image_ref: str
+    forecasts: list[dict[str, Any]]
     inventory: list[dict[str, Any]]
     vision: dict[str, Any]
 
@@ -143,6 +190,40 @@ def _household_item_view(item: InventoryItem) -> dict[str, Any]:
         "aliases": list(item.aliases or []),
         "unit": item.unit,
     }
+
+
+def _forecast_row(item: InventoryItem, forecast: Any) -> dict[str, Any]:
+    """One item's forecast for the model and the App. Days are rounded by the program."""
+    days = forecast.days_until_empty
+    return {
+        "item_id": item.item_id,
+        "name": item.name,
+        "quantity": item.quantity,
+        "unit": item.unit,
+        "status": forecast.status.value,
+        "days_left": round(days) if days is not None else None,
+        "consider_restock": forecast.suggested_action.value == "consider_restock",
+    }
+
+
+def _reorder_view(
+    items: list[InventoryItem], forecasts: list[Any]
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Items B2 flags for restocking, soonest first, plus how many lack data."""
+    by_id = {item.item_id: item for item in items}
+    rows = [
+        _forecast_row(by_id[f.item_id], f)
+        for f in forecasts
+        if f.item_id in by_id and f.suggested_action.value == "consider_restock"
+    ]
+    rows.sort(key=lambda row: (row["days_left"] is None, row["days_left"] or 0))
+    view = {
+        "running_low": rows,
+        "estimated_count": sum(f.status.value == "estimated" for f in forecasts),
+        "insufficient_data_count": sum(f.status.value == "insufficient_data" for f in forecasts),
+    }
+    card = {"kind": "reorder_candidates", **view} if rows else None
+    return view, card
 
 
 def _vision_view(
@@ -195,6 +276,8 @@ class ReadAgent:
         model: Any,
         tools: QueryTools,
         system_prompt: str,
+        forecast: Any | None = None,
+        clock: Callable[[], datetime.datetime] = _utc_now,
         vision: VisionService | None = None,
         media: MediaStorageService | None = None,
         matcher: ItemMatcher | None = None,
@@ -205,6 +288,8 @@ class ReadAgent:
             "list_shopping": tools.list_shopping,
         }
         self._system_prompt = system_prompt
+        self._forecast = forecast  # B2's ForecastService: forecast_household(household_id, now)
+        self._clock = clock
         self._vision = vision
         self._media = media
         self._matcher = matcher or ItemMatcher(tools.inventory, tools.shopping)
@@ -223,7 +308,12 @@ class ReadAgent:
             update: _State = {"messages": []}
             for call in state["messages"][-1].tool_calls:
                 handler = self._handlers.get(call["name"])
-                if call["name"] == "analyze_photo":
+                if call["name"] in FORECAST_TOOLS:
+                    content, card = await self._forecast_answer(state, call)
+                    if card is not None:
+                        earlier = update.get("forecasts", state.get("forecasts", []))
+                        update["forecasts"] = [*earlier, card]
+                elif call["name"] == "analyze_photo":
                     content, vision = await self._analyze(state, call.get("args") or {})
                     if vision is not None:
                         update["vision"] = vision
@@ -248,6 +338,45 @@ class ReadAgent:
         builder.add_conditional_edges("think", next_step, ["look", END])
         builder.add_edge("look", "think")
         return builder.compile()
+
+    async def _forecast_answer(
+        self, state: _State, call: dict[str, Any]
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Read B2's forecast for the request's household. Read only: nothing is written."""
+        if self._forecast is None:
+            return FORECAST_NOT_AVAILABLE, None
+        household_id = state["household_id"]
+        try:
+            forecasts = await self._forecast.forecast_household(household_id, self._clock())
+            items = await self._matcher.household_items(household_id)
+        except Exception:  # B2's forecast or the history read failed; nothing was written
+            logger.warning("Forecast failed for %s", call["name"], exc_info=True)
+            return FORECAST_FAILED, None
+        if call["name"] == "get_reorder_candidates":
+            view, card = _reorder_view(items, forecasts)
+            return json.dumps(view, ensure_ascii=False), card
+
+        item_name = str((call.get("args") or {}).get("item_name") or "").strip()
+        if not item_name:
+            return NO_FORECAST_ITEM, None
+        match = match_term(item_name, items)
+        if match.ambiguous:
+            choices = [{"item_id": i.item_id, "item_name": i.name} for i in match.items]
+            return json.dumps(
+                {"item_name": item_name, "choices": choices}, ensure_ascii=False
+            ), None
+        item = match.matched
+        forecast = next((f for f in forecasts if item and f.item_id == item.item_id), None)
+        if item is None or forecast is None:
+            not_found = {
+                "item_name": item_name,
+                "found": False,
+                "household_items": [_household_item_view(i) for i in items],
+            }
+            return json.dumps(not_found, ensure_ascii=False), None
+        row = _forecast_row(item, forecast)
+        card = {"kind": "item_forecast", **row} if row["status"] == "estimated" else None
+        return json.dumps(row, ensure_ascii=False), card
 
     async def _analyze(
         self, state: _State, args: dict[str, Any]
@@ -299,6 +428,12 @@ class ReadAgent:
                     data={"items": final["inventory"]},
                 )
             )
+        for card in final.get("forecasts", []):
+            if card["kind"] == "reorder_candidates":
+                summary = "快用完的東西（預估，僅供參考，不會改庫存）"
+            else:
+                summary = f"{card['name']} 預估還能用約 {card['days_left']} 天（僅供參考）"
+            results.append(AgentResult(kind=ResultKind.FORECAST, summary=summary, data=card))
         if "vision" in final:
             results.append(
                 AgentResult(
@@ -319,12 +454,17 @@ def get_read_agent() -> ReadAgent | None:
     if settings is None:
         return None
 
+    from app.api.forecast import get_transaction_history
+    from app.services.forecast import ForecastService
+
     inventory = get_inventory_service()
     tools = QueryTools(inventory, get_shopping_service())
     return ReadAgent(
         build_chat_model(settings),
         tools,
         load_system_prompt(),
+        # Same ForecastService and history source as the `/forecast` routes (B2).
+        forecast=ForecastService(inventory, get_transaction_history()),
         vision=get_vision_service(),
         media=get_media_storage_service(),
     )

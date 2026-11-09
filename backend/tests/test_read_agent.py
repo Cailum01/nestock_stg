@@ -60,7 +60,13 @@ def test_only_read_tools_are_offered():
     model = ScriptedModel(AIMessage(content="你好"))
     _agent(model)
     names = {tool["function"]["name"] for tool in model.bound_tools}
-    assert names == {"list_inventory", "list_shopping", "analyze_photo"}
+    assert names == {
+        "list_inventory",
+        "list_shopping",
+        "get_reorder_candidates",
+        "get_consumption_forecast",
+        "analyze_photo",
+    }
 
 
 def test_inventory_question_looks_then_answers():
@@ -446,6 +452,7 @@ def test_several_items_are_matched_with_one_inventory_read():
 
 def test_prompt_no_longer_reads_a2_match_fields():
     prompt = load_system_prompt()
+    # As field names (in backticks); v8's tool name get_reorder_candidates is fine.
     for a2_field in ("match_status", "fuzzy_candidate", "candidates"):
-        assert a2_field not in prompt
+        assert f"`{a2_field}`" not in prompt
     assert "household_items" in prompt

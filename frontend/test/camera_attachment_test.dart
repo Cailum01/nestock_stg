@@ -37,6 +37,16 @@ class PendingUpload implements PhotoUpload {
   }
 }
 
+class TimeoutUpload implements PhotoUpload {
+  int calls = 0;
+
+  @override
+  Future<String> upload(Uint8List photo) {
+    calls++;
+    return Future.error(TimeoutException('upload timed out'));
+  }
+}
+
 void main() {
   testWidgets(
     'failed upload preserves draft and allows retry without duplicates',
@@ -55,7 +65,7 @@ void main() {
         matching: find.byType(TextField),
       );
       await tester.enterText(input, '測試');
-      await tester.tap(find.text('拍照／照片'));
+      await tester.tap(find.text('拍照'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('送出'));
       await tester.pump();
@@ -86,6 +96,35 @@ void main() {
       expect(message.bytes, await FakeCamera().capture());
     },
   );
+  testWidgets('timeout upload preserves draft and photo for retry', (
+    tester,
+  ) async {
+    final uploader = TimeoutUpload();
+    await tester.pumpWidget(
+      NestockApp(
+        agentClient: MockAgentClient(scenario: MockScenario.conversation),
+        catalog: const DemoCatalog(),
+        cameraCapture: FakeCamera(),
+        photoUpload: uploader,
+      ),
+    );
+    final input = find.descendant(
+      of: find.byKey(const Key('composer')),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(input, '測試');
+    await tester.tap(find.text('拍照'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('送出'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('照片上傳失敗，請重試。'), findsOneWidget);
+    expect(find.byKey(const Key('photo-attachment')), findsOneWidget);
+    expect(tester.widget<TextField>(input).controller!.text, '測試');
+    await tester.tap(find.text('送出'));
+    await tester.pumpAndSettle();
+    expect(uploader.calls, 2);
+  });
   for (final text in ['', '照片備註']) {
     testWidgets('send photo with text "$text"', (tester) async {
       tester.view.physicalSize = const Size(320, 568);
@@ -105,7 +144,7 @@ void main() {
         matching: find.byType(TextField),
       );
       await tester.enterText(input, text);
-      await tester.tap(find.text('拍照／照片'));
+      await tester.tap(find.text('拍照'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('送出'));
       await tester.pumpAndSettle();
@@ -144,11 +183,11 @@ void main() {
         matching: find.byType(TextField),
       );
       await tester.enterText(input, '備忘文字');
-      await tester.tap(find.text('拍照／照片'));
+      await tester.tap(find.text('拍照'));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('photo-attachment')), findsOneWidget);
       expect(tester.widget<TextField>(input).controller!.text, '備忘文字');
-      await tester.tap(find.text('拍照／照片'));
+      await tester.tap(find.text('拍照'));
       await tester.pumpAndSettle();
       expect(camera.calls, 2);
       expect(find.byKey(const Key('photo-attachment')), findsOneWidget);

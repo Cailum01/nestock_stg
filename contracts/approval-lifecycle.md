@@ -14,9 +14,13 @@ during implementation, but the rules below are decided. Public models stay in
 `backend/app/models/agent.py`; this document does not change them.
 
 Current status: A1's service `backend/app/services/approvals.py` implements these
-rules against storage ports and is tested with fakes. It is not wired to HTTP:
-`POST /agent/resume` returns 501 until B1's write adapter and the C1/B1 domain
-write builders exist.
+rules and runs on B1's `CosmosWriteRepository`. With Cosmos configured,
+`POST /agent/resume` calls it; without Cosmos it returns 503. The only card the
+Agent makes so far is the v8 flow C purchase card (`complete_purchase`, written by
+`backend/app/services/purchase_writes.py` through C1's purchase plan). Not built yet:
+changing a card (section 7), reminders (section 8), and the Agent making the new
+card by itself after a record changed (section 4 point 6); for now the reply asks
+the user to say it again.
 
 ## 1. Sources
 
@@ -248,7 +252,7 @@ There is no background job or push notification (#39).
 For a purchased item that may or may not be one the household already has (the
 user says 洗碗精, the household has 洗潔精). Agreed with C2 in Issue #90. The
 formats are fixed; the approval service refuses `item_match` cards until their
-confirm rules are built together with the Agent issuing cards.
+confirm rules are built.
 
 Every operation on every card carries `action`, a stable marker the App uses to
 choose how to show it. The App only shows the card and sends back the user's

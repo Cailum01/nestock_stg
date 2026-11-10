@@ -2,6 +2,7 @@ import atexit
 import os
 from collections.abc import Mapping
 
+from app.services.approvals import ApprovalService
 from app.services.cosmos_read import (
     CosmosInventoryService,
     CosmosReadRepository,
@@ -137,3 +138,42 @@ def _reset_vision_service_for_test() -> None:
     global _vision_service, _vision_service_resolved
     _vision_service = None
     _vision_service_resolved = False
+
+
+_approval_service: ApprovalService | None = None
+_approval_service_resolved: bool = False
+
+
+def get_approval_service() -> ApprovalService | None:
+    """A1 confirmation cards (`contracts/approval-lifecycle.md`). Cosmos only.
+
+    Cards are stored in `household-data` (Issue #41) and written through B1's
+    `CosmosWriteRepository`, so without `NESTOCK_COSMOS_*` there is none: the Agent
+    offers no card tool and `/agent/resume` answers 503. Made on first use. Writes use
+    a second SDK client next to the read one, until both come from one client.
+    """
+    global _approval_service, _approval_service_resolved
+    if not _approval_service_resolved:
+        _approval_service = _create_approval_service(cosmos_read_repository)
+        _approval_service_resolved = True
+    return _approval_service
+
+
+def _create_approval_service(
+    read_repository: CosmosReadRepository | None,
+    environment: Mapping[str, str] | None = None,
+) -> ApprovalService | None:
+    if read_repository is None:
+        return None
+    # Imported here so the demo path never loads the Azure SDK.
+    from app.services.cosmos_sdk import create_azure_cosmos_repositories
+    from app.services.purchase_writes import PurchaseWriteBuilder
+
+    environment = os.environ if environment is None else environment
+    _, write_repository, close_client = create_azure_cosmos_repositories(
+        endpoint=environment["NESTOCK_COSMOS_ENDPOINT"],
+        database_name=environment["NESTOCK_COSMOS_DATABASE"],
+        container_name=environment["NESTOCK_COSMOS_CONTAINER"],
+    )
+    atexit.register(close_client)
+    return ApprovalService(write_repository, PurchaseWriteBuilder(read_repository))

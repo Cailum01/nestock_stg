@@ -58,8 +58,11 @@ def test_dependency_injection_reaches_api():
 
 
 def test_agent_and_repeated_resume_fail_closed_without_writes():
+    from app.core.dependencies import get_approval_service
+
     app = create_app()
     app.dependency_overrides[get_read_agent] = lambda: None  # Azure OpenAI not configured
+    app.dependency_overrides[get_approval_service] = lambda: None  # Cosmos not configured
     with TestClient(app) as client:
         before = [client.get(path).json() for path in ["/inventory", "/shopping"]]
         assert (
@@ -82,7 +85,7 @@ def test_agent_and_repeated_resume_fail_closed_without_writes():
                         "approved": approved,
                     },
                 ).status_code
-                == 501
+                == 503
             )
         assert before == [client.get(path).json() for path in ["/inventory", "/shopping"]]
         assert (

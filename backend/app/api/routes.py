@@ -12,9 +12,11 @@ from fastapi import (
     status,
 )
 
+from app.agent.cards import resume_response
 from app.agent.read_agent import ReadAgent, get_read_agent
 from app.core.config import settings
 from app.core.dependencies import (
+    get_approval_service,
     get_inventory_service,
     get_media_storage_service,
     get_shopping_service,
@@ -28,6 +30,7 @@ from app.models.storage import (
     UploadAuthorizationRequest,
     UploadAuthorizationResponse,
 )
+from app.services.approvals import ApprovalNotFound, ApprovalService, InvalidSelection
 from app.services.interfaces import InventoryService, ShoppingService
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.speech import SpeechToTextService
@@ -71,7 +74,8 @@ async def agent_message(
     request: AgentRequest,
     agent: Annotated[ReadAgent | None, Depends(get_read_agent)],
 ) -> AgentResponse:
-    """Read-only Agent (Day 5): answers inventory/shopping questions, writes nothing."""
+    """Agent: answers questions; may return a purchase card, which writes nothing until
+    the user confirms it in `/agent/resume`."""
     if agent is None:
         raise HTTPException(501, "Agent is not configured: set AZURE_OPENAI_* in backend/.env.")
     try:
@@ -84,10 +88,30 @@ async def agent_message(
     "/agent/resume",
     response_model=AgentResponse,
     tags=["provisional"],
-    responses={501: {"description": "Approval/resume intentionally unimplemented"}},
+    responses={
+        404: {"description": "No such card in this household"},
+        409: {"description": "The selection does not fit this card"},
+        500: {"description": "Some writes exist without the card completing; nothing more"},
+        503: {"description": "Approval cards need Cosmos (NESTOCK_COSMOS_*); nothing written"},
+    },
 )
-async def agent_resume(request: ResumeRequest) -> AgentResponse:
-    raise HTTPException(501, "Approval/resume is not implemented; no changes were saved.")
+async def agent_resume(
+    request: ResumeRequest,
+    approvals: Annotated[ApprovalService | None, Depends(get_approval_service)],
+) -> AgentResponse:
+    """The user's answer to a card. Writes only what the stored card holds (PR #47 §4)."""
+    if approvals is None:
+        raise HTTPException(503, "Approval cards need Cosmos; no changes were saved.")
+    try:
+        result = await approvals.resume(request)
+    except ApprovalNotFound as error:
+        raise HTTPException(404, "Card not found; no changes were saved.") from error
+    except InvalidSelection as error:
+        raise HTTPException(409, f"{error} No changes were saved.") from error
+    try:
+        return resume_response(result)
+    except RuntimeError as error:  # receipts without completion: stop and report (§6)
+        raise HTTPException(500, "Write state needs checking; nothing more was written.") from error
 
 
 @router.post(

@@ -1,7 +1,10 @@
-"""A1 read-only Agent (Day 5, photo reading Day 8): understand, look, answer.
+"""A1 Agent (Day 5, photo reading Day 8): understand, look, answer.
 
-- Read tools only: inventory, shopping list, photo recognition and price search.
-  No write tool exists here, so no approval/pause is needed (AGENTS.md HITL rule 1).
+- Read tools: inventory, shopping list, photo recognition and price search.
+- One card tool, `complete_purchase` (v8 flow C, `app/agent/cards.py`), offered only
+  when approval cards are configured. It stores a pending confirmation card and
+  writes nothing else; the write happens in `/agent/resume` after the user confirms
+  (AGENTS.md HITL rules 2 and 8).
 - household_id and image_ref always come from the request, never from the
   model's arguments.
 - A photo is used only after the media is verified to belong to the request's
@@ -30,7 +33,10 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
+from app.agent.cards import ONE_CARD_PER_MESSAGE, PURCHASE_TOOL_SCHEMA, PurchaseCards
 from app.core.dependencies import (
+    get_approval_service,
+    get_cosmos_read_repository,
     get_inventory_service,
     get_media_storage_service,
     get_shopping_service,
@@ -145,6 +151,7 @@ class _State(TypedDict, total=False):
     inventory: list[dict[str, Any]]
     vision: dict[str, Any]
     purchase_options: list[dict[str, Any]]
+    pending_approval: dict[str, Any]
 
 
 def load_system_prompt() -> str:
@@ -262,7 +269,7 @@ def _text(message: AnyMessage) -> str:
 
 
 class ReadAgent:
-    """Implements AgentRuntime.respond for read-only questions. resume is not offered."""
+    """Implements AgentRuntime.respond. Cards it makes are answered in `/agent/resume`."""
 
     def __init__(
         self,
@@ -273,8 +280,11 @@ class ReadAgent:
         media: MediaStorageService | None = None,
         matcher: ItemMatcher | None = None,
         commerce: PurchaseOptionSearch | None = None,
+        purchases: PurchaseCards | None = None,
     ) -> None:
-        self._model = model.bind_tools(TOOL_SCHEMAS)
+        self._model = model.bind_tools(
+            [*TOOL_SCHEMAS, PURCHASE_TOOL_SCHEMA] if purchases is not None else TOOL_SCHEMAS
+        )
         self._handlers: dict[str, Callable[[str], Awaitable[list[Any]]]] = {
             "list_inventory": tools.list_inventory,
             "list_shopping": tools.list_shopping,
@@ -283,6 +293,7 @@ class ReadAgent:
         self._vision = vision
         self._media = media
         self._commerce = commerce
+        self._purchases = purchases
         self._matcher = matcher or ItemMatcher(tools.inventory, tools.shopping)
         self._graph = self._build_graph()
 
@@ -308,6 +319,10 @@ class ReadAgent:
                     if found is not None:
                         earlier = update.get("purchase_options", state.get("purchase_options", []))
                         update["purchase_options"] = [*earlier, found]
+                elif call["name"] == PURCHASE_TOOL_SCHEMA["function"]["name"]:
+                    content, card = await self._propose_purchase(state, update, call)
+                    if card is not None:
+                        update["pending_approval"] = card
                 elif handler is None:
                     content = f"沒有這個工具：{call['name']}"
                 else:
@@ -370,6 +385,16 @@ class ReadAgent:
         model_view, data = _price_view(item_name, options[:MAX_PURCHASE_OPTIONS])
         return json.dumps(model_view, ensure_ascii=False), (data if options else None)
 
+    async def _propose_purchase(
+        self, state: _State, update: _State, call: dict[str, Any]
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Make the purchase card. One card per message; it writes nothing else."""
+        if self._purchases is None:
+            return f"沒有這個工具：{call['name']}", None
+        if "pending_approval" in update or "pending_approval" in state:
+            return ONE_CARD_PER_MESSAGE, None
+        return await self._purchases.propose(state["household_id"], call.get("args") or {})
+
     async def respond(self, request: AgentRequest) -> AgentResponse:
         messages: list[AnyMessage] = [SystemMessage(self._system_prompt)]
         start: _State = {"household_id": request.household_id}
@@ -414,7 +439,11 @@ class ReadAgent:
                     data=found,
                 )
             )
-        return AgentResponse(message=_text(final["messages"][-1]), results=results)
+        return AgentResponse(
+            message=_text(final["messages"][-1]),
+            results=results,
+            pending_approval=final.get("pending_approval"),
+        )
 
 
 @lru_cache(maxsize=1)
@@ -436,4 +465,14 @@ def get_read_agent() -> ReadAgent | None:
         media=get_media_storage_service(),
         # Built after load_azure_settings() read backend/.env, so BigGo keys there apply.
         commerce=BigGoCommerceProvider(),
+        purchases=_purchase_cards(),
     )
+
+
+def _purchase_cards() -> PurchaseCards | None:
+    """The card tool needs approval storage and versioned reads: Cosmos only."""
+    approvals = get_approval_service()
+    reader = get_cosmos_read_repository()
+    if approvals is None or reader is None:
+        return None
+    return PurchaseCards(reader, approvals)

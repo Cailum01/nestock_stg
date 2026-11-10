@@ -36,12 +36,12 @@ CAPACITY_REGEX = re.compile(
 
 # Multi-piece spec pattern (e.g. 100抽x24包, 6入x4組)
 MULTI_PACK_REGEX = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(?:抽|入|片|張)?\s*[xX*]\s*(\d+(?:\.\d+)?)\s*(入|瓶|罐|包|盒|袋|條|支|組|個|箱)",
+    r"(\d+(?:\.\d+)?)\s*(?:抽|入|片|張)?\s*[xX*]\s*(\d+)\s*(入|瓶|罐|包|盒|袋|條|支|組|個|箱)",
 )
 
 # Single-piece quantity pattern (e.g. 2瓶裝, 6入組, 12罐)
 SINGLE_PACK_REGEX = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(入|瓶|罐|包|盒|袋|條|支|組|個|箱)(?:裝|組)?(?:/[箱盒組袋])?",
+    r"(\d+)\s*(入|瓶|罐|包|盒|袋|條|支|組|個|箱)(?:裝|組)?(?:/[箱盒組袋])?",
 )
 
 
@@ -58,11 +58,11 @@ class ItemNormalizer:
         return re.sub(r"\s+", " ", cleaned).strip()
 
     def resolve_package_and_unit(
-        self, text: str, default_quantity: float = 1.0, default_unit: str | None = None
-    ) -> tuple[float, str | None, str | None, str]:
-        """Extract quantity, canonical unit, capacity specification, and remaining text."""
+        self, text: str, default_quantity: int = 1, default_unit: str | None = None
+    ) -> tuple[int, str | None, str | None, str]:
+        """Extract integer quantity, canonical unit, capacity specification, and remaining text."""
         capacity_spec: str | None = None
-        quantity: float = default_quantity
+        quantity: int = max(1, int(default_quantity))
         unit: str | None = default_unit
         working_text = text
 
@@ -70,7 +70,7 @@ class ItemNormalizer:
         multi_match = MULTI_PACK_REGEX.search(working_text)
         if multi_match:
             sub_count, main_count, matched_unit = multi_match.groups()
-            quantity = float(main_count)
+            quantity = max(1, int(main_count))
             unit = matched_unit
             # If sub_count is followed by unit like 抽/入
             capacity_match = CAPACITY_REGEX.search(working_text[: multi_match.start() + 10])
@@ -87,7 +87,7 @@ class ItemNormalizer:
             single_match = SINGLE_PACK_REGEX.search(working_text)
             if single_match:
                 qty_str, matched_unit = single_match.groups()
-                quantity = float(qty_str)
+                quantity = max(1, int(qty_str))
                 unit = matched_unit
                 working_text = (
                     working_text[: single_match.start()] + " " + working_text[single_match.end() :]
@@ -122,62 +122,22 @@ class ItemNormalizer:
         return detected_brand, canonical
 
     def extract_feature_keywords(self, canonical_name: str, brand: str | None = None) -> list[str]:
-        """Extract deduplicated feature keywords snapshot for B1 storage and exact matching.
+        """Return empty list as feature_keywords is retired under Issue #36 (Plan B).
 
-        Note: Brand is intentionally excluded to avoid candidate set explosion per B2/A1 review.
+        Per Issue #36 and Issue #35, item matching uses full `canonical_name` and `aliases`
+        instead of static 21-token substring splitting.
         """
-        keywords: list[str] = []
-
-        # Segment canonical name into meaningful tokens
-        common_tokens = [
-            "鮮乳",
-            "鮮奶",
-            "全脂",
-            "低脂",
-            "豆漿",
-            "無糖",
-            "高纖",
-            "衛生紙",
-            "抽取式",
-            "衛生棉",
-            "蘋果",
-            "可樂",
-            "汽水",
-            "醬油",
-            "白米",
-            "燕麥",
-            "洗髮精",
-            "沐浴乳",
-            "牙膏",
-            "沙拉油",
-            "橄欖油",
-        ]
-        for token in common_tokens:
-            if token in canonical_name and token not in keywords:
-                keywords.append(token)
-
-        # Ensure canonical name itself or whole words are included if not present
-        if not keywords and canonical_name:
-            keywords.append(canonical_name)
-
-        return keywords
+        del canonical_name, brand
+        return []
 
     def generate_aliases(self, canonical_name: str, brand: str | None) -> list[str]:
-        """Generate common user search aliases and synonym expressions."""
-        aliases: list[str] = []
-
-        if brand:
-            aliases.append(f"{brand}{canonical_name}")
-
-        if "鮮乳" in canonical_name:
-            aliases.append(canonical_name.replace("鮮乳", "鮮奶"))
-        elif "鮮奶" in canonical_name:
-            aliases.append(canonical_name.replace("鮮奶", "鮮乳"))
-
-        return aliases
+        """Generate brand-prefixed expression without static synonym tables (Issue #36 Plan B)."""
+        if brand and canonical_name and not canonical_name.startswith(brand):
+            return [f"{brand}{canonical_name}"]
+        return []
 
     def normalize(
-        self, raw_text: str, fallback_quantity: float = 1.0, fallback_unit: str | None = None
+        self, raw_text: str, fallback_quantity: int = 1, fallback_unit: str | None = None
     ) -> NormalizedItem:
         """Full pipeline: clean marketing noise -> resolve units -> extract brand & features."""
         if not raw_text or not raw_text.strip():

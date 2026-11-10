@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from app.models.domain import InventoryItem, ShoppingItem, Transaction
+from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus, Transaction
 from app.services.cosmos_read import (
     CosmosDocumentMapper,
     CosmosInventoryService,
@@ -453,3 +453,63 @@ def test_point_read_hides_soft_deleted_shopping_item_in_its_household():
 
     assert result is None
     assert client.read_calls == [{"item_id": "shopping_item:tea", "partition_key": "home"}]
+
+
+def test_with_etag_reads_return_etag_and_keep_plain_reads_unchanged():
+    inventory = InventoryItem(
+        item_id="rice",
+        household_id="home",
+        name="Rice",
+        quantity=2,
+        unit="bag",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    shopping = ShoppingItem(
+        shopping_item_id="milk",
+        household_id="home",
+        name="Milk",
+        quantity=1,
+        unit="bottle",
+        status=ShoppingStatus.PENDING,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    deleted = CosmosDocumentMapper.to_document(inventory.model_copy(update={"item_id": "gone"})) | {
+        "_etag": '"e3"',
+        "deleted_at": "2026-01-02T00:00:00.000000Z",
+    }
+    client = FakeDocumentClient(
+        [
+            CosmosDocumentMapper.to_document(inventory) | {"_etag": '"e1"'},
+            CosmosDocumentMapper.to_document(shopping) | {"_etag": '"e2"'},
+            deleted,
+        ]
+    )
+    repository = CosmosReadRepository(client)
+    inventory_only = CosmosReadRepository(FakeDocumentClient([client.documents[0], deleted]))
+    shopping_only = CosmosReadRepository(FakeDocumentClient([client.documents[1]]))
+
+    mapped_item = asyncio.run(
+        repository.read_inventory_item_with_etag(household_id="home", item_id="rice")
+    )
+    mapped_shopping = asyncio.run(
+        repository.read_shopping_item_with_etag(household_id="home", shopping_item_id="milk")
+    )
+    listed = asyncio.run(inventory_only.list_inventory_with_etag("home"))
+    listed_shopping = asyncio.run(shopping_only.list_shopping_with_etag("home"))
+
+    assert mapped_item is not None and mapped_item.record == inventory
+    assert mapped_item.etag == '"e1"'
+    assert mapped_shopping is not None and mapped_shopping.etag == '"e2"'
+    assert [(m.record.item_id, m.etag) for m in listed] == [("rice", '"e1"')]
+    assert [m.etag for m in listed_shopping] == ['"e2"']
+    assert asyncio.run(inventory_only.list_inventory("home")) == [inventory]
+    assert (
+        asyncio.run(repository.read_inventory_item(household_id="home", item_id="rice"))
+        == inventory
+    )
+    assert (
+        asyncio.run(repository.read_inventory_item_with_etag(household_id="home", item_id="gone"))
+        is None
+    )

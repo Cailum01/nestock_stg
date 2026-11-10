@@ -2,7 +2,10 @@ import asyncio
 
 import pytest
 
+from app.models.domain import ChangeEvent
+from app.services.cosmos_read import CosmosDocumentMapper
 from app.services.cosmos_write import (
+    ApprovalIdConflict,
     BatchOperationConflict,
     CosmosWriteRepository,
     CreateDocument,
@@ -12,6 +15,7 @@ from app.services.cosmos_write import (
     PendingApprovalRecord,
     ReplaceDocument,
     WriteStatus,
+    change_event_create,
 )
 
 
@@ -37,13 +41,19 @@ class FakeTransactionalBatchClient:
                 key = (partition_key, document["id"])
                 if key in self.documents or key in staged:
                     raise BatchOperationConflict(index)
-                staged[key] = document
+                stored_document = dict(document)
+                if stored_document.get("record_type") == "pending_approval":
+                    stored_document["_etag"] = '"etag-1"'
+                staged[key] = stored_document
             elif isinstance(operation, ReplaceDocument):
                 key = (partition_key, document["id"])
                 current = self.documents.get(key)
                 if current is None or current.get("_etag") != operation.if_match_etag:
                     raise BatchOperationConflict(index)
-                staged[key] = document
+                updated_document = dict(document)
+                if updated_document.get("record_type") == "pending_approval":
+                    updated_document["_etag"] = '"etag-2"'
+                staged[key] = updated_document
 
         self.documents.update(staged)
         if self.timeout_after_commit:
@@ -55,6 +65,22 @@ class FakeTransactionalBatchClient:
         return self.documents.get((partition_key, item_id))
 
 
+class FakeApprovalQueryClient:
+    def __init__(self, documents):
+        self.documents = documents
+        self.calls = []
+
+    async def query_items(self, *, query, parameters, partition_key):
+        self.calls.append(
+            {
+                "query": query,
+                "parameters": parameters,
+                "partition_key": partition_key,
+            }
+        )
+        return self.documents
+
+
 def inventory_document(*, quantity=2, household_id="home"):
     return {
         "id": "inventory_item:rice",
@@ -63,6 +89,275 @@ def inventory_document(*, quantity=2, household_id="home"):
         "item_id": "rice",
         "quantity": quantity,
     }
+
+
+def pending_approval_document(*, household_id="home", approval_id="approval-1"):
+    return {
+        "id": f"pending_approval:{approval_id}",
+        "record_type": "pending_approval",
+        "household_id": household_id,
+        "approval_id": approval_id,
+        "status": "pending",
+        "created_at": "2026-11-06T00:00:00Z",
+        "expires_at": "2026-11-06T00:30:00Z",
+        "operations": [],
+    }
+
+
+def test_create_pending_approval_stores_ttl_and_returns_etag():
+    client = FakeTransactionalBatchClient()
+    repository = CosmosWriteRepository(client)
+
+    approval = asyncio.run(
+        repository.create_pending_approval(
+            household_id="home",
+            approval=pending_approval_document(),
+            ttl_seconds=3600,
+        )
+    )
+
+    assert approval.approval_id == "approval-1"
+    assert approval.etag == '"etag-1"'
+    assert approval.document["ttl"] == 3600
+    assert client.calls[0]["partition_key"] == "home"
+    assert len(client.calls[0]["operations"]) == 1
+    assert client.calls[0]["operations"][0].document["record_type"] == "pending_approval"
+
+
+def test_create_pending_approval_retry_is_idempotent_for_same_document():
+    client = FakeTransactionalBatchClient()
+    repository = CosmosWriteRepository(client)
+    document = pending_approval_document()
+
+    first = asyncio.run(
+        repository.create_pending_approval(
+            household_id="home",
+            approval=document,
+            ttl_seconds=3600,
+        )
+    )
+    retry = asyncio.run(
+        repository.create_pending_approval(
+            household_id="home",
+            approval=document,
+            ttl_seconds=3600,
+        )
+    )
+
+    assert retry == first
+    assert len(client.documents) == 1
+    assert len(client.calls) == 2
+
+
+def test_create_pending_approval_retry_after_lost_response_returns_existing_record():
+    client = FakeTransactionalBatchClient()
+    client.timeout_after_commit = True
+    repository = CosmosWriteRepository(client)
+    document = pending_approval_document()
+
+    with pytest.raises(TimeoutError, match="lost response"):
+        asyncio.run(
+            repository.create_pending_approval(
+                household_id="home",
+                approval=document,
+                ttl_seconds=3600,
+            )
+        )
+
+    retry = asyncio.run(
+        repository.create_pending_approval(
+            household_id="home",
+            approval=document,
+            ttl_seconds=3600,
+        )
+    )
+
+    assert retry.etag == '"etag-1"'
+    assert len(client.documents) == 1
+
+
+def test_create_pending_approval_rejects_reused_id_with_different_values():
+    client = FakeTransactionalBatchClient()
+    repository = CosmosWriteRepository(client)
+    asyncio.run(
+        repository.create_pending_approval(
+            household_id="home",
+            approval=pending_approval_document(),
+            ttl_seconds=3600,
+        )
+    )
+
+    with pytest.raises(ApprovalIdConflict, match="different canonical values"):
+        asyncio.run(
+            repository.create_pending_approval(
+                household_id="home",
+                approval=pending_approval_document() | {"operations": [{"operation_id": "op-2"}]},
+                ttl_seconds=3600,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("household_id", "approval", "ttl_seconds"),
+    [
+        ("", pending_approval_document(), 3600),
+        ("home", pending_approval_document() | {"status": "confirmed"}, 3600),
+        ("home", pending_approval_document() | {"id": "wrong-id"}, 3600),
+        ("home", pending_approval_document() | {"household_id": "other"}, 3600),
+        ("home", pending_approval_document(), 0),
+        ("home", pending_approval_document(), True),
+        ("home", pending_approval_document(), "3600"),
+    ],
+)
+def test_create_pending_approval_rejects_invalid_record_or_ttl(
+    household_id,
+    approval,
+    ttl_seconds,
+):
+    repository = CosmosWriteRepository(FakeTransactionalBatchClient())
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            repository.create_pending_approval(
+                household_id=household_id,
+                approval=approval,
+                ttl_seconds=ttl_seconds,
+            )
+        )
+
+
+def test_approval_only_etag_replace_returns_updated_record_and_etag():
+    client = FakeTransactionalBatchClient()
+    document = pending_approval_document()
+    document["ttl"] = 3600
+    document["_etag"] = '"etag-1"'
+    client.documents[("home", document["id"])] = document
+    repository = CosmosWriteRepository(client)
+    current = asyncio.run(
+        repository.read_pending_approval(household_id="home", approval_id="approval-1")
+    )
+    assert current is not None
+
+    updated = asyncio.run(
+        repository.replace_pending_approval(
+            household_id="home",
+            approval_id="approval-1",
+            document=current.document
+            | {
+                "status": "confirmed",
+                "selection": {"approved_operation_ids": ["op-1"]},
+                "decided_at": "2026-11-06T00:05:00Z",
+            },
+            if_match_etag=current.etag,
+        )
+    )
+
+    assert updated.document["status"] == "confirmed"
+    assert updated.etag == '"etag-2"'
+    assert len(client.calls[-1]["operations"]) == 1
+    assert isinstance(client.calls[-1]["operations"][0], ReplaceDocument)
+    assert "_etag" not in client.calls[-1]["operations"][0].document
+    assert client.calls[-1]["operations"][0].if_match_etag == '"etag-1"'
+
+
+def test_approval_only_etag_replace_after_lost_response_is_readable():
+    client = FakeTransactionalBatchClient()
+    document = pending_approval_document() | {"_etag": '"etag-1"'}
+    client.documents[("home", document["id"])] = document
+    client.timeout_after_commit = True
+    repository = CosmosWriteRepository(client)
+
+    with pytest.raises(TimeoutError, match="lost response"):
+        asyncio.run(
+            repository.replace_pending_approval(
+                household_id="home",
+                approval_id="approval-1",
+                document=document | {"status": "confirmed"},
+                if_match_etag='"etag-1"',
+            )
+        )
+
+    current = asyncio.run(
+        repository.read_pending_approval(household_id="home", approval_id="approval-1")
+    )
+    assert current is not None
+    assert current.document["status"] == "confirmed"
+    assert current.etag == '"etag-2"'
+
+
+@pytest.mark.parametrize("status", ["cancelled", "expired"])
+def test_approval_only_etag_replace_supports_terminal_transitions(status):
+    client = FakeTransactionalBatchClient()
+    document = pending_approval_document() | {"_etag": '"etag-1"'}
+    client.documents[("home", document["id"])] = document
+    repository = CosmosWriteRepository(client)
+
+    updated = asyncio.run(
+        repository.replace_pending_approval(
+            household_id="home",
+            approval_id="approval-1",
+            document=document | {"status": status},
+            if_match_etag='"etag-1"',
+        )
+    )
+
+    assert updated.document["status"] == status
+
+
+def test_approval_only_etag_replace_rejects_completed_and_stale_etag():
+    client = FakeTransactionalBatchClient()
+    document = pending_approval_document() | {"_etag": '"etag-current"'}
+    client.documents[("home", document["id"])] = document
+    repository = CosmosWriteRepository(client)
+
+    with pytest.raises(ValueError, match="status must be confirmed"):
+        asyncio.run(
+            repository.replace_pending_approval(
+                household_id="home",
+                approval_id="approval-1",
+                document=document | {"status": "completed"},
+                if_match_etag='"etag-current"',
+            )
+        )
+
+    with pytest.raises(BatchOperationConflict):
+        asyncio.run(
+            repository.replace_pending_approval(
+                household_id="home",
+                approval_id="approval-1",
+                document=document | {"status": "cancelled"},
+                if_match_etag='"etag-stale"',
+            )
+        )
+
+    assert client.documents[("home", document["id"])] == document
+
+
+@pytest.mark.parametrize(
+    ("current_status", "new_status"),
+    [("cancelled", "confirmed"), ("completed", "cancelled"), ("confirmed", "confirmed")],
+)
+def test_approval_only_etag_replace_rejects_invalid_transitions(current_status, new_status):
+    client = FakeTransactionalBatchClient()
+    document = pending_approval_document() | {
+        "status": current_status,
+        "_etag": '"etag-current"',
+    }
+    client.documents[("home", document["id"])] = document
+    repository = CosmosWriteRepository(client)
+
+    with pytest.raises(ValueError, match="cannot transition"):
+        asyncio.run(
+            repository.replace_pending_approval(
+                household_id="home",
+                approval_id="approval-1",
+                document=document | {"status": new_status},
+                if_match_etag='"etag-current"',
+            )
+        )
+
+    assert client.documents[("home", document["id"])] == document
+    assert client.calls == []
 
 
 def test_operation_id_retry_returns_already_applied_without_rewriting():
@@ -167,6 +462,99 @@ def test_pending_approval_read_requires_etag_for_conditional_batch_updates():
 
     with pytest.raises(ValueError, match="no valid Cosmos _etag"):
         asyncio.run(repository.read_pending_approval(household_id="home", approval_id="approval-1"))
+
+
+def test_list_open_approvals_queries_one_household_and_returns_pending_and_confirmed():
+    documents = [
+        {
+            "id": f"pending_approval:{status}-1",
+            "record_type": "pending_approval",
+            "household_id": "home",
+            "approval_id": f"{status}-1",
+            "status": status,
+            "_etag": f'"etag-{status}"',
+        }
+        for status in ("pending", "confirmed")
+    ]
+    query_client = FakeApprovalQueryClient(documents)
+    repository = CosmosWriteRepository(FakeTransactionalBatchClient(), query_client=query_client)
+
+    approvals = asyncio.run(repository.list_open_approvals(household_id="home"))
+
+    assert [approval.approval_id for approval in approvals] == ["pending-1", "confirmed-1"]
+    assert [approval.etag for approval in approvals] == ['"etag-pending"', '"etag-confirmed"']
+    assert query_client.calls == [
+        {
+            "query": (
+                "SELECT * FROM c WHERE c.record_type = @record_type "
+                "AND c.household_id = @household_id "
+                "AND c.status IN (@pending_status, @confirmed_status)"
+            ),
+            "parameters": (
+                {"name": "@record_type", "value": "pending_approval"},
+                {"name": "@household_id", "value": "home"},
+                {"name": "@pending_status", "value": "pending"},
+                {"name": "@confirmed_status", "value": "confirmed"},
+            ),
+            "partition_key": "home",
+        }
+    ]
+
+
+def test_list_open_approvals_requires_a_household_scoped_query_client():
+    repository = CosmosWriteRepository(FakeTransactionalBatchClient())
+
+    with pytest.raises(RuntimeError, match="requires a household-scoped query client"):
+        asyncio.run(repository.list_open_approvals(household_id="home"))
+
+
+@pytest.mark.parametrize(
+    ("household_id", "document", "message"),
+    [
+        ("", {}, "household_id must not be empty"),
+        (
+            "home",
+            {
+                "id": "pending_approval:approval-1",
+                "record_type": "pending_approval",
+                "household_id": "other",
+                "approval_id": "approval-1",
+                "status": "pending",
+                "_etag": '"etag-1"',
+            },
+            "does not match its partition key",
+        ),
+        (
+            "home",
+            {
+                "id": "pending_approval:approval-1",
+                "record_type": "pending_approval",
+                "household_id": "home",
+                "approval_id": "approval-1",
+                "status": "completed",
+                "_etag": '"etag-1"',
+            },
+            "non-open record",
+        ),
+        (
+            "home",
+            {
+                "id": "pending_approval:approval-1",
+                "record_type": "pending_approval",
+                "household_id": "home",
+                "approval_id": "approval-1",
+                "status": "pending",
+            },
+            "no valid Cosmos _etag",
+        ),
+    ],
+)
+def test_list_open_approvals_rejects_invalid_scope_or_records(household_id, document, message):
+    query_client = FakeApprovalQueryClient([document])
+    repository = CosmosWriteRepository(FakeTransactionalBatchClient(), query_client=query_client)
+
+    with pytest.raises(ValueError, match=message):
+        asyncio.run(repository.list_open_approvals(household_id=household_id))
 
 
 def test_retry_after_lost_success_response_is_reported_as_already_applied():
@@ -646,3 +1034,53 @@ def test_replace_requires_etag_but_fingerprints_only_canonical_document_values()
     )
 
     assert retry == WriteStatus.ALREADY_APPLIED
+
+
+def _change_event(operation_id="op-1"):
+    from datetime import UTC, datetime
+
+    return ChangeEvent(
+        event_id=operation_id,
+        household_id="home",
+        operation_id=operation_id,
+        approval_id="approval-1",
+        transaction_id=f"txn-{operation_id}",
+        shopping_item_id=f"shop-{operation_id}",
+        item_id="rice",
+        occurred_at=datetime(2026, 11, 7, 4, 0, tzinfo=UTC),
+        recorded_at=datetime(2026, 11, 8, 4, 0, tzinfo=UTC),
+    )
+
+
+def test_change_event_is_created_in_the_operation_batch_and_retry_is_idempotent():
+    client = FakeTransactionalBatchClient()
+    repository = CosmosWriteRepository(client)
+    event = _change_event()
+
+    def run():
+        return asyncio.run(
+            repository.execute_idempotent_batch(
+                household_id="home",
+                operation_id="op-1",
+                operations=[
+                    CreateDocument({"id": "transaction:txn-op-1", "household_id": "home"}),
+                    change_event_create(event),
+                ],
+            )
+        )
+
+    assert run() == WriteStatus.APPLIED
+    stored = client.documents[("home", "change_event:op-1")]
+    assert stored["record_type"] == "change_event"
+    assert stored["occurred_at"] == "2026-11-07T04:00:00.000000Z"
+    assert CosmosDocumentMapper.from_document(ChangeEvent, stored, household_id="home") == event
+
+    assert run() == WriteStatus.ALREADY_APPLIED
+    assert len([key for key in client.documents if key[1] == "change_event:op-1"]) == 1
+
+
+def test_change_event_create_requires_event_id_to_equal_operation_id():
+    event = _change_event().model_copy(update={"event_id": "other"})
+
+    with pytest.raises(ValueError):
+        change_event_create(event)

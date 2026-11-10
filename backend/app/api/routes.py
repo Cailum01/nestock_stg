@@ -97,9 +97,14 @@ async def agent_resume(request: ResumeRequest) -> AgentResponse:
 )
 async def create_upload_authorization(
     request: UploadAuthorizationRequest,
+    http_request: Request,
     storage: Annotated[MediaStorageService, Depends(get_media_storage_service)],
 ) -> UploadAuthorizationResponse:
-    return await storage.create_upload_authorization(request)
+    dynamic_staging_base = f"{str(http_request.base_url).rstrip('/')}/staging/upload"
+    return await storage.create_upload_authorization(
+        request,
+        base_staging_url=dynamic_staging_base,
+    )
 
 
 @router.put(

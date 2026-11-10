@@ -65,6 +65,25 @@ void main() {
     );
     await expectLater(approval.send('查詢'), throwsUnsupportedError);
   });
+  test('demo-looking text is sent to the backend as ordinary text', () async {
+    final messages = <String>[];
+    final client = HttpAgentClient(
+      baseUrl: base,
+      client: MockClient((request) async {
+        messages.add((jsonDecode(request.body) as Map)['message'] as String);
+        return http.Response(
+          jsonEncode({'message': 'backend reply', 'results': []}),
+          200,
+        );
+      }),
+    );
+
+    for (final message in ['/vision-demo', '/confirmation-demo']) {
+      expect((await client.send(message)).message, 'backend reply');
+    }
+
+    expect(messages, ['/vision-demo', '/confirmation-demo']);
+  });
   test('request timeout is exposed and mock remains usable', () async {
     final client = HttpAgentClient(
       baseUrl: base,

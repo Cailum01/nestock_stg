@@ -4,14 +4,37 @@ Stable identities, timestamps and versioned snapshots must come from the
 server-stored proposal. Rebuilding with fresh snapshots is not a write retry.
 """
 
-import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
 
-from app.models.domain import InventoryItem, ShoppingItem, Transaction, TransactionReason
-from app.services.shopping.preview import ShoppingPreviewError, ShoppingPreviewService
+from app.models.domain import (
+    InventoryItem,
+    ShoppingItem,
+    ShoppingStatus,
+    Transaction,
+    TransactionReason,
+)
+from app.services.shopping.preview import (
+    ShoppingDecisionRequired,
+    ShoppingPreviewError,
+    ShoppingPreviewService,
+    _pending_item,
+    _quantity,
+)
+
+
+@dataclass(frozen=True)
+class NewInventoryTarget:
+    """Exact confirmed values; item_id is supplied by B1's stable backend resolver.
+
+    This is a create intent, never a fabricated existing snapshot or ETag.
+    """
+
+    item_id: str
+    name: str
+    unit: str
+    location: str | None
 
 
 @dataclass(frozen=True)
@@ -20,9 +43,13 @@ class PurchaseInput:
     transaction_id: str
     shopping: ShoppingItem
     shopping_etag: str
-    inventory: InventoryItem
-    inventory_etag: str
-    purchased_quantity: float
+    inventory: InventoryItem | None
+    inventory_etag: str | None
+    purchased_quantity: int
+    purchased_unit: str | None = None
+    resolved_inventory_item_id: str | None = None
+    purchased_at: datetime | None = None
+    new_inventory: NewInventoryTarget | None = None
 
 
 @dataclass(frozen=True)
@@ -40,11 +67,18 @@ class InventoryUpdate:
 
 
 @dataclass(frozen=True)
+class InventoryCreate:
+    operation_id: str
+    record: InventoryItem
+
+
+@dataclass(frozen=True)
 class PurchasePlan:
     household_id: str
     shopping_updates: tuple[ShoppingUpdate, ...]
     inventory_updates: tuple[InventoryUpdate, ...]
     transactions: tuple[Transaction, ...]
+    inventory_creates: tuple[InventoryCreate, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -80,6 +114,12 @@ class ShoppingPlanService:
         purchases: Sequence[PurchaseInput],
         recorded_at: datetime,
     ) -> PurchasePlan:
+        """Use recorded_at as the stored confirmation time, never the retry clock.
+
+        A dated purchase uses its per-operation purchased_at for the Transaction;
+        otherwise it uses recorded_at. Domain updated_at always uses recorded_at.
+        These are provisional #60 semantics pending A1/B1/B2 alignment.
+        """
         _identity(household_id, "Household")
         _timestamp(recorded_at)
         if not purchases:
@@ -88,10 +128,12 @@ class ShoppingPlanService:
         transaction_ids: set[str] = set()
         shopping_ids: set[str] = set()
         sources: dict[str, PurchaseInput] = {}
-        deltas: dict[str, list[tuple[str, float]]] = {}
+        deltas: dict[str, list[tuple[str, int]]] = {}
         shopping_updates: list[ShoppingUpdate] = []
         transactions: list[Transaction] = []
         preview_service = ShoppingPreviewService()
+        inventory_creates: list[InventoryCreate] = []
+        new_ids: set[str] = set()
 
         for purchase in purchases:
             for value, label, seen in (
@@ -104,29 +146,87 @@ class ShoppingPlanService:
                     raise ShoppingPreviewError(f"Duplicate {label} in purchase selection.")
                 seen.add(value)
             _identity(purchase.shopping_etag, "Shopping ETag")
-            _identity(purchase.inventory_etag, "Inventory ETag")
-            preview = preview_service.preview_purchase(
-                household_id=household_id,
-                shopping=purchase.shopping,
-                inventory=purchase.inventory,
-                purchased_quantity=purchase.purchased_quantity,
+            purchased_at = (
+                purchase.purchased_at if purchase.purchased_at is not None else recorded_at
             )
-            item_id = purchase.inventory.item_id
-            previous = sources.get(item_id)
-            if previous is not None and (
-                previous.inventory != purchase.inventory
-                or previous.inventory_etag != purchase.inventory_etag
-            ):
-                raise ShoppingPreviewError("Shared inventory snapshots and ETags must agree.")
-            sources[item_id] = purchase
-            deltas.setdefault(item_id, []).append(
-                (purchase.operation_id, preview.purchased_quantity)
-            )
+            _timestamp(purchased_at)
+            if purchased_at > recorded_at:
+                raise ShoppingPreviewError("Purchase time must not be after confirmation time.")
+            if purchase.new_inventory is not None:
+                target = purchase.new_inventory
+                if purchase.inventory is not None or purchase.inventory_etag is not None:
+                    raise ShoppingPreviewError(
+                        "A new target cannot have an existing snapshot/ETag."
+                    )
+                if purchase.shopping.item_id is not None:
+                    raise ShoppingPreviewError("A linked shopping item cannot create a new target.")
+                for value, label in (
+                    (target.item_id, "New Inventory ID"),
+                    (target.name, "New Inventory name"),
+                    (target.unit, "New Inventory unit"),
+                ):
+                    _identity(value, label)
+                if target.location is not None:
+                    _identity(target.location, "New Inventory location")
+                if purchase.resolved_inventory_item_id not in (None, target.item_id):
+                    raise ShoppingPreviewError("New target and resolved target must agree.")
+                planned = _pending_item(household_id, purchase.shopping)
+                quantity = _quantity(purchase.purchased_quantity, "Purchased quantity")
+                if planned is not None and quantity > planned:
+                    raise ShoppingDecisionRequired("Purchases exceeding the list need resolution.")
+                if purchase.purchased_unit not in (None, target.unit) or (
+                    purchase.shopping.unit is not None and purchase.shopping.unit != target.unit
+                ):
+                    raise ShoppingDecisionRequired("Resolve canonical units before a new purchase.")
+                item_id = target.item_id
+                if item_id in new_ids or item_id in sources:
+                    raise ShoppingPreviewError("New Inventory targets must be distinct and absent.")
+                new_ids.add(item_id)
+                inventory_creates.append(
+                    InventoryCreate(
+                        operation_id=purchase.operation_id,
+                        record=InventoryItem(
+                            item_id=item_id,
+                            household_id=household_id,
+                            name=target.name,
+                            quantity=quantity,
+                            unit=target.unit,
+                            location=target.location,
+                            created_at=recorded_at,
+                            updated_at=recorded_at,
+                        ),
+                    )
+                )
+                next_status = ShoppingStatus.COMPLETED
+            else:
+                if purchase.inventory is None:
+                    raise ShoppingDecisionRequired("Resolve an existing or explicit new target.")
+                _identity(purchase.inventory_etag, "Inventory ETag")
+                preview = preview_service.preview_purchase(
+                    household_id=household_id,
+                    shopping=purchase.shopping,
+                    inventory=purchase.inventory,
+                    purchased_quantity=purchase.purchased_quantity,
+                    purchased_unit=purchase.purchased_unit,
+                    resolved_inventory_item_id=purchase.resolved_inventory_item_id,
+                )
+                quantity, next_status = preview.purchased_quantity, preview.next_status
+                item_id = purchase.inventory.item_id
+                if item_id in new_ids:
+                    raise ShoppingPreviewError("A target cannot be both created and updated.")
+                previous = sources.get(item_id)
+                if previous is not None and (
+                    previous.inventory != purchase.inventory
+                    or previous.inventory_etag != purchase.inventory_etag
+                ):
+                    raise ShoppingPreviewError("Shared inventory snapshots and ETags must agree.")
+                sources[item_id] = purchase
+                deltas.setdefault(item_id, []).append((purchase.operation_id, quantity))
             shopping_updates.append(
                 ShoppingUpdate(
                     operation_id=purchase.operation_id,
                     record=purchase.shopping.model_copy(
-                        update={"status": preview.next_status, "updated_at": recorded_at}
+                        update={"status": next_status, "updated_at": recorded_at}
                     ),
                     expected_etag=purchase.shopping_etag,
                 )
@@ -137,21 +237,18 @@ class ShoppingPlanService:
                     household_id=household_id,
                     item_id=item_id,
                     operation_id=purchase.operation_id,
-                    quantity_delta=preview.purchased_quantity,
+                    quantity_delta=quantity,
                     reason=TransactionReason.PURCHASE,
-                    created_at=recorded_at,
+                    created_at=purchased_at,
                 )
             )
 
         inventory_updates: list[InventoryUpdate] = []
         for item_id, source in sources.items():
             changes = deltas[item_id]
-            quantity = float(
-                Decimal(str(source.inventory.quantity))
-                + sum((Decimal(str(delta)) for _, delta in changes), Decimal(0))
-            )
-            if not math.isfinite(quantity):
-                raise ShoppingPreviewError("Combined inventory quantity must be finite.")
+            # The preview validated and normalized every count; Python integer
+            # addition preserves exact stock even beyond float's precision.
+            quantity = int(source.inventory.quantity) + sum(delta for _, delta in changes)
             inventory_updates.append(
                 InventoryUpdate(
                     record=source.inventory.model_copy(
@@ -166,6 +263,7 @@ class ShoppingPlanService:
             shopping_updates=tuple(shopping_updates),
             inventory_updates=tuple(inventory_updates),
             transactions=tuple(transactions),
+            inventory_creates=tuple(inventory_creates),
         )
 
     def plan_removal(

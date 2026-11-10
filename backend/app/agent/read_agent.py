@@ -65,6 +65,9 @@ NO_PHOTO = "這次沒有附照片，無法辨識。"
 PHOTO_FAILED = json.dumps({"error": "photo_analysis_failed"})
 """Tool result when A2's recognition raises (timeout, upstream error): the Agent still
 answers and asks for another photo instead of the whole request failing (502)."""
+SHOPPING_LIST_UNAVAILABLE = "shopping_list_unavailable"
+"""Set when an inventory lookup could not read the shopping list. The inventory is still
+answered; the list is never passed on as empty (C1 review on PR #57)."""
 
 logger = logging.getLogger(__name__)
 
@@ -319,17 +322,7 @@ class ReadAgent:
                     content = json.dumps(rows, ensure_ascii=False)
                     if call["name"] == "list_inventory":
                         update["inventory"] = rows
-                        # v8 Flow B: an inventory lookup always shows what is
-                        # already on the shopping list, so the answer can say so.
-                        shopping = await self._handlers["list_shopping"](state["household_id"])
-                        pending = [
-                            item.model_dump(mode="json")
-                            for item in shopping
-                            if item.status == "pending"
-                        ]
-                        content = json.dumps(
-                            {"inventory": rows, "shopping_list": pending}, ensure_ascii=False
-                        )
+                        content = await self._with_shopping_list(state["household_id"], rows)
                 update["messages"].append(ToolMessage(content, tool_call_id=call["id"]))
             return update
 
@@ -343,6 +336,29 @@ class ReadAgent:
         builder.add_conditional_edges("think", next_step, ["look", END])
         builder.add_edge("look", "think")
         return builder.compile()
+
+    async def _with_shopping_list(self, household_id: str, rows: list[dict[str, Any]]) -> str:
+        """v8 Flow B: an inventory lookup also shows what is already on the shopping list.
+
+        If the list cannot be read (for example Cosmos is unreachable), the inventory is
+        still answered and the model is told the list is unavailable. A failed read is
+        never passed on as an empty list.
+        """
+        try:
+            shopping = await self._handlers["list_shopping"](household_id)
+        except Exception:  # only the extra read failed; the inventory was read
+            logger.warning("Shopping list read failed during an inventory lookup", exc_info=True)
+            view: dict[str, Any] = {
+                "inventory": rows,
+                "shopping_list": None,
+                "shopping_list_error": SHOPPING_LIST_UNAVAILABLE,
+            }
+        else:
+            pending = [
+                item.model_dump(mode="json") for item in shopping if item.status == "pending"
+            ]
+            view = {"inventory": rows, "shopping_list": pending}
+        return json.dumps(view, ensure_ascii=False)
 
     async def _analyze(
         self, state: _State, args: dict[str, Any]

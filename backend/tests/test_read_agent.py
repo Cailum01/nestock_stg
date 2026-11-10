@@ -140,6 +140,36 @@ def test_flow_b_leaves_out_items_already_bought():
     assert [row["name"] for row in _tool_rows(model)["shopping_list"]] == ["牛奶"]
 
 
+class _UnreadableShopping:
+    """The shopping list cannot be read, for example because Cosmos is unreachable."""
+
+    async def list_items(self, household_id: str):
+        raise ConnectionError("Cosmos is unreachable")
+
+
+def test_flow_b_still_answers_inventory_when_the_shopping_list_cannot_be_read():
+    answer = "白米還有 2 包，在廚房櫃子；待購清單暫時查不到。"
+    model = ScriptedModel(_call("list_inventory"), AIMessage(content=answer))
+    tools = QueryTools(get_inventory_service(), _UnreadableShopping())
+
+    response = _ask(ReadAgent(model, tools, load_system_prompt()), "我要買白米，家裡還有嗎？")
+
+    seen = _tool_rows(model)
+    assert [row["name"] for row in seen["inventory"]] == ["白米"]
+    assert seen["shopping_list"] is None  # a failed read is never passed on as an empty list
+    assert seen["shopping_list_error"] == "shopping_list_unavailable"
+    assert response.message == answer
+    assert response.results[0].kind == ResultKind.INVENTORY  # the inventory card is still shown
+    assert response.results[0].data["items"] == seen["inventory"]
+
+
+def test_prompt_says_how_to_answer_when_the_shopping_list_is_unavailable():
+    prompt = load_system_prompt()
+    assert "`shopping_list_error`" in prompt
+    assert "待購清單暫時查不到" in prompt
+    assert "不要說「不在待購清單上」" in prompt
+
+
 def test_greeting_needs_no_tool():
     model = ScriptedModel(AIMessage(content="你好！想查什麼？"))
     response = _ask(_agent(model), "你好")

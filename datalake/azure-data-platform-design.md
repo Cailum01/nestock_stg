@@ -26,7 +26,7 @@ approved as a domain-model change.
 | Original user media | Private Azure Blob Storage; required for uploaded binary files | Container layout, region, replication, and lifecycle policy are environment settings |
 | Text input and notes | Store as scoped records in Cosmos when the user action requires persistence | Separate Agent conversation history remains an A1 decision |
 | Data Lake | Do not require or deploy it for the first implementation | Add ADLS Gen2 only when analytics, long-term event replay, or a formal audit requirement justifies it |
-| Multimodal processing | Keep original media, bounded derived observations, and business records separate | A2's input/artifact metadata and processing lifecycle remain proposals; long-running task persistence is outside the current MVP |
+| Multimodal processing | Keep original media, bounded derived observations, and business records separate | Issue #30 confirms the media lifecycle and B1 mapping-storage responsibility; artifact/schema versions and A2 integration remain open; long-running task persistence is outside the current MVP |
 | Inventory and shopping writes | Persist the approved domain changes, transaction, operation receipt, and change event atomically within one household partition | PR #96 proposes the first bounded purchase flow; it remains under review and requires shared read/write client composition and C2 presentation support |
 | Transaction history | B2 reads raw transactions through B1's household-scoped repository; B1 does not pre-aggregate | `item_id` remains required; no feature-only transaction or transaction-item link is in the selected contract |
 | Item resolution | Resolve an item before creating a Transaction; existing item aliases may be extended through an approved operation | A1 selected layered matching in Issue #36; alias mutation remains part of the future approved write flow |
@@ -952,12 +952,14 @@ backend authorizes an upload it writes an initial mapping record (internal
 `file_size_bytes`, state `allocated`) instead of parsing client-supplied paths,
 and later use of an `image_ref` is validated by a household-scoped server-side
 lookup. A2's pipeline never accesses Cosmos directly; it calls a storage port
-provided by B1. This is the first planned formal Cosmos write path. B1's offline
-write primitives and Azure SDK transactional batch adapter (PR #54) exist, but
-neither is wired to an application domain write service or A2 media-mapping
-port; A2 stays on local staging storage until the approved write path and port
-are integrated. Do not assume a 1:1 mapping to an internal media ID without
-validating ownership.
+provided by B1. This is the first planned formal Cosmos write path. PR #97 adds
+an offline-testable B1 media-mapping port and Cosmos adapter for household-
+scoped lookup, ETag-guarded lifecycle transitions, and retention updates that
+can join a same-household batch. It is not wired into application composition
+or A2's upload/processing pipeline, and has not been tested against live Cosmos;
+A2 remains on local staging. The internal record and method names are
+provisional per Issue #30, not public API schema. Do not assume a 1:1 mapping
+to an internal media ID without validating ownership.
 
 The proposed artifact set, producer/schema versions, retention classes, and
 input-record fields remain subject to the relevant owner agreement. Original
@@ -974,8 +976,7 @@ allocated -> received -> processing -> completed / failed
 ```
 
 This state machine is confirmed between A2 and B1 (Issue #30, 2026-11-06) with
-four lifecycle triggers; it remains an agreed boundary, not an implemented
-service or a public contract:
+four lifecycle triggers. It is an agreed boundary, not a public contract:
 
 - **Create**: `POST /api/media/upload-authorization` allocates the internal
   `input_id` and opaque `image_ref`, writes the initial mapping record as
@@ -1003,6 +1004,14 @@ service or a public contract:
 `completed` means extraction/processing finished; it does not mean a business
 operation was approved or written. Confirmation-card presentation, approval,
 resume, and operation execution belong to A1's separate Agent lifecycle.
+
+PR #97 implements the provisional B1 storage portion: namespaced `user_input`
+mapping documents, exact household-scoped `image_ref` lookup, ETag-guarded
+state transitions, retry-safe allocation, and a retention-update operation for
+composition into the related household batch. It does not wire the upload
+route, A2 pipeline, or attachment workflow, and it has no live Cosmos
+data-plane validation. Artifact/schema versions and those cross-owner
+integrations remain open.
 
 The current one-turn MVP does not persist separate Agent tasks or checkpoints.
 Long-running video/audio work, queues/workers, and persistent task/checkpoint

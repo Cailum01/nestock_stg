@@ -436,3 +436,114 @@ async def test_azure_vision_service_parses_dynamic_confidence():
     assert result.detected_items[0].confidence == 0.96
     assert result.detected_items[1].canonical_name == "模糊的罐頭"
     assert result.detected_items[1].confidence == 0.42
+
+
+def test_load_vision_azure_settings_temperature_default_none():
+    env = {
+        "AZURE_OPENAI_VISION_ENDPOINT": "https://test-vision.openai.azure.com/",
+        "AZURE_OPENAI_VISION_API_KEY": "vision-secret",
+    }
+    settings = load_vision_azure_settings(environment=env)
+    assert settings is not None
+    assert settings.temperature is None
+
+
+def test_load_vision_azure_settings_temperature_custom_float():
+    env = {
+        "AZURE_OPENAI_VISION_ENDPOINT": "https://test-vision.openai.azure.com/",
+        "AZURE_OPENAI_VISION_API_KEY": "vision-secret",
+        "AZURE_OPENAI_VISION_TEMPERATURE": "0.2",
+    }
+    settings = load_vision_azure_settings(environment=env)
+    assert settings is not None
+    assert settings.temperature == 0.2
+
+
+def test_load_vision_azure_settings_temperature_invalid_string_defaults_none():
+    env = {
+        "AZURE_OPENAI_VISION_ENDPOINT": "https://test-vision.openai.azure.com/",
+        "AZURE_OPENAI_VISION_API_KEY": "vision-secret",
+        "AZURE_OPENAI_VISION_TEMPERATURE": "invalid-not-a-number",
+    }
+    settings = load_vision_azure_settings(environment=env)
+    assert settings is not None
+    assert settings.temperature is None
+
+
+@pytest.mark.anyio
+async def test_azure_vision_payload_omits_temperature_when_none():
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    settings = VisionOpenAISettings(
+        endpoint="https://fake.openai.azure.com/",
+        api_key="valid-test-key",
+        deployment="gpt-4o",
+        temperature=None,
+    )
+    inventory = DummyInventoryService([])
+    media = LocalStagingMediaStorage()
+    await media.simulate_client_upload(
+        "demo-household", "blob://demo/payload-test.jpg", b"fake-image-bytes"
+    )
+    service = AzureOpenAIVisionService(settings, inventory, media)
+
+    fake_response_json = {
+        "choices": [
+            {
+                "message": {
+                    "content": '{"scene_type": "single_item", "raw_text": "測試", "items": []}'
+                }
+            }
+        ]
+    }
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = fake_response_json
+
+    with patch(
+        "httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp
+    ) as mock_post:
+        await service.analyze_image("demo-household", "blob://demo/payload-test.jpg")
+        call_kwargs = mock_post.call_args.kwargs
+        payload = call_kwargs["json"]
+        assert "temperature" not in payload
+
+
+@pytest.mark.anyio
+async def test_azure_vision_payload_includes_temperature_when_configured():
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    settings = VisionOpenAISettings(
+        endpoint="https://fake.openai.azure.com/",
+        api_key="valid-test-key",
+        deployment="gpt-4o",
+        temperature=0.2,
+    )
+    inventory = DummyInventoryService([])
+    media = LocalStagingMediaStorage()
+    await media.simulate_client_upload(
+        "demo-household", "blob://demo/payload-test-2.jpg", b"fake-image-bytes"
+    )
+    service = AzureOpenAIVisionService(settings, inventory, media)
+
+    fake_response_json = {
+        "choices": [
+            {
+                "message": {
+                    "content": '{"scene_type": "single_item", "raw_text": "測試", "items": []}'
+                }
+            }
+        ]
+    }
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = fake_response_json
+
+    with patch(
+        "httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp
+    ) as mock_post:
+        await service.analyze_image("demo-household", "blob://demo/payload-test-2.jpg")
+        call_kwargs = mock_post.call_args.kwargs
+        payload = call_kwargs["json"]
+        assert payload.get("temperature") == 0.2
+

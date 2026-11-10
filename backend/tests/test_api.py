@@ -192,7 +192,12 @@ def test_media_upload_authorization_api_validation_errors():
 
 def test_media_upload_authorization_dependency_override():
     class CustomStorage:
-        async def create_upload_authorization(self, request):
+        async def create_upload_authorization(
+            self,
+            request,
+            *,
+            base_staging_url: str | None = None,
+        ):
             from app.models.storage import UploadAuthorizationResponse
 
             return UploadAuthorizationResponse(

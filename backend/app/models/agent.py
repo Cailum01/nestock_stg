@@ -35,6 +35,14 @@ class AgentRequest(ContractModel):
     recognition reads it (open-decisions D-5); an unknown or foreign reference is
     refused. Recognition results are display-only and write nothing.
     """
+    replaces_approval_id: str | None = Field(default=None, min_length=1)
+    """Set only when the user taps 送出修改 on a pending card (Issue #91).
+
+    `message` then describes only the changed fields, and the old card is replaced
+    by a new one (contracts/approval-lifecycle.md section 7). Ordinary chat leaves
+    it out. Accepted but not acted on yet: the Agent makes no cards until the
+    approval wiring lands.
+    """
 
 
 class AgentResult(ContractModel):

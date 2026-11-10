@@ -499,3 +499,26 @@ def test_shared_writes_count_toward_the_batch_limit(extra, fits):
             confirm(service, record)
         assert card_document(container, record)["status"] == ApprovalStatus.PENDING
         assert domain_batches(container) == []
+
+
+@pytest.mark.parametrize(("extra", "fits"), [(90, True), (91, False)])
+def test_card_over_the_batch_limit_is_never_stored_or_listed(extra, fits):
+    """Checked when the card is saved, before the user can see it (Issue #60)."""
+    service, container, builder, _, etags = setup()
+    builder.extra_shared_writes = extra
+    prepared = service.prepare(
+        household_id=HOME,
+        presentation=ApprovalPresentation.BATCH_ACTION,
+        operations=[purchase(etags, 1, entry=0), purchase(etags, 2, entry=1)],
+    )
+
+    if fits:
+        asyncio.run(service.save(prepared))
+        listed = asyncio.run(service.list_open(household_id=HOME))
+        assert [card.approval_id for card in listed] == [prepared.approval_id]
+    else:
+        with pytest.raises(BatchTooLarge):
+            asyncio.run(service.save(prepared))
+        assert card_document(container, prepared) is None
+        assert asyncio.run(service.list_open(household_id=HOME)) == []
+        assert container.batches == []

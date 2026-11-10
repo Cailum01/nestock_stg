@@ -164,6 +164,7 @@ def test_fake_executor_dedupes_by_operation():
         executor = FakeWriteExecutor()
         operation = ProposedOperation(
             operation_id="op-1",
+            action="add_stock",
             description="新增 2 瓶牛奶 到庫存",
             values={"name": "牛奶", "quantity": 2, "unit": "瓶"},
         )

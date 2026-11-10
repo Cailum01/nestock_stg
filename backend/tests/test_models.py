@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.agent import (
+    AgentRequest,
     AgentResponse,
     AgentResult,
     ApprovalPresentation,
@@ -124,6 +125,28 @@ def test_provisional_approval_and_result_concepts(presentation):
 def test_empty_approval_is_invalid():
     with pytest.raises(ValidationError):
         PendingApproval(approval_id="empty", presentation="single_action", operations=[])
+
+
+def test_agent_request_may_name_the_card_it_changes():
+    """送出修改 on a card sends the change with the card's approval_id (Issue #91)."""
+    change = AgentRequest(
+        household_id="demo-household",
+        message="衛生紙：數量改成 3，位置改成 浴室櫃",
+        replaces_approval_id="approval-1",
+    )
+    assert change.replaces_approval_id == "approval-1"
+
+    chat = AgentRequest(household_id="demo-household", message="家裡還有白米嗎？")
+    assert chat.replaces_approval_id is None
+
+
+def test_agent_request_rejects_a_blank_card_to_replace():
+    with pytest.raises(ValidationError):
+        AgentRequest(
+            household_id="demo-household",
+            message="衛生紙：數量改成 3",
+            replaces_approval_id="",
+        )
 
 
 def resume_data(**changes):

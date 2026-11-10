@@ -24,7 +24,7 @@ Stable operation identity is necessary for future durable idempotency.
 
 | Model | Current minimal purpose |
 | --- | --- |
-| AgentRequest | household scope and natural-language message |
+| AgentRequest | household scope, natural-language message, optional opaque `image_ref`, optional `replaces_approval_id` when the user changes a card (Issue #91) |
 | AgentResponse | speech, result list, optional pending approval |
 | AgentResult | kind, display summary, provisional structured data |
 | PendingApproval | identity, presentation, proposed operation group, purchase options (`purchase_options` only) |

@@ -200,6 +200,28 @@ the Agent. The Agent resolves it again and makes a new card with new
 `operation_id`s; the old card becomes `cancelled`. Changed values are never sent
 to `/agent/resume` (#42 d).
 
+How the App sends the change (agreed with C2 in Issue #91):
+
+- The App keeps the card's `approval_id`. When the user taps 送出修改, it calls
+  `POST /agent/messages` with the optional `replaces_approval_id` set to that
+  `approval_id`. `message` is built only from the fields the user changed, from a
+  fixed template, for example `衛生紙：數量改成 3，位置改成 浴室櫃`. The App does not
+  interpret the change. Ordinary chat leaves `replaces_approval_id` out.
+- The backend reads the original card (same household, still `pending`) and gives
+  it to the Agent with the message. The new card has new `operation_id`s; the App
+  does not map old IDs to new ones.
+- The reply is a normal `AgentResponse`; its `pending_approval` is the new card,
+  which replaces the old one on screen. With no new card in the reply, the old card
+  stays.
+- The old card becomes `cancelled` only after the new card is stored. If the Agent
+  makes no new card (an error, or it asks the user something), the old card stays
+  `pending`. An expired, confirmed or cancelled original gets no new card; the
+  reply says why.
+- A change typed in the chat box (no `replaces_approval_id`): the Agent is given
+  the household's open cards (the same lookup as section 8) and decides whether the
+  message changes one of them. With one open card it changes that card; with
+  several and no clear match it asks which; otherwise it answers normally.
+
 ## 8. Reminders
 
 When the user sends the next message, the Agent mentions cards that are still
@@ -211,7 +233,7 @@ There is no background job or push notification (#39).
 
 | Item | Who decides | Status |
 | --- | --- | --- |
-| Format the App uses to send a changed value back to the Agent | A1 + C2 | To align with C2 (#42 d) |
+| Format the App uses to send a changed value back to the Agent | A1 + C2 | Decided in Issue #91; see section 7 |
 | Handling of the "should not happen" row in section 6 | A1 + C1 | Proposed here; C1 to confirm (#27) |
 | Meaning of Transaction `created_at` | B1 + B2 | Deferred; keep the current model |
 | Removing a wrong alias | — | Not in MVP scope |

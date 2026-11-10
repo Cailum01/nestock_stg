@@ -422,6 +422,15 @@ def test_lifetime_is_configurable():
         (ApprovalPresentation.BATCH_ACTION, 1, [NewOption(option_id="o1", values={})]),
         (ApprovalPresentation.PURCHASE_OPTIONS, 2, [NewOption(option_id="o1", values={})]),
         (ApprovalPresentation.PURCHASE_OPTIONS, 1, []),
+        # Issue #90 format only: no confirm rules until the Agent issues cards.
+        (
+            ApprovalPresentation.ITEM_MATCH,
+            1,
+            [
+                NewOption(option_id="same_item", values={"label": "是"}),
+                NewOption(option_id="new_item", values={"label": "不是"}),
+            ],
+        ),
         (
             ApprovalPresentation.PURCHASE_OPTIONS,
             1,
@@ -465,6 +474,8 @@ def test_public_card_shows_operations_and_purchase_options():
     assert card.approval_id == record.approval_id
     assert card.presentation is ApprovalPresentation.PURCHASE_OPTIONS
     assert card.operations[0].operation_id == record.operation_ids[0]
+    # Issue #90: the App picks how to show an operation by its action.
+    assert card.operations[0].action == record.operations[0].action
     # v8 section 12: options sit on the card, not inside the operation's values.
     assert [option["option_id"] for option in card.options] == ["option_001", "option_002"]
     assert "options" not in card.operations[0].values

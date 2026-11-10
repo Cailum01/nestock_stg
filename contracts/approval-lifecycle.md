@@ -31,6 +31,7 @@ write builders exist.
 | #27, #28 | Purchase write contents; B1 storage boundary; recovery questions |
 | v8 §5, §12 | Plan B (persist pending approval, not a LangGraph checkpoint); three card types |
 | B1 design doc §6.2, §6.5 | `pending_approval` and `operation_receipt` records; batch rules |
+| #90 | Item-match card and new-item card formats, agreed with C2 (section 10) |
 
 ## 2. Approval record
 
@@ -41,8 +42,9 @@ these values; it only refers to `approval_id`.
 Stored:
 
 - `approval_id`, `household_id`
-- `presentation`: `single_action` | `batch_action` | `purchase_options`
-- `operations`: for each item, `operation_id`, a display description, the exact
+- `presentation`: `single_action` | `batch_action` | `purchase_options` |
+  `item_match` (format only so far, section 10)
+- `operations`: for each item, `operation_id`, `action`, a display description, the exact
   resolved values shown to the user, the target records, and the version (ETag)
   of each target when the card was created
 - `options` (purchase options only): `option_id` and its displayed values
@@ -238,3 +240,60 @@ There is no background job or push notification (#39).
 | Meaning of Transaction `created_at` | B1 + B2 | Deferred; keep the current model |
 | Removing a wrong alias | — | Not in MVP scope |
 | v8 §12 `partial_success` | — | Not used in the MVP: one batch is all-or-nothing (#42) |
+| How a new item's `item_id` is made | B1 + A1 | Asked in Issue #90; does not change the card format (section 10) |
+| Status of an `item_match` card answered with `new_item` | A1 | Decided with the confirm rules (section 10) |
+
+## 10. Item-match and new-item cards (Issue #90)
+
+For a purchased item that may or may not be one the household already has (the
+user says 洗碗精, the household has 洗潔精). Agreed with C2 in Issue #90. The
+formats are fixed; the approval service refuses `item_match` cards until their
+confirm rules are built together with the Agent issuing cards.
+
+Every operation on every card carries `action`, a stable marker the App uses to
+choose how to show it. The App only shows the card and sends back the user's
+choice; it never derives or changes values.
+
+Item match ("這是家裡的洗潔精嗎？"):
+
+- `presentation`: `item_match`, with one operation. When one purchase has several
+  items and only one is unsure, that item gets its own item-match card and the
+  others go on a normal card.
+- `action`: `confirm_item_match`.
+- `values`: `user_term` (what the user said, 洗碗精), `candidate_item_id`,
+  `candidate_name` (洗潔精), `quantity`, `unit`.
+- `options`: exactly `{"option_id": "same_item", "label": "是，加到洗潔精"}` and
+  `{"option_id": "new_item", "label": "不是，這是新的東西"}`.
+- The reply uses the normal `ResumeRequest`, with no new fields:
+  - `approved: true`, `selected_option_id: "same_item"`: the quantity is added to
+    the matched item, and the user's word is remembered as its alias (#36 layer ④).
+  - `approved: true`, `selected_option_id: "new_item"`: this card writes nothing;
+    the reply's `pending_approval` is a new-item card.
+  - `approved: false`: nothing is written.
+
+New item ("會新增一個庫存品項：洗碗精"):
+
+- `presentation`: `single_action`; `action`: `create_item`.
+- `description` says that a new inventory item will be created.
+- `values`: `name`, `quantity`, `unit`, `location`.
+- The card never carries the new item's `item_id`, and the App never makes one.
+  The backend creates the item in the confirmed batch.
+- The reply is `approved: true` or `approved: false`.
+
+```json
+{
+  "approval_id": "demo-approval-4",
+  "presentation": "item_match",
+  "operations": [{
+    "operation_id": "demo-operation-4",
+    "action": "confirm_item_match",
+    "description": "這是家裡的洗潔精嗎？",
+    "values": {"user_term": "洗碗精", "candidate_item_id": "demo-dish-soap",
+               "candidate_name": "洗潔精", "quantity": 1, "unit": "瓶"}
+  }],
+  "options": [
+    {"option_id": "same_item", "label": "是，加到洗潔精"},
+    {"option_id": "new_item", "label": "不是，這是新的東西"}
+  ]
+}
+```

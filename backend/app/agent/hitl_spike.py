@@ -109,6 +109,7 @@ def _plan(message: str, items: list[InventoryItem]) -> _State:
     return {
         "operation": {
             "operation_id": uuid.uuid4().hex,
+            "action": "add_stock",
             "description": f"新增 {quantity} {unit}{item.name} 到庫存",
             "values": {
                 "item_id": item.item_id,

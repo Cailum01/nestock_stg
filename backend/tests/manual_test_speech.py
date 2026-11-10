@@ -46,7 +46,7 @@ async def run_single_test(
     print(f"測試項目: {scenario_title or audio_path.name}")
     print(f"檔案路徑: {audio_path}")
     print(f"檔案大小: {len(payload_bytes):,} bytes")
-    print(f"指定語言: {language or '自動多語系候選 (zh-TW + en-US)'}")
+    print(f"指定語言: {language or '預設繁中候選 (zh-TW，原生支援中英混雜與英文品名)'}")
     print("-" * 65)
 
     try:

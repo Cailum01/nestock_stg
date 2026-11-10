@@ -297,22 +297,28 @@ async def test_azure_speech_service_http_200_multilingual_success():
     req = captured_requests[0]
     assert req.headers["Ocp-Apim-Subscription-Key"] == "valid-key"
     assert "locales" in req.content.decode("latin1")
-    assert "zh-TW" in req.content.decode("latin1")
-    assert "en-US" in req.content.decode("latin1")
+    assert '"locales": ["zh-TW"]' in req.content.decode("latin1")
 
 
 @pytest.mark.anyio
 async def test_azure_speech_service_detects_real_english_locale():
-    # 驗證 Azure 模型判定為 en-US 時，領域模型 detected_language 能正確反映真實語言
+    # 驗證 Azure 模型判定為 en-US 時，detected_language 能反映真實語言
+    # (遵循 Azure v3.2 phrases schema 提取 locale)
     def mock_transport_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
             json={
-                "durationInMilliseconds": 1400,
+                "durationMilliseconds": 1400,
                 "combinedPhrases": [
                     {
                         "text": "Kirkland paper towel",
+                    }
+                ],
+                "phrases": [
+                    {
+                        "text": "Kirkland paper towel",
                         "locale": "en-US",
+                        "confidence": 0.88,
                     }
                 ],
             },
@@ -432,7 +438,7 @@ async def test_azure_speech_service_swagger_ui_placeholder_string_fallback():
 
     assert len(captured_requests) == 1
     raw = captured_requests[0].content.decode("latin1")
-    assert '"locales": ["zh-TW", "en-US"]' in raw
+    assert '"locales": ["zh-TW"]' in raw
 
 
 @pytest.mark.anyio
@@ -540,3 +546,47 @@ def test_speech_service_cold_start_loads_dotenv_when_only_in_env_file(monkeypatc
         _reset_speech_service_for_test()
         monkeypatch.delenv("AZURE_SPEECH_KEY", raising=False)
         monkeypatch.delenv("AZURE_SPEECH_REGION", raising=False)
+
+
+@pytest.mark.anyio
+async def test_azure_speech_service_422_invalid_audio_format_raises_error():
+    """驗證 Azure 回傳 422 InvalidAudioFormat 時拋出明確異常，不掩蓋為成功空字串。"""
+
+    def mock_422_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            422,
+            json={
+                "code": "UnprocessableEntity",
+                "message": "The audio format is not supported.",
+                "innerError": {
+                    "code": "InvalidAudioFormat",
+                    "message": "The audio format is not supported.",
+                },
+            },
+        )
+
+    settings = SpeechAzureSettings(speech_key="valid-key", service_region="eastasia")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(mock_422_handler)) as client:
+        service = AzureSpeechService(settings=settings, client=client, mock_fallback=False)
+        audio_bytes = b"fake-audio"
+
+        with pytest.raises(SpeechUpstreamError) as exc_info:
+            await service.transcribe(
+                audio_bytes=audio_bytes,
+                content_type="audio/wav",
+            )
+        assert "InvalidAudioFormat" in str(exc_info.value)
+
+
+def test_openapi_schema_speech_dependency_has_no_environment_field():
+    """驗證 FastAPI 依賴簽名已淨化，OpenAPI / Swagger 規格中絕不包含 environment 欄位。"""
+    schema = app.openapi()
+    body_schema = (
+        schema.get("components", {})
+        .get("schemas", {})
+        .get("Body_transcribe_speech_api_speech_transcribe_post", {})
+    )
+    properties = body_schema.get("properties", {})
+    assert "environment" not in properties
+    assert "file" in properties
+    assert "language" in properties

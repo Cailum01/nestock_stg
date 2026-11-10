@@ -110,9 +110,7 @@ def get_media_storage_service() -> MediaStorageService:
     return media_storage_service
 
 
-def get_speech_service(
-    environment: Mapping[str, str] | None = None,
-) -> SpeechToTextService | None:
+def get_speech_service() -> SpeechToTextService | None:
     """FastAPI dependency for SpeechToTextService.
 
     Thread-safe lazy resolution of AzureSpeechService when AZURE_SPEECH_KEY
@@ -120,8 +118,6 @@ def get_speech_service(
     or None if speech service is unconfigured.
     """
     global _speech_service, _speech_service_resolved
-    if environment is not None:
-        return create_speech_service(environment=environment)
     if not _speech_service_resolved:
         with _speech_lock:
             if not _speech_service_resolved:

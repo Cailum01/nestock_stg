@@ -181,14 +181,14 @@ class AzureSpeechService:
                 return await self._fallback_service.transcribe(audio_bytes, content_type, language)
             raise ValueError("AZURE_SPEECH_KEY is required but not configured.")
 
-        # Multi-locale candidate strategy: if language is not explicitly specified
-        # (or contains Swagger UI default placeholder "string"), prioritize
-        # Traditional Chinese with English candidate (supporting code-switching)
         clean_language = (language or "").strip()
         if not clean_language or clean_language.lower() in ("string", "null", "undefined"):
             clean_language = None
 
-        locales = [clean_language] if clean_language else ["zh-TW", "en-US"]
+        # Single Traditional Chinese candidate strategy: Azure's zh-TW acoustic model
+        # natively recognizes code-switching (English brand names/goods) and full English
+        # queries while avoiding the 429 Resource Exhausted rate limit of multi-locale setups.
+        locales = [clean_language] if clean_language else ["zh-TW"]
 
         # Azure AI Speech Fast Transcription API
         if self.endpoint:
@@ -225,12 +225,20 @@ class AzureSpeechService:
 
         if res.status_code == 200:
             data = res.json()
-            phrases = data.get("combinedPhrases", [])
-            transcript = phrases[0].get("text", "") if phrases else ""
+            combined = data.get("combinedPhrases", [])
+            transcript = combined[0].get("text", "") if combined else ""
 
-            # Extract detected locale if provided by Azure, fallback to specified language or zh-TW
+            # Extract detected locale from detailed phrases (Azure Fast Transcription v3.2 schema),
+            # falling back to top-level locale, specified language, or zh-TW
+            detailed_phrases = data.get("phrases", [])
+            azure_detected_locale = (
+                detailed_phrases[0].get("locale")
+                if detailed_phrases and isinstance(detailed_phrases[0], dict)
+                else None
+            )
             detected_locale = (
-                (phrases[0].get("locale") if phrases else None)
+                azure_detected_locale
+                or (combined[0].get("locale") if combined else None)
                 or data.get("locale")
                 or clean_language
                 or "zh-TW"
@@ -253,6 +261,17 @@ class AzureSpeechService:
                 "Azure AI Speech rejected audio payload as unprocessable (HTTP 422): %s",
                 res.text,
             )
+            try:
+                err_data = res.json()
+                inner_code = err_data.get("innerError", {}).get("code", "")
+                if inner_code == "InvalidAudioFormat":
+                    err_msg = err_data.get("message", "InvalidAudioFormat")
+                    raise SpeechUpstreamError(
+                        f"Unsupported or corrupted audio format ({inner_code}): {err_msg}"
+                    )
+            except (ValueError, TypeError):
+                pass
+
             return SpeechTranscribeResponse(
                 transcript="",
                 detected_language=clean_language or "zh-TW",

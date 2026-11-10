@@ -303,7 +303,9 @@ def test_speech_transcribe_with_explicit_language():
 
 def test_speech_transcribe_empty_file_returns_400():
     files = {"file": ("recording.m4a", b"", "audio/m4a")}
-    with TestClient(create_app()) as client:
+    app = create_app()
+    app.dependency_overrides[get_speech_service] = lambda: MockSpeechToTextService()
+    with TestClient(app) as client:
         response = client.post("/api/speech/transcribe", files=files)
         assert response.status_code == 400
         assert "Empty audio payload" in response.json()["detail"]
@@ -312,14 +314,18 @@ def test_speech_transcribe_empty_file_returns_400():
 def test_speech_transcribe_oversized_file_returns_413():
     oversized = b"0" * (5 * 1024 * 1024 + 1)
     files = {"file": ("huge.m4a", oversized, "audio/m4a")}
-    with TestClient(create_app()) as client:
+    app = create_app()
+    app.dependency_overrides[get_speech_service] = lambda: MockSpeechToTextService()
+    with TestClient(app) as client:
         response = client.post("/api/speech/transcribe", files=files)
         assert response.status_code == 413
 
 
 def test_speech_transcribe_unsupported_media_type_returns_415():
     files = {"file": ("fake.txt", b"plain text content", "text/plain")}
-    with TestClient(create_app()) as client:
+    app = create_app()
+    app.dependency_overrides[get_speech_service] = lambda: MockSpeechToTextService()
+    with TestClient(app) as client:
         response = client.post("/api/speech/transcribe", files=files)
         assert response.status_code == 415
 

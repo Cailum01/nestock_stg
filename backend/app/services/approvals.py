@@ -428,6 +428,7 @@ class ApprovalService:
         operations = [
             ProposedOperation(
                 operation_id=operation.operation_id,
+                action=operation.action,
                 description=operation.description,
                 values=dict(operation.values),
             )
@@ -710,7 +711,13 @@ def _check_card_shape(
     operations: Sequence[NewOperation],
     options: Sequence[NewOption],
 ) -> None:
-    """The three card types (v8 section 12)."""
+    """The three card types (v8 section 12).
+
+    The item_match card (Issue #90) has an agreed format but no confirm rules yet;
+    they are built together with the Agent issuing cards, so it is refused here.
+    """
+    if presentation is ApprovalPresentation.ITEM_MATCH:
+        raise ValueError("Item-match cards are not supported yet.")
     if not operations:
         raise ValueError("A card needs at least one operation.")
     if presentation is ApprovalPresentation.PURCHASE_OPTIONS:

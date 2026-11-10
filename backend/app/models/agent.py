@@ -15,6 +15,10 @@ class ApprovalPresentation(StrEnum):
     SINGLE_ACTION = "single_action"
     BATCH_ACTION = "batch_action"
     PURCHASE_OPTIONS = "purchase_options"
+    ITEM_MATCH = "item_match"
+    """"Is this the household item you meant?" (Issue #90): one operation and the
+    options `same_item` and `new_item`. Not issued yet: the approval service rejects
+    it until the Agent issues cards."""
 
 
 class ResultKind(StrEnum):
@@ -55,6 +59,12 @@ class ProposedOperation(ContractModel):
     """Resolved values for display; operation identity survives retries."""
 
     operation_id: str
+    action: str = Field(min_length=1)
+    """What the operation does, so the App can choose how to show it (Issue #90).
+
+    Agreed with C2: `confirm_item_match` (item_match card) and `create_item` (a new
+    inventory item). Other names are provisional until their cards are built.
+    """
     description: str
     values: dict[str, JsonValue]
 
@@ -64,8 +74,10 @@ class PendingApproval(ContractModel):
     presentation: ApprovalPresentation
     operations: list[ProposedOperation] = Field(min_length=1)
     options: list[dict[str, JsonValue]] = Field(default_factory=list)
-    """purchase_options only: each option is its `option_id` plus the values shown
-    (store, price, url, source, ...), as in v8 section 12. Empty for other cards."""
+    """purchase_options: each option is its `option_id` plus the values shown
+    (store, price, url, source, ...), as in v8 section 12.
+    item_match: exactly `same_item` and `new_item`, each with a `label` (Issue #90).
+    Empty for other cards."""
 
 
 class AgentResponse(ContractModel):
@@ -77,11 +89,14 @@ class AgentResponse(ContractModel):
 class ResumeRequest(ContractModel):
     """Server must load and validate exact approved values; no client write payload.
 
-    One envelope for all three approval presentations (v8 section 12, D-10):
+    One envelope for every approval presentation (v8 section 12, D-10, Issue #90):
     - single_action: no selection field.
     - batch_action: approved_operation_ids lists the displayed operations the
       user kept; operations left out are not written.
     - purchase_options: selected_option_id is the one option the user chose.
+    - item_match (Issue #90): selected_option_id is `same_item` (add to the matched
+      item and remember the user's word as its alias) or `new_item` (write nothing;
+      the reply carries a card that creates a new item).
 
     When approved is false nothing is written and both selection fields are
     ignored. Which field a presentation requires, and whether the IDs belong to

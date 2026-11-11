@@ -579,6 +579,12 @@ work.
 For a purchase already resolved to an existing inventory item, preserve this
 boundary:
 
+The cross-owner implementation boundary is provisional per D-3: A1 validates
+the stored, user-approved values and target versions and resolves them into typed
+purchase inputs; C1's `ShoppingWriteBuilder` owns shopping-domain planning; B1's
+repository adapter persists the approved plan in the household-scoped Cosmos
+batch. A1 must not duplicate C1's purchase planning or batch composition.
+
 - Read the pending `ShoppingItem`, its resolved `InventoryItem`, and the current
   server-side approval state. Use only the user-reported, approved purchase
   quantity; transaction history does not infer the current purchase amount.

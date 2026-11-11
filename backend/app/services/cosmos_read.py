@@ -12,23 +12,43 @@ from typing import Generic, Protocol, TypeVar
 from app.models.domain import (
     ChangeEvent,
     InventoryItem,
+    MediaInputMapping,
     ShoppingItem,
     ShoppingStatus,
     Transaction,
 )
 
-DomainRecord = InventoryItem | ShoppingItem | Transaction | ChangeEvent
-RecordT = TypeVar("RecordT", InventoryItem, ShoppingItem, Transaction, ChangeEvent)
+DomainRecord = InventoryItem | ShoppingItem | Transaction | ChangeEvent | MediaInputMapping
+RecordT = TypeVar(
+    "RecordT",
+    InventoryItem,
+    ShoppingItem,
+    Transaction,
+    ChangeEvent,
+    MediaInputMapping,
+)
 
 _RECORD_METADATA = frozenset(
-    {"id", "record_type", "deleted_at", "_rid", "_self", "_etag", "_attachments", "_ts"}
+    {
+        "id",
+        "record_type",
+        "deleted_at",
+        "ttl",
+        "_rid",
+        "_self",
+        "_etag",
+        "_attachments",
+        "_ts",
+    }
 )
 _RECORD_IDENTITIES: dict[type[DomainRecord], tuple[str, str]] = {
     InventoryItem: ("inventory_item", "item_id"),
     ShoppingItem: ("shopping_item", "shopping_item_id"),
     Transaction: ("transaction", "transaction_id"),
     ChangeEvent: ("change_event", "event_id"),
+    MediaInputMapping: ("user_input", "input_id"),
 }
+_RECORD_ID_NAMESPACES = {MediaInputMapping: "input"}
 _COSMOS_SYSTEM_FIELDS = frozenset({"_rid", "_self", "_etag", "_attachments", "_ts"})
 
 
@@ -45,8 +65,13 @@ def _utc_isoformat(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-def _expected_id(record_type: str, public_id: str) -> str:
-    return f"{record_type}:{public_id}"
+def _expected_id(
+    record_type: str,
+    public_id: str,
+    *,
+    id_namespace: str | None = None,
+) -> str:
+    return f"{id_namespace or record_type}:{public_id}"
 
 
 class CosmosDocumentMapper:
@@ -57,10 +82,22 @@ class CosmosDocumentMapper:
         record_type, identity_field = _RECORD_IDENTITIES[type(record)]
         public_id = getattr(record, identity_field)
         document = record.model_dump(mode="json")
-        document["id"] = _expected_id(record_type, public_id)
+        document["id"] = _expected_id(
+            record_type,
+            public_id,
+            id_namespace=_RECORD_ID_NAMESPACES.get(type(record)),
+        )
         document["record_type"] = record_type
+        if isinstance(record, MediaInputMapping) and record.ttl_seconds is not None:
+            document["ttl"] = record.ttl_seconds
 
-        for timestamp_field in ("created_at", "updated_at", "occurred_at", "recorded_at"):
+        for timestamp_field in (
+            "created_at",
+            "updated_at",
+            "occurred_at",
+            "recorded_at",
+            "upload_authorization_expires_at",
+        ):
             timestamp = getattr(record, timestamp_field, None)
             if timestamp is not None:
                 document[timestamp_field] = _utc_isoformat(timestamp)
@@ -97,7 +134,11 @@ class CosmosDocumentMapper:
             raise ValueError("Document household_id does not match the query scope.")
 
         public_id = document.get(identity_field)
-        expected_document_id = _expected_id(expected_record_type, str(public_id))
+        expected_document_id = _expected_id(
+            expected_record_type,
+            str(public_id),
+            id_namespace=_RECORD_ID_NAMESPACES.get(model_type),
+        )
         if document.get("id") != expected_document_id:
             raise ValueError("Document id does not match its namespaced domain ID.")
 
@@ -106,6 +147,8 @@ class CosmosDocumentMapper:
             for key, value in document.items()
             if key not in _RECORD_METADATA and key not in _COSMOS_SYSTEM_FIELDS
         }
+        if model_type is MediaInputMapping:
+            domain_data["ttl_seconds"] = document.get("ttl")
         etag = document.get("_etag")
         if etag is not None and not isinstance(etag, str):
             raise ValueError("Cosmos _etag must be a string when present.")
@@ -294,6 +337,52 @@ class CosmosReadRepository:
             household_id=household_id,
         )
 
+    async def read_media_input_mapping_with_etag(
+        self,
+        *,
+        household_id: str,
+        input_id: str,
+    ) -> MappedDocument[MediaInputMapping] | None:
+        return await self._read_mapped(
+            MediaInputMapping,
+            record_type="user_input",
+            identity=input_id,
+            identity_field="input_id",
+            household_id=household_id,
+        )
+
+    async def find_media_input_mapping_by_image_ref(
+        self,
+        *,
+        household_id: str,
+        image_ref: str,
+    ) -> MappedDocument[MediaInputMapping] | None:
+        if not household_id:
+            raise ValueError("household_id must not be empty.")
+        if not image_ref:
+            raise ValueError("image_ref must not be empty.")
+        documents = await self._client.query_items(
+            query=(
+                "SELECT * FROM c WHERE c.record_type = @record_type "
+                "AND c.household_id = @household_id AND c.image_ref = @image_ref"
+            ),
+            parameters=(
+                {"name": "@record_type", "value": "user_input"},
+                {"name": "@household_id", "value": household_id},
+                {"name": "@image_ref", "value": image_ref},
+            ),
+            partition_key=household_id,
+        )
+        if len(documents) > 1:
+            raise ValueError("image_ref maps to more than one household input record.")
+        if not documents:
+            return None
+        return CosmosDocumentMapper.from_document_with_metadata(
+            MediaInputMapping,
+            documents[0],
+            household_id=household_id,
+        )
+
     async def list_inventory_with_etag(
         self, household_id: str
     ) -> list[MappedDocument[InventoryItem]]:
@@ -344,7 +433,11 @@ class CosmosReadRepository:
         if not identity:
             raise ValueError(f"{identity_field} must not be empty.")
         document = await self._client.read_item(
-            item_id=_expected_id(record_type, identity),
+            item_id=_expected_id(
+                record_type,
+                identity,
+                id_namespace=_RECORD_ID_NAMESPACES.get(model_type),
+            ),
             partition_key=household_id,
         )
         if document is None:

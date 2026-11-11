@@ -98,14 +98,14 @@ class _AgentHomeState extends State<AgentHome> {
   ConfirmationDraftFocus? _confirmationDraftFocus;
   AgentState _state = AgentState.idle;
   bool get _busy => _state == AgentState.loading;
-  Future<AgentReply> Function()? _retry;
+  Future<void> Function()? _retry;
 
   Future<void> _perform(Future<AgentReply> Function() action) async {
     if (_busy) return;
     final generation = _conversationGeneration;
     setState(() {
       _state = AgentState.loading;
-      _retry = action;
+      _retry = () => _perform(action);
     });
     try {
       final reply = await action();
@@ -127,6 +127,48 @@ class _AgentHomeState extends State<AgentHome> {
             : AgentState.waitingForApproval;
       });
       if (reply.mockVisionItems == null) _showLatestMessage();
+    } on TimeoutException {
+      if (mounted && generation == _conversationGeneration) {
+        setState(() => _state = AgentState.timeout);
+      }
+    } catch (_) {
+      if (mounted && generation == _conversationGeneration) {
+        setState(() => _state = AgentState.error);
+      }
+    }
+  }
+
+  Future<void> _submitApprovalChanges({
+    required AgentReply currentReply,
+    required String message,
+  }) async {
+    final approval = currentReply.approval;
+    if (_busy || approval == null) return;
+    final generation = _conversationGeneration;
+    setState(() {
+      _state = AgentState.loading;
+      _retry = () =>
+          _submitApprovalChanges(currentReply: currentReply, message: message);
+    });
+    try {
+      final reply = await widget.client.send(
+        message,
+        replacesApprovalId: approval.id,
+      );
+      if (!mounted || generation != _conversationGeneration) return;
+      setState(() {
+        _messages.add((
+          user: false,
+          text: reply.message,
+          reply: reply,
+          photo: null,
+          imageRef: null,
+        ));
+        if (reply.approval != null) _reply = reply;
+        _workOpen = true;
+        _state = AgentState.waitingForApproval;
+      });
+      _showLatestMessage();
     } on TimeoutException {
       if (mounted && generation == _conversationGeneration) {
         setState(() => _state = AgentState.timeout);
@@ -434,11 +476,17 @@ class _AgentHomeState extends State<AgentHome> {
                       ApprovalCard(
                         approval: entry.reply!.approval!,
                         busy: _busy,
-                        onDecision: (approved) => _perform(
-                          () => widget.client.resume(
-                            approvalId: entry.reply!.approval!.id,
-                            approved: approved,
-                          ),
+                        onDecision: ({required approved, selectedOptionId}) =>
+                            _perform(
+                              () => widget.client.resume(
+                                approvalId: entry.reply!.approval!.id,
+                                approved: approved,
+                                selectedOptionId: selectedOptionId,
+                              ),
+                            ),
+                        onSubmitChanges: (message) => _submitApprovalChanges(
+                          currentReply: entry.reply!,
+                          message: message,
                         ),
                       ),
                     if (entry.reply!.mockVisionItems != null)
@@ -767,7 +815,7 @@ class _AgentHomeState extends State<AgentHome> {
                         _state == AgentState.timeout)
                       ErrorState(
                         timeout: _state == AgentState.timeout,
-                        onRetry: () => _perform(_retry!),
+                        onRetry: _retry!,
                       ),
                     Padding(
                       key: const Key('composer'),

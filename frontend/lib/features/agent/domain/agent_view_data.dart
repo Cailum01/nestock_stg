@@ -1,7 +1,12 @@
 /// PROVISIONAL UI projections, not authoritative wire schemas or serializers.
 enum ResultKind { inventory, vision, forecast, purchaseOptions, actionResult }
 
-enum ApprovalPresentation { singleAction, batchAction, purchaseOptions }
+enum ApprovalPresentation {
+  singleAction,
+  batchAction,
+  purchaseOptions,
+  itemMatch,
+}
 
 class AgentResultView {
   const AgentResultView({
@@ -15,10 +20,23 @@ class AgentResultView {
 }
 
 class OperationView {
-  const OperationView({required this.id, required this.description});
+  const OperationView({
+    required this.id,
+    required this.description,
+    this.action = '',
+    this.values = const {},
+  });
   final String id;
-  // Mock-only text. Real approvals must render every resolved relevant value.
+  final String action;
   final String description;
+  final Map<String, dynamic> values;
+}
+
+class ApprovalOptionView {
+  const ApprovalOptionView({required this.id, required this.label});
+
+  final String id;
+  final String label;
 }
 
 class ApprovalView {
@@ -26,10 +44,12 @@ class ApprovalView {
     required this.id,
     required this.presentation,
     required this.operations,
+    this.options = const [],
   });
   final String id;
   final ApprovalPresentation presentation;
   final List<OperationView> operations;
+  final List<ApprovalOptionView> options;
 }
 
 /// Local-only card content for the Confirmation Card presentation prototype.

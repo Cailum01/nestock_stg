@@ -6,7 +6,7 @@ import 'package:flutter/services.dart';
 import '../../../shared/theme/app_theme.dart';
 import '../domain/agent_view_data.dart';
 
-enum ConfirmationDraftField { name, quantity, location }
+enum ConfirmationDraftField { name, quantity, unit, location }
 
 final _quantityEditingPattern = RegExp(r'^(?:\d+(?:\.\d*)?)?$');
 final _validQuantityPattern = RegExp(r'^\d+(?:\.\d+)?$');
@@ -54,15 +54,25 @@ class ConfirmationCard extends StatefulWidget {
   const ConfirmationCard({
     super.key,
     required this.items,
+    this.title = '確認加入庫存',
+    this.description,
+    this.details = const {},
     this.onCancel,
     this.onConfirm,
+    this.onSubmitChanges,
     this.onDraftFocusChanged,
+    this.allowExclusion = true,
   });
 
   final List<ConfirmationItemView> items;
+  final String title;
+  final String? description;
+  final Map<String, dynamic> details;
   final VoidCallback? onCancel;
   final VoidCallback? onConfirm;
+  final ValueChanged<List<ConfirmationItemView>>? onSubmitChanges;
   final ValueChanged<ConfirmationDraftFocus?>? onDraftFocusChanged;
+  final bool allowExclusion;
 
   @override
   State<ConfirmationCard> createState() => _ConfirmationCardState();
@@ -73,10 +83,12 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
   int? _editingIndex;
   late final List<TextEditingController> _names;
   late final List<TextEditingController> _quantities;
+  late final List<TextEditingController> _units;
   late final List<TextEditingController> _locations;
   late final List<String> _lastValidQuantities;
   late final List<FocusNode> _nameFocusNodes;
   late final List<FocusNode> _quantityFocusNodes;
+  late final List<FocusNode> _unitFocusNodes;
   late final List<FocusNode> _locationFocusNodes;
 
   String _quantityText(num quantity) => quantity == quantity.truncateToDouble()
@@ -93,6 +105,9 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
       for (final item in widget.items)
         TextEditingController(text: _quantityText(item.quantity)),
     ];
+    _units = [
+      for (final item in widget.items) TextEditingController(text: item.unit),
+    ];
     _locations = [
       for (final item in widget.items)
         TextEditingController(text: item.location),
@@ -108,10 +123,12 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
     }
     _nameFocusNodes = [for (final _ in widget.items) FocusNode()];
     _quantityFocusNodes = [for (final _ in widget.items) FocusNode()];
+    _unitFocusNodes = [for (final _ in widget.items) FocusNode()];
     _locationFocusNodes = [for (final _ in widget.items) FocusNode()];
     for (final focusNode in [
       ..._nameFocusNodes,
       ..._quantityFocusNodes,
+      ..._unitFocusNodes,
       ..._locationFocusNodes,
     ]) {
       focusNode.addListener(_notifyDraftFocus);
@@ -132,6 +149,12 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
           controller: _quantities[index],
           focusNode: _quantityFocusNodes[index],
           field: ConfirmationDraftField.quantity,
+        );
+      } else if (_unitFocusNodes[index].hasFocus) {
+        focused = ConfirmationDraftFocus(
+          controller: _units[index],
+          focusNode: _unitFocusNodes[index],
+          field: ConfirmationDraftField.unit,
         );
       } else if (_locationFocusNodes[index].hasFocus) {
         focused = ConfirmationDraftFocus(
@@ -165,6 +188,7 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
   }
 
   void _toggleItem(int index) {
+    if (!widget.allowExclusion) return;
     if (_excluded.contains(index)) {
       setState(() => _excluded.remove(index));
       return;
@@ -180,12 +204,18 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
   @override
   void dispose() {
     widget.onDraftFocusChanged?.call(null);
-    for (final controller in [..._names, ..._quantities, ..._locations]) {
+    for (final controller in [
+      ..._names,
+      ..._quantities,
+      ..._units,
+      ..._locations,
+    ]) {
       controller.dispose();
     }
     for (final focusNode in [
       ..._nameFocusNodes,
       ..._quantityFocusNodes,
+      ..._unitFocusNodes,
       ..._locationFocusNodes,
     ]) {
       focusNode
@@ -193,6 +223,33 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
         ..dispose();
     }
     super.dispose();
+  }
+
+  List<ConfirmationItemView> get _drafts => [
+    for (var index = 0; index < widget.items.length; index++)
+      ConfirmationItemView(
+        name: _names[index].text.trim(),
+        quantity:
+            num.tryParse(_quantities[index].text) ??
+            widget.items[index].quantity,
+        unit: _units[index].text.trim(),
+        location: _locations[index].text.trim(),
+      ),
+  ];
+
+  bool get _hasChanges {
+    final drafts = _drafts;
+    for (var index = 0; index < drafts.length; index++) {
+      final item = widget.items[index];
+      final draft = drafts[index];
+      if (item.name != draft.name ||
+          item.quantity != draft.quantity ||
+          item.unit != draft.unit ||
+          item.location != draft.location) {
+        return true;
+      }
+    }
+    return false;
   }
 
   @override
@@ -211,7 +268,14 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('確認加入庫存', style: Theme.of(context).textTheme.titleMedium),
+                Text(
+                  widget.title,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                if (widget.description != null) ...[
+                  const SizedBox(height: 4),
+                  Text(widget.description!),
+                ],
                 const SizedBox(height: 8),
                 for (var index = 0; index < widget.items.length; index++)
                   _ConfirmationItem(
@@ -221,15 +285,25 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
                     editing: _editingIndex == index,
                     nameController: _names[index],
                     quantityController: _quantities[index],
+                    unitController: _units[index],
                     locationController: _locations[index],
                     nameFocusNode: _nameFocusNodes[index],
                     quantityFocusNode: _quantityFocusNodes[index],
+                    unitFocusNode: _unitFocusNodes[index],
                     locationFocusNode: _locationFocusNodes[index],
                     onToggle: () => _toggleItem(index),
                     onEdit: () => _setEditingIndex(index),
                     onFinishEdit: () => _finishEditing(index),
+                    onChanged: () => setState(() {}),
                     index: index,
+                    allowExclusion: widget.allowExclusion,
                   ),
+                if (widget.items.isEmpty)
+                  for (final entry in widget.details.entries)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text('${entry.key}：${entry.value}'),
+                    ),
                 const SizedBox(height: 10),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
@@ -240,6 +314,14 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
                       child: const Text('取消'),
                     ),
                     const SizedBox(width: 8),
+                    if (widget.onSubmitChanges != null && _hasChanges) ...[
+                      OutlinedButton(
+                        key: const Key('confirmation-submit-changes'),
+                        onPressed: () => widget.onSubmitChanges!(_drafts),
+                        child: const Text('送出修改'),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
                     FilledButton(
                       key: const Key('confirmation-confirm'),
                       onPressed: widget.onConfirm,
@@ -265,14 +347,18 @@ class _ConfirmationItem extends StatelessWidget {
     required this.editing,
     required this.nameController,
     required this.quantityController,
+    required this.unitController,
     required this.locationController,
     required this.nameFocusNode,
     required this.quantityFocusNode,
+    required this.unitFocusNode,
     required this.locationFocusNode,
     required this.onToggle,
     required this.onEdit,
     required this.onFinishEdit,
+    required this.onChanged,
     required this.index,
+    required this.allowExclusion,
   });
 
   final ConfirmationItemView item;
@@ -280,14 +366,18 @@ class _ConfirmationItem extends StatelessWidget {
   final bool editing;
   final TextEditingController nameController;
   final TextEditingController quantityController;
+  final TextEditingController unitController;
   final TextEditingController locationController;
   final FocusNode nameFocusNode;
   final FocusNode quantityFocusNode;
+  final FocusNode unitFocusNode;
   final FocusNode locationFocusNode;
   final VoidCallback onToggle;
   final VoidCallback onEdit;
   final VoidCallback onFinishEdit;
+  final VoidCallback onChanged;
   final int index;
+  final bool allowExclusion;
 
   InputDecoration _inlineDecoration(BuildContext context) => InputDecoration(
     isDense: true,
@@ -342,15 +432,18 @@ class _ConfirmationItem extends StatelessWidget {
                                 controller: nameController,
                                 focusNode: nameFocusNode,
                                 style: nameStyle,
+                                onChanged: (_) => onChanged(),
                                 decoration: _inlineDecoration(context),
                               )
                             : Text(nameController.text, style: nameStyle),
                         const SizedBox(height: 3),
                         if (editing)
-                          Row(
+                          Wrap(
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            spacing: 8,
+                            runSpacing: 4,
                             children: [
                               const Text('數量'),
-                              const SizedBox(width: 8),
                               SizedBox(
                                 width: 44,
                                 child: TextField(
@@ -358,6 +451,7 @@ class _ConfirmationItem extends StatelessWidget {
                                   controller: quantityController,
                                   focusNode: quantityFocusNode,
                                   style: detailStyle,
+                                  onChanged: (_) => onChanged(),
                                   keyboardType:
                                       const TextInputType.numberWithOptions(
                                         decimal: true,
@@ -375,15 +469,23 @@ class _ConfirmationItem extends StatelessWidget {
                                   decoration: _inlineDecoration(context),
                                 ),
                               ),
-                              const SizedBox(width: 4),
-                              Expanded(
-                                child: Text(item.unit, style: detailStyle),
+                              const Text('單位'),
+                              SizedBox(
+                                width: 72,
+                                child: TextField(
+                                  key: Key('confirmation-unit-$index'),
+                                  controller: unitController,
+                                  focusNode: unitFocusNode,
+                                  style: detailStyle,
+                                  onChanged: (_) => onChanged(),
+                                  decoration: _inlineDecoration(context),
+                                ),
                               ),
                             ],
                           )
                         else
                           Text(
-                            '數量　　${quantityController.text} ${item.unit}',
+                            '數量　　${quantityController.text} ${unitController.text}',
                             style: detailStyle,
                           ),
                         const SizedBox(height: 2),
@@ -402,6 +504,7 @@ class _ConfirmationItem extends StatelessWidget {
                                         controller: locationController,
                                         focusNode: locationFocusNode,
                                         style: detailStyle,
+                                        onChanged: (_) => onChanged(),
                                         decoration: _inlineDecoration(context),
                                       ),
                                     )
@@ -439,23 +542,24 @@ class _ConfirmationItem extends StatelessWidget {
                             ),
                             onPressed: editing ? onFinishEdit : onEdit,
                           ),
-                        IconButton(
-                          key: Key(
-                            excluded
-                                ? 'confirmation-include-$index'
-                                : 'confirmation-exclude-$index',
+                        if (allowExclusion)
+                          IconButton(
+                            key: Key(
+                              excluded
+                                  ? 'confirmation-include-$index'
+                                  : 'confirmation-exclude-$index',
+                            ),
+                            tooltip: excluded ? '重新加入此項' : '排除此項',
+                            constraints: const BoxConstraints(
+                              minWidth: 44,
+                              minHeight: 44,
+                            ),
+                            icon: Icon(
+                              excluded ? Icons.undo : Icons.close,
+                              size: 18,
+                            ),
+                            onPressed: onToggle,
                           ),
-                          tooltip: excluded ? '重新加入此項' : '排除此項',
-                          constraints: const BoxConstraints(
-                            minWidth: 44,
-                            minHeight: 44,
-                          ),
-                          icon: Icon(
-                            excluded ? Icons.undo : Icons.close,
-                            size: 18,
-                          ),
-                          onPressed: onToggle,
-                        ),
                       ],
                     ),
                   ),

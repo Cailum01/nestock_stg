@@ -300,7 +300,10 @@ def test_attachment_cannot_silently_replace_a_different_existing_image():
     assert not h.container.of_type("pending_approval")
 
 
-@pytest.mark.parametrize("wrong_field,wrong_value", [("household_id", "other"), ("ttl", 3600)])
+@pytest.mark.parametrize(
+    "wrong_field,wrong_value",
+    [("household_id", "other"), ("ttl", 3600), ("if_match_etag", "wrong-etag")],
+)
 def test_retention_port_cannot_emit_foreign_or_expiring_attachment_update(wrong_field, wrong_value):
     h = setup(save=False)
     attach(h)
@@ -309,7 +312,11 @@ def test_retention_port_cannot_emit_foreign_or_expiring_attachment_update(wrong_
     async def incorrect_output(**kwargs):
         operation = await original(**kwargs)
         return ReplaceDocument(
-            {**operation.document, wrong_field: wrong_value}, operation.if_match_etag
+            {
+                **operation.document,
+                **({wrong_field: wrong_value} if wrong_field != "if_match_etag" else {}),
+            },
+            wrong_value if wrong_field == "if_match_etag" else operation.if_match_etag,
         )
 
     h.builder._media_retention.prepare_attachment = incorrect_output

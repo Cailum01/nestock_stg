@@ -145,7 +145,7 @@ The real name-only Pydantic test is explicitly skipped on main's old required
 fields and runs with #64's actual schema. Joint validation applies only #64's model
 and model-test patch to current main plus C1, retaining the newer ChangeEvent model.
 No B1 files are edited in this working tree. Coordinate review/merge with B1; keep
-#63 open until both sides land. See root todo.md for current counts and owner work.
+#63 open until both sides land. See the linked Issues and pull requests for current integration evidence and owner work.
 
 Remaining: A1 stored-proposal resolver, Agent card/resume composition and oversized
 card splitting; production stable-ID helper composition, non-Shopping event scope

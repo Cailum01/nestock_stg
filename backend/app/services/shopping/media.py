@@ -1,7 +1,7 @@
 """Provisional C1 attachment handoff over B1's media mapping port (Issue #98).
 
-PR #97 is not a dependency at import time. Only an explicitly configured adapter
-may plan attachments. This module never writes a mapping separately from business
+B1's media mapping port is available in main. Only an explicitly configured
+adapter may plan attachments. This module never writes a mapping separately from business
 writes and never infers that a removed reference was the last active attachment.
 """
 
@@ -10,7 +10,8 @@ from typing import Protocol
 
 from app.services.approvals import TargetChanged
 from app.services.cosmos_write import ReplaceDocument
-from app.services.shopping.preview import ShoppingDecisionRequired, ShoppingPreviewError
+from app.services.media_mapping import build_media_mapping_retention_update
+from app.services.shopping.preview import ShoppingPreviewError
 
 
 @dataclass(frozen=True)
@@ -41,10 +42,6 @@ class B1MediaRetentionPlanner:
     async def prepare_attachment(
         self, *, household_id: str, attachment: MediaAttachment
     ) -> ReplaceDocument:
-        try:
-            from app.services.media_mapping import build_media_mapping_retention_update
-        except ImportError as error:
-            raise ShoppingDecisionRequired("Media mapping support requires B1 PR #97.") from error
         snapshot = await self._storage.find_completed_by_image_ref(
             household_id=household_id, image_ref=attachment.image_ref
         )

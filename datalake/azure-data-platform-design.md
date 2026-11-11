@@ -288,7 +288,7 @@ public API fields unless owners approve a contract change.
 
 #### New inventory item IDs
 
-For a `create_item` operation that creates one inventory item, B1 will provide
+For a `create_item` operation that creates one inventory item, B1 provides
 the backend helper `resolve_inventory_item_id(operation_id: str) -> str` as the
 single source of its `item_id`. The helper deterministically maps the stable
 `operation_id`; retries of the same operation therefore resolve to the same ID.
@@ -344,9 +344,8 @@ Cosmos transactional batches, enforces the 100-operation limit, and maps indexed
 409/412 conflicts to the repository conflict type. It logs request charge,
 operation count, conflict index/status, and duration without document contents.
 A read/write factory creates both repositories over one container/client.
-Neither is wired into application composition, a domain service, API, or Agent
-tool; this is not an approval or business-write workflow. A1 owns approval
-lifecycle and validation, and no resume flow is implemented.
+These storage primitives are not themselves an approval or business-write
+workflow; A1 owns the approval lifecycle, validation, and resume.
 
 Confirmation expiry is 30 minutes and must remain configurable rather than
 hard-coded. The server calculates the expiry and rejects confirmation after it;
@@ -515,7 +514,8 @@ and shared batch writes with a batch fingerprint. A partial set of existing
 receipts stops with a reconciliation error instead of applying the batch. These
 are storage primitives, not a recovery policy: they do not compare receipts with
 Inventory, Shopping, or Transaction state. The generic Azure SDK batch client
-exists but is not wired to a domain service, API, or Agent tool.
+executes the operations it is given; it does not interpret approval or define a
+business workflow.
 
 Transaction signs, unit conversions, and quantity arithmetic policy remain
 domain decisions; persistence must store the already validated domain operation,
@@ -638,17 +638,18 @@ truth:
   proposal; the UI control and local selection state are not authorization.
 - A pending card may retain its view/draft state while navigating within the
   active app session. This alone does not require restoring an approval after
-  process restart; server-side approval persistence follows the boundary agreed
-  in the server-side approval record.
+  process restart; server-side approval persistence follows
+  [Pending approval storage](#pending-approval-storage) above.
 - On an ambiguous confirmation timeout, the UI retains the proposal and retries
   with the original approval/operation identities. Only an authoritative server
   outcome can show the operation as completed; client state cannot infer whether
   a write committed.
 
 This records C2's presentation requirements, not an authoritative wire model.
-Correction request fields remain subject to A1/C2 agreement. The same-partition
-atomicity and selected-operation semantics are required; server-side approval
-validation and write execution remain unimplemented.
+The correction request is defined in section 7 of
+[`contracts/approval-lifecycle.md`](../contracts/approval-lifecycle.md). The
+same-partition atomicity and selected-operation semantics are required;
+server-side approval validation and write execution follow that contract.
 
 #### Item matching and alias persistence
 

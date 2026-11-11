@@ -35,4 +35,5 @@ effect. After that review, apply and verify the setting:
 
 The script requires Azure CLI authentication and permission to update and read
 the target container. It stops rather than replacing a non-null default TTL
-other than `-1`.
+other than `-1`. It treats Azure CLI's empty JSON output for an unset default
+TTL as `$null`, so Windows PowerShell 5.1 does not need special configuration.

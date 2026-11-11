@@ -69,6 +69,10 @@ function Get-ContainerDefaultTtl {
     )
 
     $json = $output -join [Environment]::NewLine
+    if ([string]::IsNullOrWhiteSpace($json)) {
+        return $null
+    }
+
     return ConvertFrom-Json -InputObject $json
 }
 

@@ -218,6 +218,8 @@ void main() {
       expect(find.text('item-1'), findsNothing);
       expect(find.text('transaction-1'), findsNothing);
       expect(find.text('位置'), findsNothing);
+      expect(find.byKey(const Key('confirmation-name-0')), findsNothing);
+      expect(find.byKey(const Key('confirmation-unit-0')), findsNothing);
       await tester.tap(find.byKey(const Key('purchase-edit-quantity')));
       await tester.pump();
       await tester.enterText(
@@ -236,10 +238,60 @@ void main() {
     },
   );
 
+  testWidgets('purchase quantity editor permits only positive integers', (
+    tester,
+  ) async {
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-purchase-validation',
+        presentation: ApprovalPresentation.singleAction,
+        operations: [
+          OperationView(
+            id: 'operation-purchase-validation',
+            action: 'complete_purchase',
+            description: '衛生紙 +2 包',
+            values: {
+              'name': '衛生紙',
+              'purchased_quantity': 2,
+              'purchased_unit': '包',
+            },
+          ),
+        ],
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('purchase-edit-quantity')));
+    await tester.pump();
+    final field = find.byKey(const Key('purchase-quantity-field'));
+    expect(
+      find.byKey(const Key('purchase-submit-quantity-change')),
+      findsNothing,
+    );
+
+    for (final invalidValue in ['0', '-1', '1.5']) {
+      await tester.enterText(field, invalidValue);
+      await tester.pump();
+      expect(
+        find.byKey(const Key('purchase-submit-quantity-change')),
+        findsNothing,
+        reason: '$invalidValue must not produce a replacement request',
+      );
+    }
+
+    await tester.enterText(field, '3');
+    await tester.pump();
+    expect(
+      find.byKey(const Key('purchase-submit-quantity-change')),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('batch purchase confirms exactly the selected operation IDs', (
     tester,
   ) async {
     List<String>? operationIds;
+    String? editMessage;
     await pumpCard(
       tester,
       const ApprovalView(
@@ -273,6 +325,7 @@ void main() {
         selectedOptionId,
         approvedOperationIds,
       }) => operationIds = approvedOperationIds,
+      onEdit: (message) => editMessage = message,
     );
 
     expect(
@@ -291,12 +344,49 @@ void main() {
           .value,
       isTrue,
     );
-    await tester.tap(find.byKey(const Key('purchase-operation-operation-b')));
+    expect(
+      find.byKey(const Key('purchase-edit-quantity-operation-a')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('purchase-edit-quantity-operation-b')),
+      findsOneWidget,
+    );
+    expect(find.text('operation-a'), findsNothing);
+    expect(find.text('operation-b'), findsNothing);
+
+    await tester.tap(
+      find.byKey(const Key('purchase-edit-quantity-operation-b')),
+    );
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('purchase-quantity-field-operation-b')),
+      '2',
+    );
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const Key('purchase-submit-quantity-change-operation-b')),
+    );
+    expect(editMessage, '洗衣精：數量改成 2');
+    expect(find.text('衛生紙 2 包'), findsOneWidget);
+    expect(find.text('洗衣精 1 瓶'), findsOneWidget);
+
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('purchase-operation-operation-b')),
+        matching: find.byType(Checkbox),
+      ),
+    );
     await tester.pump();
     await tester.tap(find.byKey(const Key('approval-confirm')));
     expect(operationIds, ['operation-a']);
 
-    await tester.tap(find.byKey(const Key('purchase-operation-operation-a')));
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('purchase-operation-operation-a')),
+        matching: find.byType(Checkbox),
+      ),
+    );
     await tester.pump();
     expect(
       tester

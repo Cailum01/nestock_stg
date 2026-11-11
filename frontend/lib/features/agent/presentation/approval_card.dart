@@ -157,8 +157,8 @@ class _PurchaseApprovalCard extends StatefulWidget {
 class _PurchaseApprovalCardState extends State<_PurchaseApprovalCard> {
   late final List<_PurchaseValues> _items;
   late final Set<String> _selectedOperationIds;
-  late final TextEditingController _quantityController;
-  bool _editingQuantity = false;
+  late final Map<String, TextEditingController> _quantityControllers;
+  final Set<String> _editingOperationIds = {};
 
   bool get _isBatch =>
       widget.approval.presentation == ApprovalPresentation.batchAction;
@@ -171,18 +171,82 @@ class _PurchaseApprovalCardState extends State<_PurchaseApprovalCard> {
         .whereType<_PurchaseValues>()
         .toList(growable: false);
     _selectedOperationIds = _items.map((item) => item.operation.id).toSet();
-    _quantityController = TextEditingController(
-      text: _items.length == 1 ? _quantityText(_items.single.quantity) : '',
-    );
+    _quantityControllers = {
+      for (final item in _items)
+        item.operation.id: TextEditingController(
+          text: _quantityText(item.quantity),
+        ),
+    };
   }
 
   @override
   void dispose() {
-    _quantityController.dispose();
+    for (final controller in _quantityControllers.values) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
-  num? get _editedQuantity => num.tryParse(_quantityController.text.trim());
+  int? _editedQuantity(_PurchaseValues item) {
+    final quantity = int.tryParse(
+      _quantityControllers[item.operation.id]!.text.trim(),
+    );
+    return quantity != null && quantity >= 1 ? quantity : null;
+  }
+
+  Key _quantityFieldKey(_PurchaseValues item) => Key(
+    _isBatch
+        ? 'purchase-quantity-field-${item.operation.id}'
+        : 'purchase-quantity-field',
+  );
+
+  Key _quantitySubmitKey(_PurchaseValues item) => Key(
+    _isBatch
+        ? 'purchase-submit-quantity-change-${item.operation.id}'
+        : 'purchase-submit-quantity-change',
+  );
+
+  Key _quantityEditKey(_PurchaseValues item) => Key(
+    _isBatch
+        ? 'purchase-edit-quantity-${item.operation.id}'
+        : 'purchase-edit-quantity',
+  );
+
+  Widget _quantityEditor(_PurchaseValues item) {
+    final editedQuantity = _editedQuantity(item);
+    final editMessage = editedQuantity == null
+        ? null
+        : buildPurchaseQuantityEditMessage(
+            name: item.name,
+            originalQuantity: item.quantity,
+            editedQuantity: editedQuantity,
+          );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 8),
+        TextField(
+          key: _quantityFieldKey(item),
+          controller: _quantityControllers[item.operation.id],
+          enabled: !widget.busy,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(labelText: '購入數量'),
+          onChanged: (_) => setState(() {}),
+        ),
+        if (editMessage != null && !widget.busy)
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              key: _quantitySubmitKey(item),
+              onPressed: widget.onSubmitChanges == null
+                  ? null
+                  : () => widget.onSubmitChanges!(editMessage),
+              child: const Text('送出修改'),
+            ),
+          ),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -193,15 +257,6 @@ class _PurchaseApprovalCardState extends State<_PurchaseApprovalCard> {
         onDecision: widget.onDecision,
       );
     }
-    final singleItem = _items.length == 1 ? _items.single : null;
-    final editedQuantity = _editedQuantity;
-    final editMessage = singleItem == null || editedQuantity == null
-        ? null
-        : buildPurchaseQuantityEditMessage(
-            name: singleItem.name,
-            originalQuantity: singleItem.quantity,
-            editedQuantity: editedQuantity,
-          );
     return Card(
       key: const Key('purchase-approval-card'),
       color: Theme.of(context).colorScheme.secondaryContainer,
@@ -230,45 +285,45 @@ class _PurchaseApprovalCardState extends State<_PurchaseApprovalCard> {
                                 _selectedOperationIds.remove(item.operation.id);
                               }
                             }),
-                      title: _PurchaseLine(item: item),
+                      title: Row(
+                        children: [
+                          Expanded(child: _PurchaseLine(item: item)),
+                          if (!_editingOperationIds.contains(
+                                item.operation.id,
+                              ) &&
+                              !widget.busy)
+                            IconButton(
+                              key: _quantityEditKey(item),
+                              tooltip: '修改數量',
+                              onPressed: () => setState(
+                                () =>
+                                    _editingOperationIds.add(item.operation.id),
+                              ),
+                              icon: const Icon(Icons.edit_outlined),
+                            ),
+                        ],
+                      ),
+                      subtitle: _editingOperationIds.contains(item.operation.id)
+                          ? _quantityEditor(item)
+                          : null,
                     )
                   : Row(
                       children: [
                         Expanded(child: _PurchaseLine(item: item)),
-                        if (!_editingQuantity && !widget.busy)
+                        if (!_editingOperationIds.contains(item.operation.id) &&
+                            !widget.busy)
                           IconButton(
-                            key: const Key('purchase-edit-quantity'),
+                            key: _quantityEditKey(item),
                             tooltip: '修改數量',
-                            onPressed: () =>
-                                setState(() => _editingQuantity = true),
+                            onPressed: () => setState(
+                              () => _editingOperationIds.add(item.operation.id),
+                            ),
                             icon: const Icon(Icons.edit_outlined),
                           ),
                       ],
                     ),
-            if (!_isBatch && _editingQuantity) ...[
-              const SizedBox(height: 8),
-              TextField(
-                key: const Key('purchase-quantity-field'),
-                controller: _quantityController,
-                enabled: !widget.busy,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
-                ),
-                decoration: const InputDecoration(labelText: '購入數量'),
-                onChanged: (_) => setState(() {}),
-              ),
-              if (editMessage != null && !widget.busy)
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    key: const Key('purchase-submit-quantity-change'),
-                    onPressed: widget.onSubmitChanges == null
-                        ? null
-                        : () => widget.onSubmitChanges!(editMessage),
-                    child: const Text('送出修改'),
-                  ),
-                ),
-            ],
+            if (!_isBatch && _editingOperationIds.isNotEmpty)
+              _quantityEditor(_items.single),
             const SizedBox(height: 8),
             Wrap(
               spacing: 12,

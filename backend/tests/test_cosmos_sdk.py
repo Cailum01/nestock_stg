@@ -529,8 +529,8 @@ def test_cosmos_read_services_share_repository_with_composition(monkeypatch):
     repository = CosmosReadRepository(FakeContainer([]))
     monkeypatch.setattr(
         dependencies,
-        "create_azure_cosmos_read_repository",
-        lambda **kwargs: (repository, lambda: None),
+        "create_azure_cosmos_repositories",
+        lambda **kwargs: (repository, object(), lambda: None),
     )
 
     inventory, shopping, shared_repository = _create_read_composition(

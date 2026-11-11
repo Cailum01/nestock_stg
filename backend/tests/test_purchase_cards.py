@@ -15,7 +15,12 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent.cards import PurchaseCards, resume_response
 from app.agent.read_agent import ReadAgent, get_read_agent, load_system_prompt
-from app.core.dependencies import _create_approval_service, get_approval_service
+from app.core import dependencies
+from app.core.dependencies import (
+    _create_approval_service,
+    _create_cosmos_composition,
+    get_approval_service,
+)
 from app.main import create_app
 from app.models.agent import AgentRequest, ApprovalPresentation
 from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus
@@ -310,7 +315,47 @@ def test_card_tool_is_offered_only_with_approval_cards():
 
 
 def test_without_cosmos_there_are_no_cards():
-    assert _create_approval_service(None) is None
+    assert _create_cosmos_composition({})[2:] == (None, None)
+    assert _create_approval_service(None, None) is None
+
+
+def test_reads_writes_and_cards_share_one_cosmos_client(monkeypatch):
+    """B1's review on PR #96: one SDK client for the read and write repositories."""
+    container = FakeCosmosContainer()
+    read_repository = CosmosReadRepository(container)
+    write_repository = CosmosWriteRepository(container, query_client=container)
+    clients = []
+
+    def one_client(**settings):
+        clients.append(settings)
+        return read_repository, write_repository, lambda: None
+
+    def no_second_client(**settings):
+        raise AssertionError("cards must not open a second Cosmos client")
+
+    monkeypatch.setattr(dependencies, "create_azure_cosmos_repositories", one_client)
+    monkeypatch.setattr(
+        "app.services.cosmos_sdk.create_azure_cosmos_read_repository", no_second_client
+    )
+    monkeypatch.setattr(
+        "app.services.cosmos_sdk.create_azure_cosmos_repositories", no_second_client
+    )
+
+    inventory, shopping, reads, writes = _create_cosmos_composition(
+        {
+            "NESTOCK_COSMOS_ENDPOINT": "https://example.documents.azure.com",
+            "NESTOCK_COSMOS_DATABASE": "nestock",
+            "NESTOCK_COSMOS_CONTAINER": "household-data",
+        }
+    )
+    approvals = _create_approval_service(reads, writes)
+
+    assert len(clients) == 1
+    assert reads is read_repository and writes is write_repository
+    assert inventory._repository is read_repository
+    assert shopping._repository is read_repository
+    assert approvals._storage is write_repository
+    assert approvals._writes._reader is read_repository
 
 
 def resume_app(approvals):

@@ -21,8 +21,9 @@ from app.services.approvals import (
 )
 from app.services.cosmos_read import CosmosDocumentMapper
 from app.services.cosmos_write import CreateDocument, ReplaceDocument, change_event_create
+from app.services.shopping.media import MediaAttachment, MediaRetentionPlanner
 from app.services.shopping.planning import PurchaseInput, ShoppingPlanService
-from app.services.shopping.preview import ShoppingPreviewError
+from app.services.shopping.preview import ShoppingDecisionRequired, ShoppingPreviewError
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class RemovalInput:
 class ResolvedShoppingChanges:
     purchases: tuple[PurchaseInput, ...] = ()
     removals: tuple[RemovalInput, ...] = ()
+    media_attachments: tuple[MediaAttachment, ...] = ()
 
 
 class ShoppingInputResolver(Protocol):
@@ -66,10 +68,17 @@ def _replacement(source, record):
 class ShoppingWriteBuilder:
     """Plan C1 purchase/removal writes; never execute or authorize a mutation."""
 
-    def __init__(self, reader: ShoppingDocumentReader, resolver: ShoppingInputResolver):
+    def __init__(
+        self,
+        reader: ShoppingDocumentReader,
+        resolver: ShoppingInputResolver,
+        *,
+        media_retention: MediaRetentionPlanner | None = None,
+    ):
         self._reader = reader
         self._resolver = resolver
         self._plans = ShoppingPlanService()
+        self._media_retention = media_retention
 
     async def build(self, record: ApprovalRecord) -> DomainWritePlan:
         if record.status not in (ApprovalStatus.PENDING, ApprovalStatus.CONFIRMED):
@@ -96,10 +105,28 @@ class ShoppingWriteBuilder:
         changes = ResolvedShoppingChanges(
             purchases=tuple(sorted(changes.purchases, key=lambda row: order[row.operation_id])),
             removals=tuple(sorted(changes.removals, key=lambda row: order[row.operation_id])),
+            media_attachments=changes.media_attachments,
         )
         shopping_ids = [entry.shopping.shopping_item_id for entry in inputs]
         if len(set(shopping_ids)) != len(shopping_ids):
             raise ShoppingPreviewError("A Shopping target can be changed only once per card.")
+
+        attachments = {entry.operation_id: entry for entry in changes.media_attachments}
+        purchase_ids = {entry.operation_id for entry in changes.purchases}
+        if (
+            len(attachments) != len(changes.media_attachments)
+            or not attachments.keys() <= purchase_ids
+        ):
+            raise ShoppingPreviewError("One attachment may belong to each selected purchase only.")
+        if attachments and self._media_retention is None:
+            raise ShoppingDecisionRequired(
+                "Configure the B1 retention port before attaching media."
+            )
+        for operation_id, attachment in attachments.items():
+            if stored[operation_id].values.get("image_ref") != attachment.image_ref:
+                raise ShoppingPreviewError(
+                    "Attachment must match the image_ref on the stored card."
+                )
 
         documents = {}
         for entry in inputs:
@@ -108,6 +135,9 @@ class ShoppingWriteBuilder:
             if isinstance(entry, PurchaseInput) and entry.inventory is not None:
                 expected[f"inventory_item:{entry.inventory.item_id}"] = entry.inventory_etag
                 sources.append((InventoryItem, entry.inventory, entry.inventory_etag))
+            attachment = attachments.get(entry.operation_id)
+            if attachment is not None:
+                expected[f"input:{attachment.input_id}"] = attachment.mapping_etag
             targets = stored[entry.operation_id].targets
             if (
                 len(targets) != len(expected)
@@ -146,7 +176,54 @@ class ShoppingWriteBuilder:
                 recorded_at=record.decided_at,
             )
             transactions = {tx.operation_id: tx for tx in plan.transactions}
-            creates = {row.operation_id: row.record for row in plan.inventory_creates}
+            images_by_item = {}
+            retention_by_id = {}
+            for purchase in changes.purchases:
+                attachment = attachments.get(purchase.operation_id)
+                if attachment is None:
+                    continue
+                tx = transactions[purchase.operation_id]
+                previous = images_by_item.get(tx.item_id)
+                if previous is not None and previous != attachment.image_ref:
+                    raise ShoppingPreviewError(
+                        "A shared Inventory target needs one confirmed image."
+                    )
+                if purchase.inventory is not None and purchase.inventory.image_ref not in (
+                    None,
+                    attachment.image_ref,
+                ):
+                    raise ShoppingDecisionRequired(
+                        "Replacing media needs an agreed detach/remaining-reference policy."
+                    )
+                images_by_item[tx.item_id] = attachment.image_ref
+                operation = await self._media_retention.prepare_attachment(
+                    household_id=record.household_id, attachment=attachment
+                )
+                doc_id = f"input:{attachment.input_id}"
+                if (
+                    not isinstance(operation, ReplaceDocument)
+                    or operation.document.get("id") != doc_id
+                    or operation.document.get("household_id") != record.household_id
+                    or operation.document.get("record_type") != "user_input"
+                    or operation.document.get("image_ref") != attachment.image_ref
+                    or operation.document.get("status") != "completed"
+                    or operation.document.get("ttl", -1) != -1
+                    or operation.if_match_etag != attachment.mapping_etag
+                ):
+                    raise ShoppingPreviewError("Retention update must match the completed mapping.")
+                if doc_id in retention_by_id and retention_by_id[doc_id] != operation:
+                    raise ShoppingPreviewError("Shared media mapping updates must agree.")
+                retention_by_id[doc_id] = operation
+
+            def with_image(item):
+                image_ref = images_by_item.get(item.item_id)
+                return (
+                    item if image_ref is None else item.model_copy(update={"image_ref": image_ref})
+                )
+
+            creates = {row.operation_id: with_image(row.record) for row in plan.inventory_creates}
+            after_by_item = {row.record.item_id: row.record for row in plan.inventory_updates}
+            after_by_item.update({row.record.item_id: row.record for row in plan.inventory_creates})
             for update in plan.shopping_updates:
                 tx = transactions[update.operation_id]
                 doc_id = f"shopping_item:{update.record.shopping_item_id}"
@@ -177,16 +254,21 @@ class ShoppingWriteBuilder:
                     "shopping_item_id": update.record.shopping_item_id,
                     "item_id": tx.item_id,
                     "transaction_id": tx.transaction_id,
+                    "quantity_added": tx.quantity_delta,
+                    "inventory_quantity": after_by_item[tx.item_id].quantity,
+                    "unit": after_by_item[tx.item_id].unit,
                 }
             shared = [
                 ReplaceDocument(
                     _replacement(
-                        documents[f"inventory_item:{update.record.item_id}"], update.record
+                        documents[f"inventory_item:{update.record.item_id}"],
+                        with_image(update.record),
                     ),
                     update.expected_etag,
                 )
                 for update in plan.inventory_updates
             ]
+            shared.extend(retention_by_id.values())
         for entry in changes.removals:
             removal = self._plans.plan_removal(
                 household_id=record.household_id,

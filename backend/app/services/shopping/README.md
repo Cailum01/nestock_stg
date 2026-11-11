@@ -103,6 +103,15 @@ B1's mapping is used unchanged:
 - B1 adds one receipt per operation. A1 appends approval confirmed -> completed
   in the same household batch. Full count includes all of these, max 100.
 
+Purchase outcomes now include `quantity_added`, final combined
+`inventory_quantity` and `unit`, in addition to stable record IDs. Two selected
+operations for the same Inventory item both report its final combined quantity;
+a new target reports its created quantity. Removal has no quantity/unit outcome.
+These fields support PR #96's response and are stored on the approval for retries.
+The existing-target acceptance fixture now uses PR #95's card values (`name`,
+`purchased_quantity`, `purchased_unit`, `shopping_item_id`, `item_id`,
+`transaction_id`), rather than a separate `quantity` test field.
+
 The builder rejects an oversized group before any persistent write; it never
 splits an approved group. A1 must split large intents into separate cards before
 showing them. Replacements always use the card's original ETags; new records use
@@ -139,7 +148,84 @@ No B1 files are edited in this working tree. Coordinate review/merge with B1; ke
 #63 open until both sides land. See root todo.md for current counts and owner work.
 
 Remaining: A1 stored-proposal resolver, Agent card/resume composition and oversized
-card splitting; B1 stable ID resolver, non-Shopping event scope and live Cosmos
-validation; C2 actual card flows. Until these are integrated, no claim that #27 or
+card splitting; production stable-ID helper composition, non-Shopping event scope
+and broader live failure/reconciliation validation; C2 actual card flows. Until these are integrated, no claim that #27 or
 #90 is complete end-to-end. Retain **provisional per D-3** in an integration PR
 while the decision index remains stale; do not change shared contracts here.
+
+## Media attachment retention (#98, provisional per PR #97)
+
+`ResolvedShoppingChanges.media_attachments` accepts selected purchase bindings
+`MediaAttachment(operation_id, input_id, image_ref, mapping_etag)`. This is a
+provisional internal handoff, not an App/wire schema. `image_ref` must be shown in
+the stored operation values and the exact `input:<input_id>` ETag must be one of
+its targets. A2/B1 must confirm this handoff before enabling it in composition.
+
+Media is opt-in through `ShoppingWriteBuilder(..., media_retention=...)`.
+`B1MediaRetentionPlanner(mapping_storage)` uses PR #97's completed, household-
+scoped lookup and `build_media_mapping_retention_update(..., ttl_seconds=None)`.
+It plans only: mapping retention is never written on its own. PR #97 is now merged
+in main (11e078f); enabling attachment requires its port and explicit composition.
+
+A completed mapping's retention replace joins the shared household batch with
+the actual Inventory image_ref attachment, Shopping, Transaction, event, receipt
+and approval completion. Mapping ETag, household, status, reference and output
+identity are checked. Repeated bindings share one mapping update; conflicting
+images for one Inventory target reject the group. Mapping writes count against
+the same 100-action ceiling. Cancellation/unselected purchases retain orphan TTL;
+conditional conflicts roll back business writes and retention together. Image
+references remain opaque; no binary, base64, path parsing or Blob upload is added.
+
+Replacing an existing different image, detaching media, and resetting finite TTL
+are deliberately refused/deferred. PR #97 has no authoritative attachment-set or
+last-reference query: a removed Shopping row cannot prove no other business
+record still references an image. B1/A2/C1 must agree that source and same-batch
+unlink semantics before a detach can reinstate orphan cleanup. No reference-count
+schema or assumption that removal of Shopping detaches Inventory is invented.
+
+Only the mapping TTL is covered here. Blob retention/deletion and A2 processing
+composition are separate owner work; a mapping update does not prove Blob cleanup.
+
+## Isolated live acceptance
+
+`backend/tests/manual_test_shopping_cosmos.py` is an opt-in acceptance script,
+never part of automatic pytest. Run it only with explicit user approval and a
+fresh `c1-test-*` household. It refuses a reused household or a container without
+`defaultTtl=-1`, does not change Azure configuration, and retains synthetic records
+for B1 review. It uses one SDK client/container for reads and writes.
+
+The script uses #97 helper/mapping dependencies, now merged in main. Its resolver
+is explicitly test-only:
+existing purchases use #95's stored values; the new-target/media fixture does not
+claim to be the finalized A1 wire schema. It checks pending/no early stock change,
+complete purchase, actual Transaction/event, stored response values, stable retry,
+new-item creation via B1's stable helper, and retention with the new attachment.
+It does not establish Agent/App end-to-end or A2 Blob lifecycle acceptance.
+
+Example from the backend directory, after Azure CLI login:
+
+```sh
+python -m tests.manual_test_shopping_cosmos --execute --household c1-test-UNIQUE-RUN-ID
+```
+
+On 2026-11-11 the C1 live script completed **18/18 checks** after CLI login
+with the service-wide Cosmos scope. The only written household was
+`c1-test-20261111T090129Z-c2b285db`. Synthetic records were retained for B1 review.
+The run used the isolated #64/#97 dependencies, the actual C1 builder and B1
+SDK/repository, A1 ApprovalService and a **test-only** A1 resolver.
+
+Validated: pending card persisted without stock changes, confirmed existing stock
+1 + 2 = 3, Shopping completion, one actual Transaction/event, stored quantity/unit
+outcome, already_completed retry without duplicate effects, new Inventory created
+only after approval using B1's stable helper, and media attachment plus retention
+updated together. The new-item retry produced no duplicate Inventory/Transactions.
+This does not cover production Agent/App parsing, A2 upload/Blob cleanup, media
+detach, every live conflict/reconciliation case, or a final builder ownership decision.
+
+Authentication note (2026-11-11): the account-specific login scope returned
+AADSTS65002 (Azure CLI / first-party API preauthorization), so use the service
+scope `https://cosmos.azure.com/.default` for CLI login/token validation. The
+acceptance script temporarily sets the installed SDK's supported
+`AZURE_COSMOS_AAD_SCOPE_OVERRIDE` to that same value and restores it afterward;
+no persistent CLI settings, credentials, roles or .env values are changed. A
+successful browser portal session is not proof that CLI token acquisition works.

@@ -28,7 +28,6 @@ from app.models.storage import (
     UploadAuthorizationResponse,
 )
 from app.services.media_mapping import (
-    MediaMappingNotReady,
     MediaMappingPort,
     MediaMappingSnapshot,
 )
@@ -128,21 +127,43 @@ class LocalStagingMediaStorage:
         if not token_info:
             raise KeyError(f"Upload token '{upload_token}' not found or already consumed")
 
+        household_id = token_info["household_id"]
+        image_ref = token_info["image_ref"]
+        input_id = token_info["input_id"]
+
         if time.time() > token_info["expires_at"]:
             self._pending_tokens.pop(upload_token, None)
+            if self._mapping_port is not None:
+                try:
+                    await self.fail_processing(
+                        household_id, image_ref, MediaFailureReason.UPLOAD_TIMEOUT
+                    )
+                except Exception:
+                    pass
             raise TimeoutError(f"Upload token '{upload_token}' has expired")
 
         if len(payload_bytes) == 0:
+            if self._mapping_port is not None:
+                try:
+                    await self.fail_processing(
+                        household_id, image_ref, MediaFailureReason.VALIDATION_FAILED
+                    )
+                except Exception:
+                    pass
             raise ValueError("Payload cannot be empty")
 
         if len(payload_bytes) > 10_485_760:
+            if self._mapping_port is not None:
+                try:
+                    await self.fail_processing(
+                        household_id, image_ref, MediaFailureReason.VALIDATION_FAILED
+                    )
+                except Exception:
+                    pass
             raise ValueError(
                 f"Payload exceeds maximum allowed size of 10MB: {len(payload_bytes)} bytes"
             )
 
-        household_id = token_info["household_id"]
-        image_ref = token_info["image_ref"]
-        input_id = token_info["input_id"]
         self._staged_media[(household_id, image_ref)] = payload_bytes
         self._pending_tokens.pop(upload_token, None)
 
@@ -185,11 +206,13 @@ class LocalStagingMediaStorage:
         artifact_data: str | bytes | None = None,
     ) -> str:
         """Advance media mapping state to COMPLETED and record derived artifact reference."""
-        snap = await self._get_snapshot(household_id, image_ref)
+        snap = self._snapshots.get((household_id, image_ref))
+        if snap is None and self._mapping_port is not None:
+            snap = await self._get_snapshot(household_id, image_ref)
         input_id = snap.record.input_id if snap else "mock"
         artifact_ref = f"blob://households/{household_id}/media/{input_id}/derived/vision_v1.json"
 
-        if self._mapping_port is not None:
+        if self._mapping_port is not None and snap is not None:
             now = datetime.now(UTC)
             updated_snap = await self._mapping_port.transition(
                 household_id=household_id,
@@ -224,15 +247,21 @@ class LocalStagingMediaStorage:
             self._snapshots[(household_id, image_ref)] = updated_snap
 
     async def verify_media_exists(self, household_id: str, image_ref: str) -> bool:
-        """Check whether completed media exists and belongs to the specified household."""
+        """Check whether media exists, belongs to household, and is ready for agent."""
         if self._mapping_port is not None:
             try:
-                snapshot = await self._mapping_port.find_completed_by_image_ref(
+                snapshot = await self._mapping_port.find_by_image_ref(
                     household_id=household_id,
                     image_ref=image_ref,
                 )
-                return snapshot is not None
-            except (MediaMappingNotReady, Exception):
+                if snapshot is None:
+                    return False
+                return snapshot.record.status in (
+                    MediaProcessingStatus.RECEIVED,
+                    MediaProcessingStatus.PROCESSING,
+                    MediaProcessingStatus.COMPLETED,
+                )
+            except Exception:
                 return False
 
         return (household_id, image_ref) in self._staged_media
@@ -258,9 +287,7 @@ class LocalStagingMediaStorage:
         """Helper method for local tests simulating client direct upload to storage."""
         self._staged_media[(household_id, image_ref)] = payload_bytes
 
-    async def _get_snapshot(
-        self, household_id: str, image_ref: str
-    ) -> MediaMappingSnapshot:
+    async def _get_snapshot(self, household_id: str, image_ref: str) -> MediaMappingSnapshot:
         snapshot = self._snapshots.get((household_id, image_ref))
         if snapshot is None and self._mapping_port is not None:
             snapshot = await self._mapping_port.find_by_image_ref(

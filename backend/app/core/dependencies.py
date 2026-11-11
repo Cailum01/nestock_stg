@@ -9,8 +9,10 @@ from app.services.cosmos_read import (
     CosmosShoppingService,
 )
 from app.services.cosmos_sdk import create_azure_cosmos_read_repository
+from app.services.cosmos_write import TransactionalBatchClient
 from app.services.demo import DemoInventoryService, DemoShoppingService
 from app.services.interfaces import InventoryService, ShoppingService
+from app.services.media_mapping import CosmosMediaMappingStorage, MediaMappingPort
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
 from app.services.speech import (
@@ -78,15 +80,40 @@ def _create_vision_service(
 
 
 def _create_media_storage_service(
+    read_repository: CosmosReadRepository | None = None,
+    write_client: TransactionalBatchClient | None = None,
+    mapping_port: MediaMappingPort | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> MediaStorageService:
     env = os.environ if environment is None else environment
     base_url = env.get("NESTOCK_STAGING_BASE_URL")
-    return LocalStagingMediaStorage(base_staging_url=base_url)
+    if mapping_port is None and read_repository is not None:
+        if write_client is not None:
+            mapping_port = CosmosMediaMappingStorage(
+                read_repository=read_repository,
+                write_client=write_client,
+            )
+        elif isinstance(getattr(read_repository, "_query_client", None), TransactionalBatchClient):
+            mapping_port = CosmosMediaMappingStorage(
+                read_repository=read_repository,
+                write_client=read_repository._query_client,  # type: ignore[arg-type]
+            )
+        elif hasattr(getattr(read_repository, "_query_client", None), "_container"):
+            from app.services.cosmos_sdk import AzureCosmosTransactionalBatchClient
+
+            mapping_port = CosmosMediaMappingStorage(
+                read_repository=read_repository,
+                write_client=AzureCosmosTransactionalBatchClient(
+                    read_repository._query_client._container
+                ),
+            )
+    return LocalStagingMediaStorage(base_staging_url=base_url, mapping_port=mapping_port)
 
 
 inventory_service, shopping_service, cosmos_read_repository = _create_read_composition()
-media_storage_service: MediaStorageService = _create_media_storage_service()
+media_storage_service: MediaStorageService = _create_media_storage_service(
+    read_repository=cosmos_read_repository
+)
 _speech_service: SpeechToTextService | None = None
 _speech_service_resolved: bool = False
 _speech_lock = threading.Lock()

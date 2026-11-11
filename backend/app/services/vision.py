@@ -192,11 +192,7 @@ class AzureOpenAIVisionService:
         try:
             import httpx
 
-            if hasattr(self.media_storage, "begin_processing"):
-                try:
-                    await self.media_storage.begin_processing(household_id, image_ref.strip())
-                except Exception as exc:
-                    logger.debug("Optional begin_processing skipped or failed: %s", exc)
+            await self.media_storage.begin_processing(household_id, image_ref.strip())
 
             base64_img = base64.b64encode(media_bytes).decode("utf-8")
             url = f"{self.settings.base_url}chat/completions"
@@ -313,23 +309,18 @@ class AzureOpenAIVisionService:
                 detected_items=detected_items,
                 raw_text=parsed.get("raw_text"),
             )
-            if hasattr(self.media_storage, "complete_processing"):
-                try:
-                    await self.media_storage.complete_processing(
-                        household_id, image_ref.strip(), result.model_dump_json()
-                    )
-                except Exception as exc:
-                    logger.debug("Optional complete_processing skipped or failed: %s", exc)
+            await self.media_storage.complete_processing(
+                household_id, image_ref.strip(), result.model_dump_json()
+            )
             return result
         except Exception as exc:
             logger.warning("Azure OpenAI Vision execution failed (%s)", exc)
-            if hasattr(self.media_storage, "fail_processing"):
-                try:
-                    await self.media_storage.fail_processing(
-                        household_id, image_ref.strip(), MediaFailureReason.PROCESSING_FAILED
-                    )
-                except Exception as fail_exc:
-                    logger.debug("Optional fail_processing skipped or failed: %s", fail_exc)
+            try:
+                await self.media_storage.fail_processing(
+                    household_id, image_ref.strip(), MediaFailureReason.PROCESSING_FAILED
+                )
+            except Exception as fail_exc:
+                logger.warning("Optional fail_processing skipped or failed: %s", fail_exc)
             if self.mock_fallback:
                 return await self._fallback_service.analyze_image(
                     household_id, image_ref, scene_type

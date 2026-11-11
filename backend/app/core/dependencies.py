@@ -8,6 +8,7 @@ from app.services.cosmos_read import (
     CosmosInventoryService,
     CosmosReadRepository,
     CosmosShoppingService,
+    DocumentQueryClient,
 )
 from app.services.cosmos_sdk import create_azure_cosmos_repositories
 from app.services.cosmos_write import CosmosWriteRepository
@@ -36,7 +37,7 @@ def _create_domain_read_services(
 def _create_read_composition(
     environment: Mapping[str, str] | None = None,
 ) -> tuple[InventoryService, ShoppingService, CosmosReadRepository | None]:
-    inventory, shopping, read_repository, _ = _create_cosmos_composition(environment)
+    inventory, shopping, read_repository, _, _ = _create_cosmos_composition(environment)
     return inventory, shopping, read_repository
 
 
@@ -47,8 +48,10 @@ def _create_cosmos_composition(
     ShoppingService,
     CosmosReadRepository | None,
     CosmosWriteRepository | None,
+    DocumentQueryClient | None,
 ]:
-    """Read services plus B1's read and write repositories, all on one Cosmos SDK client.
+    """Read services plus B1's read and write repositories and raw document reader,
+    all on one Cosmos SDK client.
 
     Without `NESTOCK_COSMOS_*` this is the offline demo and there are no repositories.
     """
@@ -60,7 +63,7 @@ def _create_cosmos_composition(
     }
     configured = {key: value for key, value in settings.items() if value is not None}
     if not configured:
-        return DemoInventoryService(), DemoShoppingService(), None, None
+        return DemoInventoryService(), DemoShoppingService(), None, None, None
     if len(configured) != len(settings):
         missing = sorted(set(settings) - configured.keys())
         raise RuntimeError(
@@ -71,10 +74,12 @@ def _create_cosmos_composition(
     if any(not value for value in configured.values()):
         raise RuntimeError("Cosmos read configuration values must not be empty.")
 
-    read_repository, write_repository, close_client = create_azure_cosmos_repositories(
-        endpoint=settings["endpoint"] or "",
-        database_name=settings["database"] or "",
-        container_name=settings["container"] or "",
+    read_repository, write_repository, document_reader, close_client = (
+        create_azure_cosmos_repositories(
+            endpoint=settings["endpoint"] or "",
+            database_name=settings["database"] or "",
+            container_name=settings["container"] or "",
+        )
     )
     atexit.register(close_client)
     return (
@@ -82,6 +87,7 @@ def _create_cosmos_composition(
         CosmosShoppingService(read_repository),
         read_repository,
         write_repository,
+        document_reader,
     )
 
 
@@ -108,9 +114,13 @@ def _create_media_storage_service(
     return LocalStagingMediaStorage(base_staging_url=base_url)
 
 
-inventory_service, shopping_service, cosmos_read_repository, cosmos_write_repository = (
-    _create_cosmos_composition()
-)
+(
+    inventory_service,
+    shopping_service,
+    cosmos_read_repository,
+    cosmos_write_repository,
+    cosmos_document_reader,
+) = _create_cosmos_composition()
 media_storage_service: MediaStorageService = _create_media_storage_service()
 _speech_service: SpeechToTextService | None = None
 _speech_service_resolved: bool = False
@@ -200,12 +210,12 @@ def get_approval_service() -> ApprovalService | None:
     Cards are stored in `household-data` (Issue #41) and written through B1's
     `CosmosWriteRepository`, so without `NESTOCK_COSMOS_*` there is none: the Agent
     offers no card tool and `/agent/resume` answers 503. Made on first use, from the
-    read and write repositories the composition above made on one SDK client.
+    repositories and raw reader the composition above made on one SDK client.
     """
     global _approval_service, _approval_service_resolved
     if not _approval_service_resolved:
         _approval_service = _create_approval_service(
-            cosmos_read_repository, cosmos_write_repository
+            cosmos_read_repository, cosmos_write_repository, cosmos_document_reader
         )
         _approval_service_resolved = True
     return _approval_service
@@ -214,9 +224,18 @@ def get_approval_service() -> ApprovalService | None:
 def _create_approval_service(
     read_repository: CosmosReadRepository | None,
     write_repository: CosmosWriteRepository | None,
+    document_reader: DocumentQueryClient | None,
 ) -> ApprovalService | None:
-    if read_repository is None or write_repository is None:
-        return None
-    from app.services.purchase_writes import PurchaseWriteBuilder
+    """Purchase cards are written by C1's `ShoppingWriteBuilder` (Issue #60).
 
-    return ApprovalService(write_repository, PurchaseWriteBuilder(read_repository))
+    A1's `CardInputResolver` turns the stored card back into C1's purchase inputs
+    through the read repository; C1 reads whole stored documents through the raw
+    reader so storage-only metadata survives its replacements.
+    """
+    if read_repository is None or write_repository is None or document_reader is None:
+        return None
+    from app.services.purchase_inputs import CardInputResolver
+    from app.services.shopping.workflow import ShoppingWriteBuilder
+
+    builder = ShoppingWriteBuilder(document_reader, CardInputResolver(read_repository))
+    return ApprovalService(write_repository, builder)

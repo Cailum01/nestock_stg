@@ -16,8 +16,9 @@ during implementation, but the rules below are decided. Public models stay in
 Current status: A1's service `backend/app/services/approvals.py` implements these
 rules and runs on B1's `CosmosWriteRepository`. With Cosmos configured,
 `POST /agent/resume` calls it; without Cosmos it returns 503. The only card the
-Agent makes so far is the v8 flow C purchase card (`complete_purchase`, written by
-`backend/app/services/purchase_writes.py` through C1's purchase plan). Not built yet:
+Agent makes so far is the v8 flow C purchase card (`complete_purchase`, read back by
+A1's `backend/app/services/purchase_inputs.py` and written through C1's
+`ShoppingWriteBuilder`). Not built yet:
 changing a card (section 7), reminders (section 8), and the Agent making the new
 card by itself after a record changed (section 4 point 6); for now the reply asks
 the user to say it again.

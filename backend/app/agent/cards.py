@@ -2,10 +2,12 @@
 
 v8 flow C (買回來了): the `complete_purchase` tool writes nothing. It reads the shopping
 entries and the inventory items they add to, with their versions, makes one card line
-per bought item (C1's preview checks each, `services/purchase_writes.py`), and stores
+per bought item (`purchase_operation` below; C1's preview checks each), and stores
 a pending card through the approval service. The App shows the card; the write
 happens only in `POST /agent/resume` after the user confirms
-(`contracts/approval-lifecycle.md`).
+(`contracts/approval-lifecycle.md`): A1's `CardInputResolver`
+(`services/purchase_inputs.py`) reads the stored lines back and C1's
+`ShoppingWriteBuilder` plans the batch (Issue #60).
 
 Not covered yet: items that are not on the list or not linked to an inventory item
 (Issue #90), buying more than listed, a different unit, a purchase time other than
@@ -17,11 +19,12 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from collections.abc import Sequence
 from typing import Any
 
 from app.models.agent import AgentResponse, AgentResult, ApprovalPresentation, ResultKind
-from app.models.domain import ShoppingStatus
+from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus
 from app.services.approvals import (
     ApprovalRecord,
     ApprovalService,
@@ -30,13 +33,11 @@ from app.services.approvals import (
     ResumeOutcome,
     ResumeResult,
     TargetChanged,
+    TargetVersion,
 )
-from app.services.purchase_writes import (
-    COMPLETE_PURCHASE,
-    PurchaseRecordReader,
-    purchase_operation,
-)
-from app.services.shopping.preview import ShoppingPreviewError
+from app.services.cosmos_read import MappedDocument
+from app.services.purchase_inputs import COMPLETE_PURCHASE, PurchaseRecordReader
+from app.services.shopping.preview import ShoppingPreviewError, ShoppingPreviewService
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,46 @@ ONE_CARD_PER_MESSAGE = json.dumps({"error": "card_already_made"})
 CARD_FAILED = json.dumps({"error": "card_not_made"})
 TOO_MANY_ITEMS = json.dumps({"error": "too_many_items"})
 RECORDS_CHANGED = json.dumps({"error": "records_changed"})
+
+
+def purchase_operation(
+    *,
+    shopping: MappedDocument[ShoppingItem],
+    inventory: MappedDocument[InventoryItem] | None,
+    quantity: int,
+    transaction_id: str | None = None,
+) -> NewOperation:
+    """One card line: "this shopping entry was bought, add it to this inventory item".
+
+    C1's preview checks the line first, so a purchase the plan would refuse (more than
+    listed, not linked to an inventory item, a different unit) never reaches a card;
+    it raises `ShoppingDecisionRequired` or `ShoppingPreviewError`.
+    """
+    preview = ShoppingPreviewService().preview_purchase(
+        household_id=shopping.record.household_id,
+        shopping=shopping.record,
+        inventory=None if inventory is None else inventory.record,
+        purchased_quantity=quantity,
+    )
+    if inventory is None or shopping.etag is None or inventory.etag is None:
+        raise ValueError("Both records must be read with their ETag.")
+    name = shopping.record.name
+    return NewOperation(
+        action=COMPLETE_PURCHASE,
+        description=f"{name} +{quantity} {preview.unit}（從待購清單完成購買）",
+        values={
+            "name": name,
+            "purchased_quantity": quantity,
+            "purchased_unit": preview.unit,
+            "shopping_item_id": shopping.record.shopping_item_id,
+            "item_id": inventory.record.item_id,
+            "transaction_id": transaction_id or uuid.uuid4().hex,
+        },
+        targets=[
+            TargetVersion(record_id=shopping.document_id, etag=shopping.etag),
+            TargetVersion(record_id=inventory.document_id, etag=inventory.etag),
+        ],
+    )
 
 
 class PurchaseCards:

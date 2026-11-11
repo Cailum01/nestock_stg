@@ -6,8 +6,8 @@ option B): one card per approval, `pending -> confirmed -> completed`, no stored
 card and its operation receipts before any retry.
 
 `POST /agent/resume` calls this service when Cosmos is configured. The only domain
-write builder so far is A1's purchase adapter over C1's plan
-(`services/purchase_writes.py`, Issue #60).
+write builder so far is C1's `ShoppingWriteBuilder`, fed by A1's `CardInputResolver`
+(`services/purchase_inputs.py`, Issue #60).
 
 The Cosmos batch limit is checked when a card is saved, before it can be shown
 (A1's answer in Issue #60): a card whose largest approval would not fit one batch

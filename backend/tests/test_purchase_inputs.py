@@ -80,7 +80,7 @@ class Home:
         return self.container.put(document)
 
     def line(self, index=0, **changes):
-        """A card line in the format of A1's `purchase_operation` (PR #95)."""
+        """A card line in the format of A1's `purchase_operation` (`app/agent/cards.py`)."""
         entry, etag = self.shopping[index]
         values = {
             "name": "衛生紙",

@@ -1,8 +1,8 @@
 """A1 v8 flow C end to end: the Agent makes a purchase card, `/agent/resume` writes it.
 
 A scripted model stands in for Azure OpenAI. B1's read and write repositories run on
-a faked Cosmos container that gives every write a new `_etag`. The approval service
-and the purchase adapter are the real ones.
+a faked Cosmos container that gives every write a new `_etag`. The approval service,
+A1's card resolver and C1's write builder are the real ones.
 """
 
 import asyncio
@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, ToolMessage
 
-from app.agent.cards import PurchaseCards, resume_response
+from app.agent.cards import PurchaseCards, purchase_operation, resume_response
 from app.agent.read_agent import ReadAgent, get_read_agent, load_system_prompt
 from app.core import dependencies
 from app.core.dependencies import (
@@ -24,7 +24,7 @@ from app.core.dependencies import (
 from app.main import create_app
 from app.models.agent import AgentRequest, ApprovalPresentation
 from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus
-from app.services.approvals import ApprovalService, ResumeOutcome, ResumeResult
+from app.services.approvals import ApprovalService, NewOperation, ResumeOutcome, ResumeResult
 from app.services.cosmos_read import (
     CosmosDocumentMapper,
     CosmosInventoryService,
@@ -37,7 +37,9 @@ from app.services.cosmos_write import (
     CreateDocument,
     ReplaceDocument,
 )
-from app.services.purchase_writes import PurchaseWriteBuilder
+from app.services.purchase_inputs import COMPLETE_PURCHASE, CardInputResolver, UnsupportedAction
+from app.services.shopping.preview import ShoppingDecisionRequired
+from app.services.shopping.workflow import ShoppingWriteBuilder
 from app.tools.queries import QueryTools
 
 HOME = "demo-household"
@@ -155,7 +157,7 @@ def setup(*records):
     reader = CosmosReadRepository(container)
     approvals = ApprovalService(
         CosmosWriteRepository(container, query_client=container),
-        PurchaseWriteBuilder(reader),
+        ShoppingWriteBuilder(container, CardInputResolver(reader)),
         clock=lambda: T0,
     )
     return container, reader, approvals
@@ -200,6 +202,68 @@ def test_bought_item_gets_a_card_and_nothing_else_changes():
     assert json.loads(tool_results(model)[-1])["card"]["lines"] == [
         "衛生紙 +2 包（從待購清單完成購買）"
     ]
+
+
+def test_card_line_holds_what_the_user_sees_and_both_versions():
+    """The line format A1's `CardInputResolver` reads back at confirmation."""
+    container, reader, _ = setup()
+    listed = asyncio.run(
+        reader.read_shopping_item_with_etag(household_id=HOME, shopping_item_id="tissue-1")
+    )
+    stocked = asyncio.run(reader.read_inventory_item_with_etag(household_id=HOME, item_id="tissue"))
+
+    operation = purchase_operation(shopping=listed, inventory=stocked, quantity=2)
+
+    assert operation.action == COMPLETE_PURCHASE
+    assert operation.description == "衛生紙 +2 包（從待購清單完成購買）"
+    assert {k: v for k, v in operation.values.items() if k != "transaction_id"} == {
+        "name": "衛生紙",
+        "purchased_quantity": 2,
+        "purchased_unit": "包",
+        "shopping_item_id": "tissue-1",
+        "item_id": "tissue",
+    }
+    assert operation.values["transaction_id"]
+    assert {(t.record_id, t.etag) for t in operation.targets} == {
+        ("shopping_item:tissue-1", container.get("shopping_item:tissue-1")["_etag"]),
+        ("inventory_item:tissue", container.get("inventory_item:tissue")["_etag"]),
+    }
+
+
+@pytest.mark.parametrize(
+    "listed, quantity",
+    [
+        (shopping(quantity=2), 3),  # more than listed
+        (shopping(item_id=None), 1),  # not linked to an inventory item (Issue #90)
+        (shopping(unit="串"), 1),  # a different unit
+    ],
+)
+def test_purchases_c1_would_refuse_never_reach_a_card_line(listed, quantity):
+    _, reader, _ = setup(inventory(), listed)
+    entry = asyncio.run(
+        reader.read_shopping_item_with_etag(household_id=HOME, shopping_item_id="tissue-1")
+    )
+    stocked = asyncio.run(reader.read_inventory_item_with_etag(household_id=HOME, item_id="tissue"))
+
+    with pytest.raises(ShoppingDecisionRequired):
+        purchase_operation(shopping=entry, inventory=stocked, quantity=quantity)
+
+
+def test_a_card_with_other_actions_is_not_stored():
+    container, _, approvals = setup()
+    other = NewOperation(action="add_to_shopping_list", description="牛奶", values={})
+
+    with pytest.raises(UnsupportedAction):
+        asyncio.run(
+            approvals.save(
+                approvals.prepare(
+                    household_id=HOME,
+                    presentation=ApprovalPresentation.SINGLE_ACTION,
+                    operations=[other],
+                )
+            )
+        )
+    assert container.of_type("pending_approval") == []
 
 
 def test_several_items_go_on_one_card_and_unfit_ones_are_left_off_with_a_reason():
@@ -315,20 +379,21 @@ def test_card_tool_is_offered_only_with_approval_cards():
 
 
 def test_without_cosmos_there_are_no_cards():
-    assert _create_cosmos_composition({})[2:] == (None, None)
-    assert _create_approval_service(None, None) is None
+    assert _create_cosmos_composition({})[2:] == (None, None, None)
+    assert _create_approval_service(None, None, None) is None
 
 
 def test_reads_writes_and_cards_share_one_cosmos_client(monkeypatch):
-    """B1's review on PR #96: one SDK client for the read and write repositories."""
+    """B1's review on PR #96: one SDK client for reads, writes and C1's raw reads."""
     container = FakeCosmosContainer()
     read_repository = CosmosReadRepository(container)
     write_repository = CosmosWriteRepository(container, query_client=container)
+    document_reader = container
     clients = []
 
     def one_client(**settings):
         clients.append(settings)
-        return read_repository, write_repository, lambda: None
+        return read_repository, write_repository, document_reader, lambda: None
 
     def no_second_client(**settings):
         raise AssertionError("cards must not open a second Cosmos client")
@@ -341,21 +406,26 @@ def test_reads_writes_and_cards_share_one_cosmos_client(monkeypatch):
         "app.services.cosmos_sdk.create_azure_cosmos_repositories", no_second_client
     )
 
-    inventory, shopping, reads, writes = _create_cosmos_composition(
+    inventory, shopping, reads, writes, documents = _create_cosmos_composition(
         {
             "NESTOCK_COSMOS_ENDPOINT": "https://example.documents.azure.com",
             "NESTOCK_COSMOS_DATABASE": "nestock",
             "NESTOCK_COSMOS_CONTAINER": "household-data",
         }
     )
-    approvals = _create_approval_service(reads, writes)
+    approvals = _create_approval_service(reads, writes, documents)
 
     assert len(clients) == 1
     assert reads is read_repository and writes is write_repository
+    assert documents is document_reader
     assert inventory._repository is read_repository
     assert shopping._repository is read_repository
     assert approvals._storage is write_repository
-    assert approvals._writes._reader is read_repository
+    # Issue #60: C1 plans the batch from raw documents; A1 resolves the stored card.
+    assert isinstance(approvals._writes, ShoppingWriteBuilder)
+    assert approvals._writes._reader is document_reader
+    assert isinstance(approvals._writes._resolver, CardInputResolver)
+    assert approvals._writes._resolver._reader is read_repository
 
 
 def resume_app(approvals):

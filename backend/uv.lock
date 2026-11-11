@@ -1225,10 +1225,12 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "edge-tts" },
-    { name = "imageio-ffmpeg" },
     { name = "pytest" },
     { name = "ruff" },
+]
+speech-e2e = [
+    { name = "edge-tts" },
+    { name = "imageio-ffmpeg" },
 ]
 
 [package.metadata]
@@ -1247,10 +1249,12 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "edge-tts", specifier = ">=6.1.0" },
-    { name = "imageio-ffmpeg", specifier = ">=0.5.1" },
     { name = "pytest", specifier = ">=8,<10" },
     { name = "ruff", specifier = ">=0.11,<1" },
+]
+speech-e2e = [
+    { name = "edge-tts", specifier = ">=6.1.0" },
+    { name = "imageio-ffmpeg", specifier = ">=0.5.1" },
 ]
 
 [[package]]

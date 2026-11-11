@@ -47,9 +47,21 @@ def test_normalize_for_exact_match_helper():
     assert normalize_for_exact_match("") == ""
 
 
+def _require_speech_e2e_deps() -> None:
+    import importlib.util
+
+    if not (importlib.util.find_spec("edge_tts") and importlib.util.find_spec("imageio_ffmpeg")):
+        pytest.skip(
+            "Optional dependencies 'edge-tts' or 'imageio-ffmpeg' missing. "
+            "Install via: uv sync --group speech-e2e"
+        )
+
+
+@pytest.mark.speech_e2e
 @pytest.mark.anyio
 async def test_audio_fixture_caching_idempotency(tmp_path: Path):
     """Verify that synthesizing to genuine WAV twice hits cache and respects batch prefix."""
+    _require_speech_e2e_deps()
     case_id = "TC_CACHE_TEST"
     text = "測試快取機制"
     batch_name = "parse_voice_1"
@@ -71,11 +83,13 @@ async def test_audio_fixture_caching_idempotency(tmp_path: Path):
     assert path2.stat().st_mtime_ns == mtime1
 
 
+@pytest.mark.speech_e2e
 @pytest.mark.anyio
 async def test_speech_e2e_single_turn_with_latency_and_exact_match():
     """Single-turn E2E speech transcription with exact-match verification and latency timing."""
-    # Ensure test isolation: restore pristine .env settings in case prior tests mutated environ
-    load_dotenv(BACKEND_DIR / ".env", override=True)
+    _require_speech_e2e_deps()
+    # Ensure test isolation: avoid overriding test runner environment variables
+    load_dotenv(BACKEND_DIR / ".env", override=False)
     _reset_speech_service_for_test()
 
     batch_file = CASES_DIR / "parse_voice_1.json"
@@ -152,8 +166,11 @@ async def test_speech_e2e_single_turn_with_latency_and_exact_match():
                 latency_ms = (t1 - t0) * 1000.0
 
                 # 5. Assert HTTP 200 response
-                if response.status_code == 502 and "TooManyRequests" in response.text:
-                    pytest.skip(f"[{case_id}] Azure AI Speech API quota exceeded (HTTP 429)")
+                if response.status_code == 502:
+                    pytest.skip(
+                        f"[{case_id}] Azure AI Speech API upstream error (HTTP 502): "
+                        f"{response.text}"
+                    )
 
                 assert response.status_code == 200, (
                     f"[{case_id}] Expected 200 OK, got {response.status_code}: {response.text}"

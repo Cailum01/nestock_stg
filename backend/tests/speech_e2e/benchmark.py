@@ -2,7 +2,7 @@
 
 Usage:
     uv run --directory backend python tests/speech_e2e/benchmark.py [cases/parse_voice_1.json ...]
-    uv run --directory backend python tests/speech_e2e/benchmark.py cases/parse_voice_2.json cases/parse_voice_3.json
+    uv run --directory backend python tests/speech_e2e/benchmark.py cases/parse_voice_2.json
     uv run --directory backend python tests/speech_e2e/benchmark.py --url http://127.0.0.1:8000
     uv run --directory backend python tests/speech_e2e/benchmark.py --voice zh_mixed_female
     uv run --directory backend python tests/speech_e2e/benchmark.py --randomize

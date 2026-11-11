@@ -10,8 +10,15 @@ import re
 import subprocess
 from pathlib import Path
 
-import edge_tts
-import imageio_ffmpeg
+try:
+    import edge_tts
+except ImportError:
+    edge_tts = None
+
+try:
+    import imageio_ffmpeg
+except ImportError:
+    imageio_ffmpeg = None
 
 logger = logging.getLogger(__name__)
 
@@ -52,25 +59,6 @@ def resolve_batch_path(batch_input: str | Path) -> Path:
 
     return p.resolve()
 
-
-
-def resolve_batch_path(batch_input: str | Path) -> Path:
-    """Smartly resolve batch JSON path across multiple common relative candidate locations."""
-    p = Path(batch_input)
-    if p.is_file():
-        return p.resolve()
-
-    candidates = [
-        CASES_DIR / p,
-        E2E_DIR / p,
-        CASES_DIR / f"{p.name}.json" if not p.suffix else None,
-        CASES_DIR / p.name,
-    ]
-    for cand in candidates:
-        if cand and cand.is_file():
-            return cand.resolve()
-
-    return p.resolve()
 
 # Pattern to strip leading and trailing punctuation for 100% exact match comparison
 PUNCTUATION_PATTERN = re.compile(r"^[。，、！？.!?\s]+|[。，、！？.!?\s]+$")
@@ -116,6 +104,10 @@ def compute_case_cache_key(
 
 def transcode_mp3_to_wav(mp3_bytes: bytes, output_wav_path: Path) -> Path:
     """Transcode raw MP3 bytes to standard lossless 16kHz 16-bit Mono PCM WAV via imageio-ffmpeg."""
+    if imageio_ffmpeg is None:
+        raise RuntimeError(
+            "imageio-ffmpeg is not installed. Please run: uv sync --group speech-e2e"
+        )
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     output_wav_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -166,6 +158,14 @@ async def synthesize_speech(
         effective_rate = "+0%"
         effective_volume = "+0%"
         effective_pitch = "+0Hz"
+
+    if edge_tts is None:
+        raise RuntimeError("edge-tts is not installed. Please run: uv sync --group speech-e2e")
+
+    if edge_tts is None:
+        raise RuntimeError(
+            "edge-tts is not installed. Please run: uv sync --group speech-e2e"
+        )
 
     communicate = edge_tts.Communicate(
         text=text.strip(),

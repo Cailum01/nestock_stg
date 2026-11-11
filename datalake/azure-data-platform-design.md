@@ -568,22 +568,21 @@ not be passed as mutable values to resume.
 All writes for the approved subset must succeed or fail together in one
 same-container, same-household-partition batch. This includes C1's purchase
 workflow. Do not promise cross-container, cross-partition, or cross-service
-atomicity. Before enabling the SDK adapter, validate the final operation count,
-request size, and execution-time limits against Cosmos transactional-batch
-limits; reject an oversized group before any write rather than splitting it into
-partially successful writes. The batch and resume implementation remain future
-work.
+atomicity. The SDK adapter must validate the final operation count, request size,
+and execution-time limits against Cosmos transactional-batch limits; it must
+reject an oversized group before any write rather than splitting it into
+partially successful writes.
 
 #### C1 purchase workflow integration
-
-For a purchase already resolved to an existing inventory item, preserve this
-boundary:
 
 The cross-owner implementation boundary is provisional per D-3: A1 validates
 the stored, user-approved values and target versions and resolves them into typed
 purchase inputs; C1's `ShoppingWriteBuilder` owns shopping-domain planning; B1's
 repository adapter persists the approved plan in the household-scoped Cosmos
 batch. A1 must not duplicate C1's purchase planning or batch composition.
+
+For a purchase already resolved to an existing inventory item, preserve this
+boundary:
 
 - Read the pending `ShoppingItem`, its resolved `InventoryItem`, and the current
   server-side approval state. Use only the user-reported, approved purchase
@@ -612,8 +611,7 @@ distinguishable from explicitly removed items. The marker is storage metadata,
 not a new public Pydantic field or status. A household-scoped conditional update
 must preserve the record and its identity.
 
-The domain behavior above is agreed, not approval to implement domain writes.
-A future removal must validate household scope, server-side approval and
+A removal must validate household scope, server-side approval and
 target version, then apply the ETag-conditional marker and necessary operation
 receipt in the same household batch. It does not change Inventory, create a
 purchase or Transaction, or reverse existing history.

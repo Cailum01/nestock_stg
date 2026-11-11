@@ -8,9 +8,9 @@ transactions, descriptive notes, and future Agent workflows
 approved, opt-in, Entra-authenticated Cosmos path performs read-only Inventory,
 Shopping, and forecast/TransactionHistory reads when all `NESTOCK_COSMOS_*`
 settings are supplied. Offline-testable write primitives exist; no
-application-wired business write workflow is on `main`. Open PR #96, based on
-open PR #95, proposes the first approval-gated purchase flow; the section below
-records its proposed boundary, not a merged or enabled capability.
+application-wired business write workflow is on `main`. The section below
+records the required boundary for a future approval-gated purchase flow; it is
+not an enabled capability.
 
 This document records initial design decisions and their adjustment points. It is
 an implementation guide for AI-assisted development, not a second API schema.
@@ -27,7 +27,7 @@ approved as a domain-model change.
 | Text input and notes | Store as scoped records in Cosmos when the user action requires persistence | Separate Agent conversation history remains an A1 decision |
 | Data Lake | Do not require or deploy it for the first implementation | Add ADLS Gen2 only when analytics, long-term event replay, or a formal audit requirement justifies it |
 | Multimodal processing | Keep original media, bounded derived observations, and business records separate | Issue #30 confirms the media lifecycle and B1 mapping-storage responsibility; artifact/schema versions and A2 integration remain open; long-running task persistence is outside the current MVP |
-| Inventory and shopping writes | Persist the approved domain changes, transaction, operation receipt, and change event atomically within one household partition | PR #96 proposes the first bounded purchase flow; it remains under review and requires shared read/write client composition and C2 presentation support |
+| Inventory and shopping writes | Persist the approved domain changes, transaction, operation receipt, and change event atomically within one household partition | A future bounded purchase flow requires shared read/write client composition and coordinated C2 presentation support |
 | Transaction history | B2 reads raw transactions through B1's household-scoped repository; B1 does not pre-aggregate | `item_id` remains required; no feature-only transaction or transaction-item link is in the selected contract |
 | Item resolution | Resolve an item before creating a Transaction; existing item aliases may be extended through an approved operation | A1 selected layered matching in Issue #36; alias mutation remains part of the future approved write flow |
 | Inventory removal | Soft-delete inventory records; retain IDs and transaction history | Distinct from personal-data erasure and Blob retention |
@@ -91,11 +91,10 @@ Normal API routes and Agent tools must call the same domain services. Business
 rules belong in `backend/app/services`, not in routes, storage repositories, or
 Agent adapters.
 
-### Proposed bounded purchase flow (PR #96; review pending)
+### Requirements for a bounded purchase flow
 
-PR #96 (based on still-open PR #95) proposes the first approval-gated business
-write path. It is not part of current `main` and must not be treated as an
-available development or pilot capability.
+A bounded approval-gated purchase flow is not enabled on `main`. Any
+implementation must preserve these requirements:
 
 - `POST /agent/messages` may persist a pending approval record, but must not
   mutate Inventory, Shopping, or Transaction records.
@@ -104,19 +103,10 @@ available development or pilot capability.
   Shopping and Transaction changes, change events, and any shared Inventory
   update must commit atomically in the same household partition.
 - B1 requires the read and write repositories in application composition to
-  share one `CosmosClient`, created through the common repository factory. PR
-  #96 currently uses separate read/write clients; B1 has requested this be
-  corrected before approval.
+  share one `CosmosClient`, created through the common repository factory.
 - C2 must coordinate support for rendering and handling the `pending_approval`
   response before this flow is enabled for users.
-- The batch-builder ownership is still provisional per D-3 and Issue #60. PR
-  #95 contains A1's `PurchaseWriteBuilder`; C1 reports a separate
-  `ShoppingWriteBuilder` locally, with overlapping batch-assembly
-  responsibility. B1 recommends not merging #95 as a temporary path while that
-  comparison is pending, to avoid maintaining two builders. C1's builder has
-  not been published or live-tested against Cosmos, so this recommendation and
-  the eventual ownership remain open for the owners to confirm.
-- This proposal does not include `create_item` (Issue #90), standalone stock
+- This boundary does not authorize `create_item` (Issue #90), standalone stock
   adjustments, generic Agent write tools, or any unapproved value changes.
 
 ### Out of scope for Skeleton v1
@@ -316,8 +306,9 @@ It uses UUIDv5 with the standard URL namespace and the name
 persisted identities and requires an explicit migration decision. Despite its
 name, the helper does not look up or match existing inventory items. A1 and C1
 must treat the returned ID as opaque and must not encode it themselves. Flutter
-neither generates nor needs to receive it. The helper is not yet implemented on
-`main`.
+neither generates nor needs to receive it. The implementation and fixed-output
+tests are in `backend/app/services/inventory_item_identity.py` and
+`backend/tests/test_inventory_item_identity.py`.
 
 Create the item only after approval, in the same household batch as the
 operation receipt and other approved writes. The current scope is one new item

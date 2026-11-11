@@ -183,6 +183,136 @@ void main() {
       '已取消',
     );
   });
+  test(
+    'parses unlabeled purchase options and sends selected operation IDs',
+    () async {
+      final client = HttpAgentClient(
+        baseUrl: base,
+        client: MockClient((request) async {
+          if (request.url.path == '/agent/messages') {
+            return http.Response.bytes(
+              utf8.encode(
+                jsonEncode({
+                  'message': '請選購買選項',
+                  'results': [],
+                  'pending_approval': {
+                    'approval_id': 'approval-options-1',
+                    'presentation': 'purchase_options',
+                    'operations': [
+                      {
+                        'operation_id': 'operation-options-1',
+                        'action': 'choose_purchase_option',
+                        'description': '選購項目',
+                        'values': {},
+                      },
+                    ],
+                    'options': [
+                      {'option_id': 'option-1', 'store': '便利商店', 'price': 109},
+                    ],
+                  },
+                }),
+              ),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          expect(jsonDecode(request.body), {
+            'household_id': 'demo-household',
+            'approval_id': 'approval-options-1',
+            'approved': true,
+            'selected_option_id': 'option-1',
+          });
+          return http.Response.bytes(
+            utf8.encode(jsonEncode({'message': '完成', 'results': []})),
+            200,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }),
+      );
+
+      final reply = await client.send('幫我買衛生紙');
+      expect(reply.approval?.options.single.label, isNull);
+      expect(reply.approval?.options.single.values, {
+        'store': '便利商店',
+        'price': 109,
+      });
+      await client.resume(
+        approvalId: 'approval-options-1',
+        approved: true,
+        selectedOptionId: 'option-1',
+      );
+    },
+  );
+  test('batch resume sends exact backend operation IDs', () async {
+    final client = HttpAgentClient(
+      baseUrl: base,
+      client: MockClient((request) async {
+        expect(jsonDecode(request.body), {
+          'household_id': 'demo-household',
+          'approval_id': 'approval-batch-1',
+          'approved': true,
+          'approved_operation_ids': ['operation-a'],
+        });
+        return http.Response.bytes(
+          utf8.encode(jsonEncode({'message': '完成', 'results': []})),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+    );
+
+    await client.resume(
+      approvalId: 'approval-batch-1',
+      approved: true,
+      approvedOperationIds: ['operation-a'],
+    );
+  });
+  test(
+    'parses complete-purchase values without inventing a location',
+    () async {
+      final client = HttpAgentClient(
+        baseUrl: base,
+        client: MockClient(
+          (_) async => http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'message': '請確認購買',
+                'results': [],
+                'pending_approval': {
+                  'approval_id': 'approval-purchase-1',
+                  'presentation': 'single_action',
+                  'operations': [
+                    {
+                      'operation_id': 'operation-purchase-1',
+                      'action': 'complete_purchase',
+                      'description': '衛生紙 +2 包',
+                      'values': {
+                        'name': '衛生紙',
+                        'purchased_quantity': 2,
+                        'purchased_unit': '包',
+                        'shopping_item_id': 'shopping-1',
+                        'item_id': 'item-1',
+                        'transaction_id': 'transaction-1',
+                      },
+                    },
+                  ],
+                  'options': [],
+                },
+              }),
+            ),
+            200,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          ),
+        ),
+      );
+
+      final reply = await client.send('我買了衛生紙 2 包');
+      final operation = reply.approval!.operations.single;
+      expect(operation.action, 'complete_purchase');
+      expect(operation.values['purchased_quantity'], 2);
+      expect(operation.values.containsKey('location'), isFalse);
+    },
+  );
   test('demo-looking text is sent to the backend as ordinary text', () async {
     final messages = <String>[];
     final client = HttpAgentClient(

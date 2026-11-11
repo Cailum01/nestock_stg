@@ -33,10 +33,15 @@ class OperationView {
 }
 
 class ApprovalOptionView {
-  const ApprovalOptionView({required this.id, required this.label});
+  const ApprovalOptionView({
+    required this.id,
+    this.label,
+    this.values = const {},
+  });
 
   final String id;
-  final String label;
+  final String? label;
+  final Map<String, dynamic> values;
 }
 
 class ApprovalView {

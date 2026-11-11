@@ -17,7 +17,12 @@ void main() {
             approval: approval,
             busy: false,
             onDecision:
-                onDecision ?? ({required approved, selectedOptionId}) {},
+                onDecision ??
+                ({
+                  required approved,
+                  selectedOptionId,
+                  approvedOperationIds,
+                }) {},
             onSubmitChanges: onEdit,
           ),
         ),
@@ -54,10 +59,11 @@ void main() {
             ApprovalOptionView(id: 'new_item', label: '不是，這是新的東西'),
           ],
         ),
-        onDecision: ({required approved, selectedOptionId}) {
-          didApprove = approved;
-          selectedOption = selectedOptionId;
-        },
+        onDecision:
+            ({required approved, selectedOptionId, approvedOperationIds}) {
+              didApprove = approved;
+              selectedOption = selectedOptionId;
+            },
       );
 
       expect(find.byKey(const Key('item-match-approval-card')), findsOneWidget);
@@ -150,5 +156,234 @@ void main() {
       ),
       '衛生紙：數量改成 3，位置改成 客廳櫃',
     );
+  });
+
+  test('purchase quantity edit message changes only the quantity', () {
+    expect(
+      buildPurchaseQuantityEditMessage(
+        name: '衛生紙',
+        originalQuantity: 2,
+        editedQuantity: 3,
+      ),
+      '衛生紙：數量改成 3',
+    );
+    expect(
+      buildPurchaseQuantityEditMessage(
+        name: '衛生紙',
+        originalQuantity: 2,
+        editedQuantity: 2,
+      ),
+      isNull,
+    );
+  });
+
+  testWidgets(
+    'purchase card displays only purchase values and edits quantity',
+    (tester) async {
+      String? editMessage;
+      bool? approvalWasAccepted;
+      List<String>? operationIds;
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-purchase-1',
+          presentation: ApprovalPresentation.singleAction,
+          operations: [
+            OperationView(
+              id: 'operation-purchase-1',
+              action: 'complete_purchase',
+              description: '衛生紙 +2 包',
+              values: {
+                'name': '衛生紙',
+                'purchased_quantity': 2,
+                'purchased_unit': '包',
+                'shopping_item_id': 'shopping-1',
+                'item_id': 'item-1',
+                'transaction_id': 'transaction-1',
+              },
+            ),
+          ],
+        ),
+        onEdit: (message) => editMessage = message,
+        onDecision:
+            ({required approved, selectedOptionId, approvedOperationIds}) {
+              approvalWasAccepted = approved;
+              operationIds = approvedOperationIds;
+            },
+      );
+
+      expect(find.byKey(const Key('purchase-approval-card')), findsOneWidget);
+      expect(find.text('衛生紙 2 包'), findsOneWidget);
+      expect(find.text('shopping-1'), findsNothing);
+      expect(find.text('item-1'), findsNothing);
+      expect(find.text('transaction-1'), findsNothing);
+      expect(find.text('位置'), findsNothing);
+      await tester.tap(find.byKey(const Key('purchase-edit-quantity')));
+      await tester.pump();
+      await tester.enterText(
+        find.byKey(const Key('purchase-quantity-field')),
+        '3',
+      );
+      await tester.pump();
+      await tester.tap(
+        find.byKey(const Key('purchase-submit-quantity-change')),
+      );
+      expect(editMessage, '衛生紙：數量改成 3');
+
+      await tester.tap(find.byKey(const Key('approval-confirm')));
+      expect(approvalWasAccepted, isTrue);
+      expect(operationIds, isNull);
+    },
+  );
+
+  testWidgets('batch purchase confirms exactly the selected operation IDs', (
+    tester,
+  ) async {
+    List<String>? operationIds;
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-purchase-batch',
+        presentation: ApprovalPresentation.batchAction,
+        operations: [
+          OperationView(
+            id: 'operation-a',
+            action: 'complete_purchase',
+            description: '衛生紙 +2 包',
+            values: {
+              'name': '衛生紙',
+              'purchased_quantity': 2,
+              'purchased_unit': '包',
+            },
+          ),
+          OperationView(
+            id: 'operation-b',
+            action: 'complete_purchase',
+            description: '洗衣精 +1 瓶',
+            values: {
+              'name': '洗衣精',
+              'purchased_quantity': 1,
+              'purchased_unit': '瓶',
+            },
+          ),
+        ],
+      ),
+      onDecision: ({
+        required approved,
+        selectedOptionId,
+        approvedOperationIds,
+      }) => operationIds = approvedOperationIds,
+    );
+
+    expect(
+      tester
+          .widget<CheckboxListTile>(
+            find.byKey(const Key('purchase-operation-operation-a')),
+          )
+          .value,
+      isTrue,
+    );
+    expect(
+      tester
+          .widget<CheckboxListTile>(
+            find.byKey(const Key('purchase-operation-operation-b')),
+          )
+          .value,
+      isTrue,
+    );
+    await tester.tap(find.byKey(const Key('purchase-operation-operation-b')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('approval-confirm')));
+    expect(operationIds, ['operation-a']);
+
+    await tester.tap(find.byKey(const Key('purchase-operation-operation-a')));
+    await tester.pump();
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+          .onPressed,
+      isNull,
+    );
+  });
+
+  testWidgets('cancelling a batch purchase does not submit operation IDs', (
+    tester,
+  ) async {
+    bool? cancellationWasApproved;
+    List<String>? operationIds;
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-purchase-cancel',
+        presentation: ApprovalPresentation.batchAction,
+        operations: [
+          OperationView(
+            id: 'operation-a',
+            action: 'complete_purchase',
+            description: '衛生紙 +2 包',
+            values: {
+              'name': '衛生紙',
+              'purchased_quantity': 2,
+              'purchased_unit': '包',
+            },
+          ),
+        ],
+      ),
+      onDecision:
+          ({required approved, selectedOptionId, approvedOperationIds}) {
+            cancellationWasApproved = approved;
+            operationIds = approvedOperationIds;
+          },
+    );
+
+    await tester.tap(find.byKey(const Key('approval-cancel')));
+    expect(cancellationWasApproved, isFalse);
+    expect(operationIds, isNull);
+  });
+
+  testWidgets('purchase options accept unlabeled values and return option ID', (
+    tester,
+  ) async {
+    String? selectedOption;
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-options-1',
+        presentation: ApprovalPresentation.purchaseOptions,
+        operations: [
+          OperationView(
+            id: 'operation-options-1',
+            action: 'choose_purchase_option',
+            description: '選購項目',
+          ),
+        ],
+        options: [
+          ApprovalOptionView(
+            id: 'option-1',
+            values: {'store': '便利商店', 'price': 109, 'internal_id': 'hidden'},
+          ),
+        ],
+      ),
+      onDecision: ({
+        required approved,
+        selectedOptionId,
+        approvedOperationIds,
+      }) => selectedOption = selectedOptionId,
+    );
+
+    expect(find.textContaining('便利商店'), findsOneWidget);
+    expect(find.textContaining('109'), findsOneWidget);
+    expect(find.text('option-1'), findsNothing);
+    expect(find.text('hidden'), findsNothing);
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+          .onPressed,
+      isNull,
+    );
+    await tester.tap(find.byKey(const Key('purchase-option-option-1')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('approval-confirm')));
+    expect(selectedOption, 'option-1');
   });
 }

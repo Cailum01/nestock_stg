@@ -476,12 +476,17 @@ class _AgentHomeState extends State<AgentHome> {
                       ApprovalCard(
                         approval: entry.reply!.approval!,
                         busy: _busy,
-                        onDecision: ({required approved, selectedOptionId}) =>
-                            _perform(
+                        onDecision:
+                            ({
+                              required approved,
+                              selectedOptionId,
+                              approvedOperationIds,
+                            }) => _perform(
                               () => widget.client.resume(
                                 approvalId: entry.reply!.approval!.id,
                                 approved: approved,
                                 selectedOptionId: selectedOptionId,
+                                approvedOperationIds: approvedOperationIds,
                               ),
                             ),
                         onSubmitChanges: (message) => _submitApprovalChanges(

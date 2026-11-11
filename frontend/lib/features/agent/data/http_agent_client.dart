@@ -150,6 +150,10 @@ class HttpAgentClient implements PhotoAwareAgentClient {
     final options = (rawOptions as List<dynamic>? ?? [])
         .map(_optionFromJson)
         .toList(growable: false);
+    if (presentation == ApprovalPresentation.itemMatch &&
+        options.any((option) => option.label == null)) {
+      throw const FormatException('Item-match options require a label');
+    }
     return ApprovalView(
       id: id,
       presentation: presentation,
@@ -200,10 +204,14 @@ class HttpAgentClient implements PhotoAwareAgentClient {
     final label = option['label'];
     if (id is! String ||
         id.trim().isEmpty ||
-        label is! String ||
-        label.isEmpty) {
+        label != null && label is! String) {
       throw const FormatException('Approval option is malformed');
     }
-    return ApprovalOptionView(id: id, label: label);
+    final values = Map<String, dynamic>.from(option)..remove('option_id');
+    return ApprovalOptionView(
+      id: id,
+      label: label is String && label.trim().isNotEmpty ? label.trim() : null,
+      values: values,
+    );
   }
 }

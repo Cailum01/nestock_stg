@@ -1,5 +1,6 @@
 import atexit
 import os
+import threading
 from collections.abc import Mapping
 
 from app.services.approvals import ApprovalService
@@ -13,7 +14,10 @@ from app.services.demo import DemoInventoryService, DemoShoppingService
 from app.services.interfaces import InventoryService, ShoppingService
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
-from app.services.speech import MockSpeechToTextService, SpeechToTextService
+from app.services.speech import (
+    SpeechToTextService,
+    create_speech_service,
+)
 from app.services.vision import (
     AzureOpenAIVisionService,
     VisionService,
@@ -84,7 +88,9 @@ def _create_media_storage_service(
 
 inventory_service, shopping_service, cosmos_read_repository = _create_read_composition()
 media_storage_service: MediaStorageService = _create_media_storage_service()
-speech_service: SpeechToTextService = MockSpeechToTextService()
+_speech_service: SpeechToTextService | None = None
+_speech_service_resolved: bool = False
+_speech_lock = threading.Lock()
 _vision_service: VisionService | None = None
 _vision_service_resolved: bool = False
 
@@ -105,8 +111,28 @@ def get_media_storage_service() -> MediaStorageService:
     return media_storage_service
 
 
-def get_speech_service() -> SpeechToTextService:
-    return speech_service
+def get_speech_service() -> SpeechToTextService | None:
+    """FastAPI dependency for SpeechToTextService.
+
+    Thread-safe lazy resolution of AzureSpeechService when AZURE_SPEECH_KEY
+    is configured, MockSpeechToTextService when NESTOCK_SPEECH_MOCK=1,
+    or None if speech service is unconfigured.
+    """
+    global _speech_service, _speech_service_resolved
+    if not _speech_service_resolved:
+        with _speech_lock:
+            if not _speech_service_resolved:
+                _speech_service = create_speech_service()
+                _speech_service_resolved = True
+    return _speech_service
+
+
+def _reset_speech_service_for_test() -> None:
+    """Reset speech singleton state for test isolation."""
+    global _speech_service, _speech_service_resolved
+    with _speech_lock:
+        _speech_service = None
+        _speech_service_resolved = False
 
 
 def get_vision_service(environment: Mapping[str, str] | None = None) -> VisionService | None:

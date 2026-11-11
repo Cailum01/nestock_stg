@@ -546,4 +546,3 @@ async def test_azure_vision_payload_includes_temperature_when_configured():
         call_kwargs = mock_post.call_args.kwargs
         payload = call_kwargs["json"]
         assert payload.get("temperature") == 0.2
-

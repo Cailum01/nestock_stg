@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated, Literal
 
 from fastapi import (
@@ -33,9 +34,10 @@ from app.models.storage import (
 from app.services.approvals import ApprovalNotFound, ApprovalService, InvalidSelection
 from app.services.interfaces import InventoryService, ShoppingService
 from app.services.provisional_storage.interfaces import MediaStorageService
-from app.services.speech import SpeechToTextService
+from app.services.speech import SpeechServiceError, SpeechToTextService
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class HealthResponse(ContractModel):
@@ -198,13 +200,23 @@ SUPPORTED_AUDIO_EXTENSIONS = {".m4a", ".aac", ".mp4", ".wav", ".mp3", ".webm"}
         400: {"description": "Empty or corrupted audio payload"},
         413: {"description": "Audio payload exceeds maximum 5MB size limit"},
         415: {"description": "Unsupported audio media type"},
+        502: {"description": "Upstream speech service failed"},
+        503: {"description": "Speech service is not configured"},
     },
 )
 async def transcribe_speech(
     file: UploadFile = File(...),
     language: str | None = Form(None),
-    speech_service: Annotated[SpeechToTextService, Depends(get_speech_service)] = None,
+    speech_service: Annotated[SpeechToTextService | None, Depends(get_speech_service)] = None,
 ) -> SpeechTranscribeResponse:
+    if speech_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Speech service is not configured. Set AZURE_SPEECH_KEY or NESTOCK_SPEECH_MOCK=1."
+            ),
+        )
+
     payload_bytes = await file.read()
 
     # 1. Zero-byte check (400)
@@ -238,8 +250,15 @@ async def transcribe_speech(
             detail=f"Unsupported audio content type '{content_type}' or extension '{ext}'",
         )
 
-    return await speech_service.transcribe(
-        audio_bytes=payload_bytes,
-        content_type=content_type,
-        language=language,
-    )
+    try:
+        return await speech_service.transcribe(
+            audio_bytes=payload_bytes,
+            content_type=content_type,
+            language=language,
+        )
+    except SpeechServiceError as exc:
+        logger.error("Speech transcription failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Speech transcription failed due to upstream service error",
+        ) from exc

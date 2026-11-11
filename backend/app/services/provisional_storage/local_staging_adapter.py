@@ -60,9 +60,7 @@ class LocalStagingMediaStorage:
         image_ref = f"blob://households/{request.household_id}/media/{media_id}{ext}"
 
         effective_base = (
-            self._configured_base_url
-            or base_staging_url
-            or "http://127.0.0.1:8000/staging/upload"
+            self._configured_base_url or base_staging_url or "http://127.0.0.1:8000/staging/upload"
         ).rstrip("/")
         upload_token = f"staging-token-{media_id}"
         upload_url = f"{effective_base}/{upload_token}"

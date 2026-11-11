@@ -48,7 +48,7 @@ class StoredInputResolver:
         for selected_id, entry in zip(record.approved_operation_ids, selected):
             operation = next(op for op in record.operations if op.operation_id == selected_id)
             if isinstance(entry, PurchaseInput):
-                assert operation.values["quantity"] == entry.purchased_quantity
+                assert operation.values["purchased_quantity"] == entry.purchased_quantity
                 assert operation.values["transaction_id"] == entry.transaction_id
         return ResolvedShoppingChanges(
             purchases=tuple(row for row in selected if isinstance(row, PurchaseInput)),
@@ -100,7 +100,14 @@ def setup(kinds=("existing",), *, save=True):
             NewOperation(
                 action="remove_shopping" if kind == "remove" else "complete_purchase",
                 description="已解析的購買或移除",
-                values={"quantity": 1, "transaction_id": tx_id},
+                values={
+                    "name": shopping.name,
+                    "purchased_quantity": 1,
+                    "purchased_unit": "瓶",
+                    "shopping_item_id": shopping.shopping_item_id,
+                    "transaction_id": tx_id,
+                    **({"item_id": "milk"} if kind == "existing" else {}),
+                },
                 targets=targets,
             )
         )
@@ -425,3 +432,24 @@ def test_resolver_order_does_not_change_the_canonical_shared_write_plan():
 
     h.resolver.resolve = reversed_resolver
     assert run(h.builder.build(trial)) == normal
+
+
+def test_purchase_outcome_carries_final_combined_inventory_quantity_unit_and_actual_delta():
+    h = setup(("existing", "existing", "new", "remove"))
+    first = run(h.service.resume(request(h)))
+    assert first.written
+    for index, operation_id in enumerate(h.card.operation_ids):
+        outcome = first.record.outcome[operation_id]
+        if index < 2:
+            assert outcome["inventory_quantity"] == 5
+            assert outcome["unit"] == "瓶"
+            assert outcome["quantity_added"] == 1
+        elif index == 2:
+            assert outcome["inventory_quantity"] == 1
+            assert outcome["unit"] == "瓶"
+            assert outcome["quantity_added"] == 1
+        else:
+            assert "inventory_quantity" not in outcome and "unit" not in outcome
+    retry = run(h.service.resume(request(h)))
+    assert retry.outcome == ResumeOutcome.ALREADY_COMPLETED
+    assert retry.record.outcome == first.record.outcome

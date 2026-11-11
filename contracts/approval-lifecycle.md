@@ -31,6 +31,7 @@ write builders exist.
 | #27, #28 | Purchase write contents; B1 storage boundary; recovery questions |
 | v8 §5, §12 | Plan B (persist pending approval, not a LangGraph checkpoint); three card types |
 | B1 design doc §6.2, §6.5 | `pending_approval` and `operation_receipt` records; batch rules |
+| #90 | Item-match card and new-item card formats, agreed with C2 (section 10) |
 
 ## 2. Approval record
 
@@ -41,8 +42,9 @@ these values; it only refers to `approval_id`.
 Stored:
 
 - `approval_id`, `household_id`
-- `presentation`: `single_action` | `batch_action` | `purchase_options`
-- `operations`: for each item, `operation_id`, a display description, the exact
+- `presentation`: `single_action` | `batch_action` | `purchase_options` |
+  `item_match` (format only so far, section 10)
+- `operations`: for each item, `operation_id`, `action`, a display description, the exact
   resolved values shown to the user, the target records, and the version (ETag)
   of each target when the card was created
 - `options` (purchase options only): `option_id` and its displayed values
@@ -200,6 +202,28 @@ the Agent. The Agent resolves it again and makes a new card with new
 `operation_id`s; the old card becomes `cancelled`. Changed values are never sent
 to `/agent/resume` (#42 d).
 
+How the App sends the change (agreed with C2 in Issue #91):
+
+- The App keeps the card's `approval_id`. When the user taps 送出修改, it calls
+  `POST /agent/messages` with the optional `replaces_approval_id` set to that
+  `approval_id`. `message` is built only from the fields the user changed, from a
+  fixed template, for example `衛生紙：數量改成 3，位置改成 浴室櫃`. The App does not
+  interpret the change. Ordinary chat leaves `replaces_approval_id` out.
+- The backend reads the original card (same household, still `pending`) and gives
+  it to the Agent with the message. The new card has new `operation_id`s; the App
+  does not map old IDs to new ones.
+- The reply is a normal `AgentResponse`; its `pending_approval` is the new card,
+  which replaces the old one on screen. With no new card in the reply, the old card
+  stays.
+- The old card becomes `cancelled` only after the new card is stored. If the Agent
+  makes no new card (an error, or it asks the user something), the old card stays
+  `pending`. An expired, confirmed or cancelled original gets no new card; the
+  reply says why.
+- A change typed in the chat box (no `replaces_approval_id`): the Agent is given
+  the household's open cards (the same lookup as section 8) and decides whether the
+  message changes one of them. With one open card it changes that card; with
+  several and no clear match it asks which; otherwise it answers normally.
+
 ## 8. Reminders
 
 When the user sends the next message, the Agent mentions cards that are still
@@ -211,8 +235,65 @@ There is no background job or push notification (#39).
 
 | Item | Who decides | Status |
 | --- | --- | --- |
-| Format the App uses to send a changed value back to the Agent | A1 + C2 | To align with C2 (#42 d) |
+| Format the App uses to send a changed value back to the Agent | A1 + C2 | Decided in Issue #91; see section 7 |
 | Handling of the "should not happen" row in section 6 | A1 + C1 | Proposed here; C1 to confirm (#27) |
 | Meaning of Transaction `created_at` | B1 + B2 | Deferred; keep the current model |
 | Removing a wrong alias | — | Not in MVP scope |
 | v8 §12 `partial_success` | — | Not used in the MVP: one batch is all-or-nothing (#42) |
+| How a new item's `item_id` is made | B1 + A1 | Asked in Issue #90; does not change the card format (section 10) |
+| Status of an `item_match` card answered with `new_item` | A1 | Decided with the confirm rules (section 10) |
+
+## 10. Item-match and new-item cards (Issue #90)
+
+For a purchased item that may or may not be one the household already has (the
+user says 洗碗精, the household has 洗潔精). Agreed with C2 in Issue #90. The
+formats are fixed; the approval service refuses `item_match` cards until their
+confirm rules are built together with the Agent issuing cards.
+
+Every operation on every card carries `action`, a stable marker the App uses to
+choose how to show it. The App only shows the card and sends back the user's
+choice; it never derives or changes values.
+
+Item match ("這是家裡的洗潔精嗎？"):
+
+- `presentation`: `item_match`, with one operation. When one purchase has several
+  items and only one is unsure, that item gets its own item-match card and the
+  others go on a normal card.
+- `action`: `confirm_item_match`.
+- `values`: `user_term` (what the user said, 洗碗精), `candidate_item_id`,
+  `candidate_name` (洗潔精), `quantity`, `unit`.
+- `options`: exactly `{"option_id": "same_item", "label": "是，加到洗潔精"}` and
+  `{"option_id": "new_item", "label": "不是，這是新的東西"}`.
+- The reply uses the normal `ResumeRequest`, with no new fields:
+  - `approved: true`, `selected_option_id: "same_item"`: the quantity is added to
+    the matched item, and the user's word is remembered as its alias (#36 layer ④).
+  - `approved: true`, `selected_option_id: "new_item"`: this card writes nothing;
+    the reply's `pending_approval` is a new-item card.
+  - `approved: false`: nothing is written.
+
+New item ("會新增一個庫存品項：洗碗精"):
+
+- `presentation`: `single_action`; `action`: `create_item`.
+- `description` says that a new inventory item will be created.
+- `values`: `name`, `quantity`, `unit`, `location`.
+- The card never carries the new item's `item_id`, and the App never makes one.
+  The backend creates the item in the confirmed batch.
+- The reply is `approved: true` or `approved: false`.
+
+```json
+{
+  "approval_id": "demo-approval-4",
+  "presentation": "item_match",
+  "operations": [{
+    "operation_id": "demo-operation-4",
+    "action": "confirm_item_match",
+    "description": "這是家裡的洗潔精嗎？",
+    "values": {"user_term": "洗碗精", "candidate_item_id": "demo-dish-soap",
+               "candidate_name": "洗潔精", "quantity": 1, "unit": "瓶"}
+  }],
+  "options": [
+    {"option_id": "same_item", "label": "是，加到洗潔精"},
+    {"option_id": "new_item", "label": "不是，這是新的東西"}
+  ]
+}
+```

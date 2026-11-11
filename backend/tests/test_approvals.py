@@ -198,6 +198,8 @@ class FakeWriteBuilder:
     def __init__(self, storage):
         self.storage = storage
         self.extra_writes = 0
+        self.extra_writes_by_option = {}
+        """More writes when a given purchase option is chosen."""
 
     async def build(self, record):
         await asyncio.sleep(0)
@@ -222,7 +224,10 @@ class FakeWriteBuilder:
                 updated = {k: v for k, v in current.items() if k != "_etag"}
                 updated["quantity"] = current["quantity"] + operation.values.get("delta", 0)
                 writes.append(ReplaceDocument(updated, if_match_etag=target.etag))
-            for number in range(self.extra_writes):
+            extra = self.extra_writes + self.extra_writes_by_option.get(
+                record.selected_option_id, 0
+            )
+            for number in range(extra):
                 writes.append(
                     CreateDocument(
                         {
@@ -417,6 +422,15 @@ def test_lifetime_is_configurable():
         (ApprovalPresentation.BATCH_ACTION, 1, [NewOption(option_id="o1", values={})]),
         (ApprovalPresentation.PURCHASE_OPTIONS, 2, [NewOption(option_id="o1", values={})]),
         (ApprovalPresentation.PURCHASE_OPTIONS, 1, []),
+        # Issue #90 format only: no confirm rules until the Agent issues cards.
+        (
+            ApprovalPresentation.ITEM_MATCH,
+            1,
+            [
+                NewOption(option_id="same_item", values={"label": "是"}),
+                NewOption(option_id="new_item", values={"label": "不是"}),
+            ],
+        ),
         (
             ApprovalPresentation.PURCHASE_OPTIONS,
             1,
@@ -460,6 +474,8 @@ def test_public_card_shows_operations_and_purchase_options():
     assert card.approval_id == record.approval_id
     assert card.presentation is ApprovalPresentation.PURCHASE_OPTIONS
     assert card.operations[0].operation_id == record.operation_ids[0]
+    # Issue #90: the App picks how to show an operation by its action.
+    assert card.operations[0].action == record.operations[0].action
     # v8 section 12: options sit on the card, not inside the operation's values.
     assert [option["option_id"] for option in card.options] == ["option_001", "option_002"]
     assert "options" not in card.operations[0].values
@@ -654,6 +670,7 @@ def test_purchase_card_stores_the_chosen_option():
 
 
 def test_batch_too_large_is_rejected_before_any_write():
+    """The card fitted when it was saved; the writes grew before the user confirmed."""
     service, storage, builder, _, etag = setup()
     record = make_single(service, etag)
     builder.extra_writes = 98  # receipt + transaction + inventory + 98 + approval = 102
@@ -663,6 +680,93 @@ def test_batch_too_large_is_rejected_before_any_write():
 
     assert stored_record(storage, record).status is ApprovalStatus.PENDING
     assert not storage.batches
+
+
+# ----- batch limit when the card is made (Issue #60) ----------------------------------------
+
+
+@pytest.mark.parametrize(("extra", "fits"), [(96, True), (97, False)])
+def test_card_over_the_batch_limit_is_never_stored_or_shown(extra, fits):
+    """receipt + transaction + inventory + extras + completed card must be <= 100."""
+    service, storage, builder, _, etag = setup()
+    builder.extra_writes = extra
+    record = service.prepare(
+        household_id=HOME,
+        presentation=ApprovalPresentation.SINGLE_ACTION,
+        operations=[rice_operation(etag)],
+    )
+
+    if fits:
+        asyncio.run(service.save(record))
+        assert [card.approval_id for card in asyncio.run(service.list_open(household_id=HOME))] == [
+            record.approval_id
+        ]
+        assert confirm(service, record).outcome is ResumeOutcome.COMPLETED
+        assert len(storage.batches[0]["ordered"]) == 100  # the completed card included
+    else:
+        with pytest.raises(BatchTooLarge):
+            asyncio.run(service.save(record))
+        assert cards(storage) == []
+        assert storage.create_attempts == 0
+        assert asyncio.run(service.list_open(household_id=HOME)) == []
+
+
+def test_batch_card_is_checked_with_every_operation_approved():
+    """The user may approve all items, so the full card has to fit."""
+    service, storage, builder, _, _ = setup()
+    builder.extra_writes = 31  # 3 x (receipt + transaction + 31) + card = 100
+    fits = service.prepare(
+        household_id=HOME,
+        presentation=ApprovalPresentation.BATCH_ACTION,
+        operations=[plain_operation(name) for name in ("豆漿", "衛生紙", "洗衣精")],
+    )
+    asyncio.run(service.save(fits))
+
+    builder.extra_writes = 32  # 3 x 34 + card = 103, although one item alone would fit
+    too_large = service.prepare(
+        household_id=HOME,
+        presentation=ApprovalPresentation.BATCH_ACTION,
+        operations=[plain_operation(name) for name in ("豆漿", "衛生紙", "洗衣精")],
+    )
+    with pytest.raises(BatchTooLarge):
+        asyncio.run(service.save(too_large))
+
+    assert cards(storage) == [f"pending_approval:{fits.approval_id}"]
+
+
+def test_purchase_card_is_checked_with_every_option():
+    """option_001 fits; option_002 does not, so the card is not stored."""
+    service, storage, builder, _, _ = setup()
+    builder.extra_writes_by_option = {"option_002": 98}  # receipt + 1 + 98 + card = 101
+    record = service.prepare(
+        household_id=HOME,
+        presentation=ApprovalPresentation.PURCHASE_OPTIONS,
+        operations=[plain_operation("衛生紙")],
+        options=[
+            NewOption(option_id="option_001", values={"store": "店家 A", "price": 99}),
+            NewOption(option_id="option_002", values={"store": "店家 B", "price": 109}),
+        ],
+    )
+
+    with pytest.raises(BatchTooLarge):
+        asyncio.run(service.save(record))
+
+    assert cards(storage) == []
+
+
+def test_card_whose_record_changed_before_saving_is_not_stored():
+    service, storage, _, _, etag = setup()
+    record = service.prepare(
+        household_id=HOME,
+        presentation=ApprovalPresentation.SINGLE_ACTION,
+        operations=[rice_operation(etag)],
+    )
+    storage.put({"id": RICE, "household_id": HOME, "item_id": "rice", "quantity": 5})
+
+    with pytest.raises(TargetChanged):
+        asyncio.run(service.save(record))
+
+    assert cards(storage) == []
 
 
 def test_reused_operation_id_with_different_values_needs_a_new_card():

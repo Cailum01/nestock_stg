@@ -65,6 +65,8 @@ def test_only_read_tools_are_offered():
     assert names == {
         "list_inventory",
         "list_shopping",
+        "get_reorder_candidates",
+        "get_consumption_forecast",
         "analyze_photo",
         "search_purchase_options",
     }
@@ -638,8 +640,9 @@ def test_several_items_are_matched_with_one_inventory_read():
 
 def test_prompt_no_longer_reads_a2_match_fields():
     prompt = load_system_prompt()
+    # As field names (in backticks); v8's tool name get_reorder_candidates is fine.
     for a2_field in ("match_status", "fuzzy_candidate", "candidates"):
-        assert a2_field not in prompt
+        assert f"`{a2_field}`" not in prompt
     assert "household_items" in prompt
 
 

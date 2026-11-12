@@ -461,6 +461,37 @@ def test_confirming_the_card_writes_it_and_says_what_was_recorded():
     assert len(container.of_type("transaction")) == 1
 
 
+@pytest.mark.skipif(
+    ShoppingItem.model_fields["quantity"].is_required(),
+    reason="Shopping entries without quantity or unit need B1's PR #64 schema",
+)
+@pytest.mark.parametrize(
+    "missing, bought",
+    [
+        ({"quantity": None}, 3),  # no listed quantity: nothing to be "more than"
+        ({"unit": None}, 2),  # no listed unit: the inventory unit goes on the card
+        ({"quantity": None, "unit": None}, 2),  # name only (Issue #52)
+    ],
+)
+def test_entries_without_quantity_or_unit_get_a_card_and_confirm(missing, bought):
+    container, reader, approvals = setup(inventory(), shopping(**missing))
+
+    card = made_card(reader, approvals, quantity=bought)
+
+    assert card is not None
+    line = card.operations[0]
+    assert line.description == f"衛生紙 +{bought} 包（從待購清單完成購買）"
+    assert line.values["purchased_unit"] == "包"
+    body = {"household_id": HOME, "approval_id": card.approval_id, "approved": True}
+    with TestClient(resume_app(approvals)) as client:
+        response = client.post("/agent/resume", json=body)
+    assert response.status_code == 200
+    assert response.json()["message"] == f"已記錄：衛生紙 +{bought} 包（現在 {1 + bought} 包）"
+    assert container.get("inventory_item:tissue")["quantity"] == 1 + bought
+    assert container.get("shopping_item:tissue-1")["status"] == "completed"
+    assert len(container.of_type("transaction")) == 1
+
+
 def test_cancelling_the_card_writes_nothing():
     container, reader, approvals = setup()
     card = made_card(reader, approvals)

@@ -12,7 +12,8 @@
 1. **二進位與結構化分離原則**：圖片原始二進位位元組（Raw Binary Bytes）**絕對禁止存入 Cosmos DB 或任何關聯/文件資料庫**。二進位資料必須且只能存在物件儲存空間（Azure Blob Storage 或本地記憶體隔離緩衝區）。
 2. **零價格持久化原則**：感知解析出之商品或購買選項，嚴禁持久化單價或價格資訊。
 3. **分區隔離鐵律**：Cosmos DB 與 Azure Blob Storage 皆以 `household_id` 作為物理分區與路徑階層（`households/{household_id}/media/{input_id}.jpg`），嚴禁跨家庭資料洩漏。
-4. **六大擁有者權限邊界 (Owner A2)**：
+4. **Agent 門禁邊界 (completed-only)**：遵循 Issue #98 與設計文件 §8.2，**只有處於 `COMPLETED` 狀態之媒體映射可供 Agent 使用**；未就緒之 `ALLOCATED`、`RECEIVED`、`FAILED` 或跨家庭查閱一律嚴格阻斷。
+5. **六大擁有者權限邊界 (Owner A2)**：
    - 負責路徑：`backend/app/services/provisional_storage/`、視覺感知適配器、測試套件。
    - 不越界碰觸 B1 實體商品存儲或 C1 採購流程。
 
@@ -27,25 +28,26 @@
        ├─────────────────────────────────┐
        ▼                                 ▼
 [Cosmos DB (household-data)]     [Token Cache (5 min TTL)]
-Status: ALLOCATED                staging-token-{input_id}
+Status: ALLOCATED (TTL: 24h)     staging-token-{input_id}
        │
        │ 3. Client direct PUT /staging/upload/{upload_token}
        ▼
 [FastAPI Staging Endpoint]
        │
        │ 4. MediaStorageService.receive_staged_upload()
-       ├─── Validate size & sha256
+       ├─── Validate size & sha256 (fail_processing on error)
        ├─────────────────────────────────┬─────────────────────────────────┐
        ▼                                 ▼                                 ▼
-[Azure Blob Storage]              [Cosmos DB]                     [Token Eviction]
-media container                   Status: RECEIVED                Token invalidated
-households/{hh}/media/{id}.jpg    file_size_bytes, sha256_hash
+[Azure Blob / Local Staging]     [Cosmos DB]                     [Token Eviction]
+media container                  Status: RECEIVED                Token invalidated
+households/{hh}/media/{id}.jpg   file_size_bytes, sha256_hash
        │
-       │ 5. Background Vision Pipeline (AzureOpenAIVisionService)
+       │ 5. Ingest Processing Pipeline (auto_process=True)
        ├─────────────────────────────────┬─────────────────────────────────┐
        ▼                                 ▼                                 ▼
-[Azure OpenAI GPT-4o Vision]      [Azure Blob Storage]            [Cosmos DB]
-Infer items & OCR text            .../derived/vision_v1.json      Status: COMPLETED
+[Azure OpenAI GPT-4o Vision]     [Azure Blob / Local]            [Cosmos DB]
+Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLETED (TTL: 24h)
+                                                                 (Agent Gate Unlocked)
 ```
 
 ---
@@ -57,10 +59,13 @@ Infer items & OCR text            .../derived/vision_v1.json      Status: COMPLE
 ### 2.1 介面契約 (`interfaces.py`)
 - `MediaStorageService`:
   - `create_upload_authorization(request, base_staging_url)`: 分配 `input_id`、產出簽章/Token URL、Cosmos 註冊 `ALLOCATED` 狀態。
-  - `receive_staged_upload(upload_token, payload_bytes)`: 接收二進位串流、寫入儲存體、驗證 SHA256 與大小、Cosmos 推進至 `RECEIVED`。
-  - `store_derived_artifact(household_id, image_ref, artifact_name, artifact_bytes, content_type)`: 寫入視覺推論衍生 JSON 工件。
-  - `load_derived_artifact(household_id, image_ref, artifact_name)`: 讀取衍生工件。
-  - `get_media_stream(image_ref)`: 提供唯讀下載二進位位元組串流。
+  - `receive_staged_upload(upload_token, payload_bytes)`: 接收二進位串流、寫入儲存體、驗證 SHA256 與大小、Cosmos 推進至 `RECEIVED`，並支援 Ingest Pipeline 自動推進至 `COMPLETED`。
+  - `begin_processing(household_id, image_ref)`: 推進至 `PROCESSING` 狀態，具備 COMPLETED 等冪保護。
+  - `complete_processing(household_id, image_ref, artifact_data)`: 推進至 `COMPLETED` 狀態並持久化衍生分析工件。
+  - `fail_processing(household_id, image_ref, failure_reason)`: 推進至 `FAILED` 狀態並記錄失敗原因。
+  - `verify_media_exists(household_id, image_ref)`: Agent 門禁守衛，調用 `find_completed_by_image_ref`，僅放行 COMPLETED，非預期資料庫異常嚴格向上傳播。
+  - `get_media_bytes(household_id, image_ref)`: 提供唯讀下載原始二進位位元組串流。
+  - `get_media_snapshot(household_id, image_ref)`: 提供下游業務附加 (PR #105) 進行原子保留與 ETag 校驗之 Snapshot。
 
 ### 2.2 轉接器實作 (Adapters)
 1. **`AzureBlobMediaStorage` (`azure_blob_adapter.py`) - [PROD_CLOUD]**：
@@ -68,10 +73,10 @@ Infer items & OCR text            .../derived/vision_v1.json      Status: COMPLE
    - 容器名稱：預設 `media`。
    - 雲端路徑規則：`households/{household_id}/media/{input_id}.jpg`。
    - 衍生工件規則：`households/{household_id}/media/{input_id}/derived/{artifact_name}`。
-   - 安全規範：內建 10MB 大小熔斷、逾時防護、樂觀並發 ETag 重試防護。
+   - 安全規範：內建 10MB 大小熔斷、逾時防護、例外不吞噬傳播、COMPLETED 等冪保護與樂觀並發 ETag 重試防護。
 2. **`LocalStagingMediaStorage` (`local_staging_adapter.py`) - [DEV_FALLBACK]**：
    - 記憶體字典快取，支援無雲端環境或離線單元測試。
-   - 介面與行為 100% 保持與 Azure Blob Storage 對齊。
+   - 介面、狀態轉移與防禦行為 100% 保持與 Azure Blob Storage 對齊。
 
 ### 2.3 動態雙模式工廠 (`dependencies.py`)
 - 後端啟動時透過 `_create_media_storage_service()` 進行自動偵測：
@@ -84,13 +89,15 @@ Infer items & OCR text            .../derived/vision_v1.json      Status: COMPLE
 
 結構化中繼資料以五態狀態機 (Five-State Lifecycle) 與 ETag 樂觀鎖維護：
 
-| 狀態 (Status) | 觸發時機 | 欄位變更 | 孤兒清理 TTL |
-| :--- | :--- | :--- | :--- |
-| `ALLOCATED` | 用戶端請求上傳授權 | 產出 `input_id`、`upload_authorization_expires_at` | 86,400 秒 (24h) |
-| `RECEIVED` | 二進位資料成功寫入 Blob | 填入 `sha256_hash`、`file_size_bytes`、更新時間 | 86,400 秒 (24h) |
-| `PROCESSING` | 背景 Vision 模組取走圖片 | 填入 `processing_started_at` | 86,400 秒 (24h) |
-| `COMPLETED` | 視覺推論完成並寫入衍生工件 | 填入 `completed_at`、清空 TTL（永久保留） | -1 (永不刪除) |
-| `FAILED` | 逾時、大小超標或辨識異常 | 填入 `failure_reason` (UPLOAD_TIMEOUT, etc.) | 86,400 秒 (24h) |
+| 狀態 (Status) | 觸發時機 | 欄位變更 | 孤兒清理 TTL | Agent 可用性 |
+| :--- | :--- | :--- | :--- | :--- |
+| `ALLOCATED` | 用戶端請求上傳授權 | 產出 `input_id`、`upload_authorization_expires_at` | 86,400 秒 (24h) | 阻斷 (`PHOTO_NOT_FOUND`) |
+| `RECEIVED` | 二進位資料成功寫入 Storage/Blob | 填入 `sha256_hash`、`file_size_bytes`、更新時間 | 86,400 秒 (24h) | 阻斷 (`PHOTO_NOT_FOUND`) |
+| `PROCESSING` | 背景/Ingest Vision 模組取走圖片 | 推進至 PROCESSING、更新時間 | 86,400 秒 (24h) | 阻斷 (`PHOTO_NOT_FOUND`) |
+| `COMPLETED` | 視覺推論完成並產出衍生工件 | 填入 `artifact_ref`、更新時間（維持孤立 TTL） | 86,400 秒 (24h)＊ | 放行 (`verify_media_exists=True`) |
+| `FAILED` | 逾時、大小超標或辨識異常 | 填入 `failure_reason` (UPLOAD_TIMEOUT, etc.) | 86,400 秒 (24h) | 阻斷 (`PHOTO_NOT_FOUND`) |
+
+＊**重要備註**：`COMPLETED` 僅代表「抽取/處理完成」，未被確認之業務紀錄附加前**仍屬於孤立媒體，維持 24 小時孤兒清理 TTL**。只有當 C1/B1 於確認購買或庫存記錄附加該媒體時（PR #105），始於交易批次中將 TTL 清空以永久保留。
 
 ---
 
@@ -98,13 +105,6 @@ Infer items & OCR text            .../derived/vision_v1.json      Status: COMPLE
 
 ```ini
 # Cosmos DB
-NESTOCK_COSMOS_ENDPOINT="https://<account-name>.documents.azure.com:443/"
-NESTOCK_COSMOS_DATABASE="nestock-database"
-NESTOCK_COSMOS_CONTAINER="household-data"
-
-# Azure Blob Storage (二選一，推薦使用 DefaultAzureCredential)
-AZURE_STORAGE_BLOB_ENDPOINT="https://<account-name>.blob.core.windows.net/"
-AZURE_STORAGE_CONTAINER_NAME="media"
 # 或使用連線字串
 # AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"
 ```
@@ -121,6 +121,7 @@ AZURE_STORAGE_CONTAINER_NAME="media"
   3. `5a00873e537040188d003205061dc1fc.jpg` (798,156 bytes) - 辨識物: wooden clip with white plastic tip
   4. `6300435499d14bcda5fe9517ef7df80b.jpg` (777,868 bytes) - 辨識物: USB 3.0 drive (OCR: `hp USB 3.0 27TB`)
 - **測試套件狀態**:
-  - `uv run pytest tests/test_azure_blob_storage.py`: 7 passed in 0.86s
-  - `uv run pytest tests/test_a2_media_pipeline.py`: 9 passed in 1.89s
-  - `uv run pytest`: 548 passed in 11.49s
+  - `uv run pytest tests/test_azure_blob_storage.py`: 11 passed in 1.12s
+  - `uv run pytest tests/test_a2_media_pipeline.py`: 12 passed in 3.09s
+  - `uv run pytest`: 555 passed in 12.51s
+

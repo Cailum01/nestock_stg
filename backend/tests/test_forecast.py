@@ -18,6 +18,7 @@ from app.services.forecast import (
     ForecastSettings,
     ItemNotFoundError,
     estimate,
+    reorder_summary,
 )
 
 NOW = datetime(2026, 3, 1, tzinfo=UTC)
@@ -488,3 +489,86 @@ def test_unconfirmed_created_at_also_pauses_the_p1_extensions():
     assert result.suggested_action == SuggestedAction.NONE
     assert result.method is None
     assert result.usage_days_min is None
+
+
+def _forecast(item_id, status, action, days=None):
+    return ItemForecast(
+        household_id="demo",
+        item_id=item_id,
+        status=status,
+        suggested_action=action,
+        confirmed_quantity=1.0,
+        unit="個",
+        generated_at=NOW,
+        consumption_event_count=0,
+        purchase_event_count=0,
+        days_until_empty=days,
+    )
+
+
+def test_reorder_summary_keeps_only_restock_items_soonest_first():
+    est, none_, restock = (
+        ForecastStatus.ESTIMATED,
+        SuggestedAction.NONE,
+        SuggestedAction.CONSIDER_RESTOCK,
+    )
+    summary = reorder_summary(
+        [
+            _forecast("a", est, restock, 6.0),
+            _forecast("b", est, none_, 30.0),
+            _forecast("c", est, restock, 2.0),
+            _forecast("d", ForecastStatus.INSUFFICIENT_DATA, SuggestedAction.NONE),
+        ]
+    )
+
+    assert [f.item_id for f in summary.candidates] == ["c", "a"]
+    assert summary.estimated_count == 3
+    assert summary.insufficient_data_count == 1
+
+
+def test_reorder_summary_puts_unknown_days_last_and_ties_keep_inventory_order():
+    est, restock = ForecastStatus.ESTIMATED, SuggestedAction.CONSIDER_RESTOCK
+    summary = reorder_summary(
+        [
+            _forecast("no-days", est, restock, None),
+            _forecast("first", est, restock, 3.0),
+            _forecast("second", est, restock, 3.0),
+        ]
+    )
+
+    assert [f.item_id for f in summary.candidates] == ["first", "second", "no-days"]
+
+
+def test_reorder_summary_of_nothing_is_empty():
+    summary = reorder_summary([])
+
+    assert summary.candidates == []
+    assert summary.estimated_count == 0
+    assert summary.insufficient_data_count == 0
+
+
+def test_service_reorder_candidates_uses_one_history_read_and_keeps_quantity():
+    history = FakeHistory([tx(10, -2), tx(5, -3)])
+    low = item(quantity=2)  # 4 days left at 0.5/day: within reorder_days
+    plenty = item(item_id="rice", quantity=100)
+    service = ForecastService(FakeInventory([plenty, low]), history, CONFIRMED)
+
+    summary = asyncio.run(service.reorder_candidates("demo", NOW))
+
+    assert [f.item_id for f in summary.candidates] == ["soy-sauce"]
+    assert summary.candidates[0].days_until_empty == pytest.approx(4)
+    assert summary.candidates[0].confirmed_quantity == 2
+    assert summary.estimated_count == 1
+    assert summary.insufficient_data_count == 1
+    assert history.calls == ["demo"]
+
+
+def test_service_reorder_candidates_is_empty_while_time_semantics_unconfirmed():
+    history = FakeHistory([tx(10, -2), tx(5, -3)])
+    service = ForecastService(FakeInventory([item(quantity=2)]), history)
+
+    summary = asyncio.run(service.reorder_candidates("demo", NOW))
+
+    assert summary.candidates == []
+    assert summary.estimated_count == 0
+    assert summary.insufficient_data_count == 1

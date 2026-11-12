@@ -54,6 +54,17 @@ Pending confirmation:
   separate recording time, only `_events`, `_consumption_rate`,
   `_purchase_interval_rate` and `_from_sufficiency` change.
 
+Agent reuse (PR #86, A1): the Agent's read-only "what is running low?" and "how long
+will X last?" tools call this service, not their own copy of the rules.
+- `reorder_candidates` is the one place that decides which items to restock: only
+  `consider_restock`, soonest empty first (an item with no day count after the ones
+  with one; ties keep inventory order), plus how many items have an estimate and
+  how many lack records. Adapters must not re-select or re-sort.
+- Days stay as floats in `ItemForecast.days_until_empty`. Rounding to whole days is
+  presentation and stays with the caller; no field is added for it.
+- While `time_semantics_confirmed` is False every item is `insufficient_data`, so
+  the candidate list is empty and `insufficient_data_count` is the item count.
+
 Open gaps:
 - Feature-only Transactions and links wait for D-6; only `item_id` is read.
 - There is no quantity-confirmation timestamp yet, so the estimate starts from
@@ -108,6 +119,35 @@ class SufficiencyCheckHistory(Protocol):
 
 class ItemNotFoundError(LookupError):
     """The item is not in the household's active inventory."""
+
+
+@dataclass(frozen=True)
+class ReorderSummary:
+    """Items worth restocking, soonest empty first, plus how many lack records.
+
+    A service result for in-process callers (Agent tools), not an API contract model.
+    The estimates are never a confirmed quantity and nothing here writes inventory.
+    """
+
+    candidates: list[ItemForecast]
+    estimated_count: int
+    insufficient_data_count: int
+
+
+def reorder_summary(forecasts: list[ItemForecast]) -> ReorderSummary:
+    """Pick the `consider_restock` items. Python's sort is stable, so ties keep the
+    order of `forecasts` (inventory order)."""
+    candidates = sorted(
+        (f for f in forecasts if f.suggested_action == SuggestedAction.CONSIDER_RESTOCK),
+        key=lambda f: (f.days_until_empty is None, f.days_until_empty or 0.0),
+    )
+    return ReorderSummary(
+        candidates=candidates,
+        estimated_count=sum(f.status == ForecastStatus.ESTIMATED for f in forecasts),
+        insufficient_data_count=sum(
+            f.status == ForecastStatus.INSUFFICIENT_DATA for f in forecasts
+        ),
+    )
 
 
 def _events(
@@ -376,6 +416,10 @@ class ForecastService:
         if found is None:
             raise ItemNotFoundError(item_id)
         return found
+
+    async def reorder_candidates(self, household_id: str, now: datetime) -> ReorderSummary:
+        """What is running low, from one household pass (read only)."""
+        return reorder_summary(await self.forecast_household(household_id, now))
 
     async def forecast_household(self, household_id: str, now: datetime) -> list[ItemForecast]:
         """One history read for every active item, in inventory order."""

@@ -22,6 +22,8 @@ dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = "-m 'not live_eval'"
+markers = ["live_eval: explicitly enabled Azure OpenAI tool-selection evaluation"]
 
 [tool.ruff]
 target-version = "py312"

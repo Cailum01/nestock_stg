@@ -50,7 +50,9 @@
         "list_inventory"
       ],
       "must_not_call": [
-        "search_purchase_options"
+        "search_purchase_options",
+        "get_consumption_forecast",
+        "get_reorder_candidates"
       ],
       "note": "v8 Flow B entry sentence. The team decided Flow B states facts only and does not look up prices or advise buying."
     },
@@ -83,7 +85,7 @@
       "id": "shopping-02",
       "tool": "list_shopping",
       "kind": "positive",
-      "utterance": "我還要買哪些東西？",
+      "utterance": "待購清單上，我還要買哪些東西？",
       "expect_calls": [
         "list_shopping"
       ],

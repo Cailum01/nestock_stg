@@ -79,6 +79,7 @@ def live_model():
     return build_chat_model(settings).bind_tools(TOOL_SCHEMAS)
 
 
+@pytest.mark.live_eval
 @pytest.mark.parametrize("case", CASES, ids=[c["id"] for c in CASES])
 def test_live_model_selects_the_expected_tools(live_model, case):
     from langchain_core.messages import HumanMessage, SystemMessage

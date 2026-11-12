@@ -100,6 +100,7 @@ Open `http://127.0.0.1:8000/health` for `{"status":"ok"}` and
 | `GET /inventory` | read-only demo inventory, fixed household scope |
 | `GET /shopping` | read-only demo shopping list, fixed household scope |
 | `GET /forecast` | read-only forecast for active inventory items; uses configured Cosmos reads when set, otherwise demo data; currently `insufficient_data` pending confirmation of Transaction `created_at` semantics (B2, mounted by PR #53) |
+| `GET /forecast/reorder` | read-only list of items worth restocking soon (`consider_restock`), soonest first; empty when none qualify or while Transaction `created_at` semantics are unconfirmed; same selection the Agent reuses via `ForecastService.reorder_candidates` (B2) |
 | `GET /forecast/{item_id}` | read-only forecast for one inventory item; 404 if missing; uses configured Cosmos reads when set, otherwise demo data; currently `insufficient_data` pending confirmation of Transaction `created_at` semantics (B2, mounted by PR #53) |
 | `POST /agent/messages` | read-only Agent via Azure OpenAI when `backend/.env` is set; otherwise 501 |
 | `POST /agent/resume` | validates provisional request, then 501; no writes |

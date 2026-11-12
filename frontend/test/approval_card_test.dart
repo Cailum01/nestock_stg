@@ -431,6 +431,80 @@ void main() {
     expect(operationIds, isNull);
   });
 
+  testWidgets('generic batch actions select exact backend operation IDs', (
+    tester,
+  ) async {
+    bool? approvalDecision;
+    List<String>? operationIds;
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-generic-batch',
+        presentation: ApprovalPresentation.batchAction,
+        operations: [
+          OperationView(
+            id: 'operation-shopping-1',
+            action: 'add_to_shopping_list',
+            description: '新增牛奶到購物清單',
+          ),
+          OperationView(
+            id: 'operation-shopping-2',
+            action: 'add_to_shopping_list',
+            description: '新增白米到購物清單',
+          ),
+        ],
+      ),
+      onDecision:
+          ({required approved, selectedOptionId, approvedOperationIds}) {
+            approvalDecision = approved;
+            operationIds = approvedOperationIds;
+          },
+    );
+
+    for (final id in ['operation-shopping-1', 'operation-shopping-2']) {
+      expect(
+        tester
+            .widget<CheckboxListTile>(
+              find.byKey(Key('generic-batch-operation-$id')),
+            )
+            .value,
+        isTrue,
+      );
+    }
+    await tester.tap(find.byKey(const Key('approval-cancel')));
+    expect(approvalDecision, isFalse);
+    expect(operationIds, isNull);
+
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(
+          const Key('generic-batch-operation-operation-shopping-2'),
+        ),
+        matching: find.byType(Checkbox),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('approval-confirm')));
+    expect(approvalDecision, isTrue);
+    expect(operationIds, ['operation-shopping-1']);
+
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(
+          const Key('generic-batch-operation-operation-shopping-1'),
+        ),
+        matching: find.byType(Checkbox),
+      ),
+    );
+    await tester.pump();
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+          .onPressed,
+      isNull,
+    );
+  });
+
   testWidgets('purchase options accept unlabeled values and return option ID', (
     tester,
   ) async {

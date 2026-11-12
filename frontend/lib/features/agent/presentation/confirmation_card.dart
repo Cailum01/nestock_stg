@@ -8,12 +8,10 @@ import '../domain/agent_view_data.dart';
 
 enum ConfirmationDraftField { name, quantity, unit, location }
 
-final _quantityEditingPattern = RegExp(r'^(?:\d+(?:\.\d*)?)?$');
-final _validQuantityPattern = RegExp(r'^\d+(?:\.\d+)?$');
+final _quantityEditingPattern = RegExp(r'^\d*$');
+final _validQuantityPattern = RegExp(r'^[1-9]\d*$');
 
-bool _isValidQuantity(String value) =>
-    _validQuantityPattern.hasMatch(value) &&
-    (num.tryParse(value)?.isNegative ?? true) == false;
+bool _isValidQuantity(String value) => _validQuantityPattern.hasMatch(value);
 
 /// A currently focused local Confirmation draft field.
 ///
@@ -229,9 +227,9 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
     for (var index = 0; index < widget.items.length; index++)
       ConfirmationItemView(
         name: _names[index].text.trim(),
-        quantity:
-            num.tryParse(_quantities[index].text) ??
-            widget.items[index].quantity,
+        quantity: _isValidQuantity(_quantities[index].text)
+            ? int.parse(_quantities[index].text)
+            : widget.items[index].quantity,
         unit: _units[index].text.trim(),
         location: _locations[index].text.trim(),
       ),
@@ -251,6 +249,9 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
     }
     return false;
   }
+
+  bool get _hasInvalidQuantity =>
+      _quantities.any((controller) => !_isValidQuantity(controller.text));
 
   @override
   Widget build(BuildContext context) => Stack(
@@ -314,7 +315,9 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
                       child: const Text('取消'),
                     ),
                     const SizedBox(width: 8),
-                    if (widget.onSubmitChanges != null && _hasChanges) ...[
+                    if (widget.onSubmitChanges != null &&
+                        _hasChanges &&
+                        !_hasInvalidQuantity) ...[
                       OutlinedButton(
                         key: const Key('confirmation-submit-changes'),
                         onPressed: () => widget.onSubmitChanges!(_drafts),
@@ -452,10 +455,7 @@ class _ConfirmationItem extends StatelessWidget {
                                   focusNode: quantityFocusNode,
                                   style: detailStyle,
                                   onChanged: (_) => onChanged(),
-                                  keyboardType:
-                                      const TextInputType.numberWithOptions(
-                                        decimal: true,
-                                      ),
+                                  keyboardType: TextInputType.number,
                                   inputFormatters: [
                                     TextInputFormatter.withFunction(
                                       (oldValue, newValue) =>

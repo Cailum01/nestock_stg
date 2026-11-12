@@ -88,6 +88,11 @@ class ApprovalCard extends StatelessWidget {
         onDecision: onDecision,
         onSubmitChanges: onSubmitChanges,
       ),
+    ApprovalPresentation.batchAction => _GenericBatchApprovalCard(
+      approval: approval,
+      busy: busy,
+      onDecision: onDecision,
+    ),
     ApprovalPresentation.singleAction
         when approval.operations.first.action.isNotEmpty =>
       _SingleActionApprovalCard(
@@ -604,6 +609,103 @@ class _ItemMatchApprovalCard extends StatelessWidget {
                   key: const Key('approval-cancel'),
                   onPressed: busy ? null : () => onDecision(approved: false),
                   child: const Text('取消'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _GenericBatchApprovalCard extends StatefulWidget {
+  const _GenericBatchApprovalCard({
+    required this.approval,
+    required this.busy,
+    required this.onDecision,
+  });
+
+  final ApprovalView approval;
+  final bool busy;
+  final ApprovalDecisionCallback onDecision;
+
+  @override
+  State<_GenericBatchApprovalCard> createState() =>
+      _GenericBatchApprovalCardState();
+}
+
+class _GenericBatchApprovalCardState extends State<_GenericBatchApprovalCard> {
+  late final Set<String> _selectedOperationIds;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedOperationIds = widget.approval.operations
+        .map((operation) => operation.id)
+        .toSet();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isFixture = widget.approval.operations.any(
+      (operation) => operation.action.isEmpty,
+    );
+    return Card(
+      key: const Key('generic-batch-approval-card'),
+      color: Theme.of(context).colorScheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              isFixture ? '批次操作確認示範' : '確認操作',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            for (final operation in widget.approval.operations)
+              CheckboxListTile(
+                key: Key('generic-batch-operation-${operation.id}'),
+                contentPadding: EdgeInsets.zero,
+                value: _selectedOperationIds.contains(operation.id),
+                onChanged: widget.busy
+                    ? null
+                    : (selected) => setState(() {
+                        if (selected ?? false) {
+                          _selectedOperationIds.add(operation.id);
+                        } else {
+                          _selectedOperationIds.remove(operation.id);
+                        }
+                      }),
+                title: Text(operation.description),
+              ),
+            if (isFixture) const Text('此示範不會寫入資料，也不會下單或付款。'),
+            Wrap(
+              spacing: 12,
+              children: [
+                TextButton(
+                  key: const Key('approval-cancel'),
+                  onPressed: widget.busy
+                      ? null
+                      : () => widget.onDecision(approved: false),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  key: const Key('approval-confirm'),
+                  onPressed: widget.busy || _selectedOperationIds.isEmpty
+                      ? null
+                      : () => widget.onDecision(
+                          approved: true,
+                          approvedOperationIds: widget.approval.operations
+                              .where(
+                                (operation) => _selectedOperationIds.contains(
+                                  operation.id,
+                                ),
+                              )
+                              .map((operation) => operation.id)
+                              .toList(growable: false),
+                        ),
+                  child: Text(isFixture ? '確認示範' : '確認'),
                 ),
               ],
             ),

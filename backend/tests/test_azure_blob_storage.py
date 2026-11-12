@@ -148,6 +148,7 @@ def blob_storage(fake_blob_service, mapping_port):
         blob_service_client=fake_blob_service,
         container_name="media",
         mapping_port=mapping_port,
+        auto_process=False,
     )
 
 
@@ -239,13 +240,17 @@ async def test_complete_processing_uploads_artifact_json(
     auth = await blob_storage.create_upload_authorization(req)
     token = auth.upload_url.split("/")[-1]
     await blob_storage.receive_staged_upload(token, b"cereal")
+    # 未完成前，Agent 門禁阻斷
+    assert await blob_storage.verify_media_exists("home-dev", auth.image_ref) is False
+
     await blob_storage.begin_processing("home-dev", auth.image_ref)
 
     artifact_json = '{"items": [{"raw_name": "cereal", "quantity": 1}]}'
-    artifact_ref = await blob_storage.complete_processing(
-        "home-dev", auth.image_ref, artifact_json
-    )
+    artifact_ref = await blob_storage.complete_processing("home-dev", auth.image_ref, artifact_json)
     assert "derived/vision_v1.json" in artifact_ref
+
+    # 完成後，Agent 門禁放行
+    assert await blob_storage.verify_media_exists("home-dev", auth.image_ref) is True
 
     # 驗證衍生工件寫入 Blob
     artifact_blob_path = artifact_ref.removeprefix("blob://").lstrip("/")
@@ -326,3 +331,110 @@ def test_dependency_dual_mode_selection():
         environment={"AZURE_STORAGE_CONNECTION_STRING": dummy_conn}
     )
     assert isinstance(storage_blob, AzureBlobMediaStorage)
+
+
+@pytest.mark.anyio
+async def test_receive_staged_upload_auto_process_ingest(fake_blob_service, mapping_port):
+    """驗證 auto_process=True 時，上傳二進位檔案自動推進至 COMPLETED 並上傳衍生工件。"""
+    storage = AzureBlobMediaStorage(
+        blob_service_client=fake_blob_service,
+        container_name="media",
+        mapping_port=mapping_port,
+        auto_process=True,
+    )
+    req = UploadAuthorizationRequest(
+        household_id="home-dev",
+        filename="auto.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=4,
+    )
+    auth = await storage.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
+
+    # 上傳檔案
+    await storage.receive_staged_upload(token, b"auto")
+
+    # 驗證狀態已自動推進至 COMPLETED
+    snapshot = await mapping_port.find_by_image_ref(
+        household_id="home-dev", image_ref=auth.image_ref
+    )
+    assert snapshot is not None
+    assert snapshot.record.status is MediaProcessingStatus.COMPLETED
+    assert snapshot.record.artifact_ref is not None
+
+    # Agent 門禁放行
+    assert await storage.verify_media_exists("home-dev", auth.image_ref) is True
+
+
+@pytest.mark.anyio
+async def test_fail_processing_error_propagation_on_timeout(fake_blob_service, mapping_port):
+    """驗證上傳逾時若 FAILED 狀態寫入失敗，例外會明確向上拋出，不再被靜默吞噬。"""
+    storage = AzureBlobMediaStorage(
+        blob_service_client=fake_blob_service,
+        container_name="media",
+        mapping_port=mapping_port,
+    )
+    req = UploadAuthorizationRequest(
+        household_id="home-dev",
+        filename="fail.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=10,
+    )
+    auth = await storage.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
+
+    storage._pending_tokens[token]["expires_at"] = time.time() - 1
+
+    async def mock_fail_error(*args, **kwargs):
+        raise RuntimeError("Cosmos DB write failure during fail_processing")
+
+    storage.fail_processing = mock_fail_error
+
+    with pytest.raises(RuntimeError, match="Cosmos DB write failure"):
+        await storage.receive_staged_upload(token, b"fail_data")
+
+
+@pytest.mark.anyio
+async def test_verify_media_exists_propagates_database_error(fake_blob_service, mapping_port):
+    """驗證 Cosmos DB 查詢異常時，verify_media_exists 嚴格向外傳播，不偽裝為 False。"""
+    storage = AzureBlobMediaStorage(
+        blob_service_client=fake_blob_service,
+        container_name="media",
+        mapping_port=mapping_port,
+    )
+
+    async def mock_query_error(*args, **kwargs):
+        raise ConnectionResetError("Cosmos DB connection reset")
+
+    mapping_port.find_completed_by_image_ref = mock_query_error
+
+    with pytest.raises(ConnectionResetError, match="Cosmos DB connection reset"):
+        await storage.verify_media_exists("home-dev", "blob://households/home-dev/media/test.jpg")
+
+
+@pytest.mark.anyio
+async def test_begin_processing_idempotent_on_completed(fake_blob_service, mapping_port):
+    """驗證對 COMPLETED 媒體重複調用 begin_processing 與 complete_processing 安全等冪。"""
+    storage = AzureBlobMediaStorage(
+        blob_service_client=fake_blob_service,
+        container_name="media",
+        mapping_port=mapping_port,
+        auto_process=True,
+    )
+    req = UploadAuthorizationRequest(
+        household_id="home-dev",
+        filename="repeat.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=6,
+    )
+    auth = await storage.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
+
+    await storage.receive_staged_upload(token, b"repeat")
+
+    # 二次調用 begin_processing：安全返回，不引發 MediaMappingConflict
+    await storage.begin_processing("home-dev", auth.image_ref)
+
+    # 二次調用 complete_processing：安全回傳 artifact_ref
+    ref = await storage.complete_processing("home-dev", auth.image_ref)
+    assert "derived/vision_v1.json" in ref

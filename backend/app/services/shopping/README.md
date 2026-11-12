@@ -71,6 +71,18 @@ past stock. A1 owns natural-language date/timezone resolution and showing dates;
 changed dates require a new card. B1 confirmed event-time queries and no production
 history migration; B2 still owns forecast enablement.
 
+Issue #113 proposes treating Transaction.created_at as recording time in every
+case. That differs from the #60 event-time handoff above when purchased_at is
+historical; it agrees only with the no-purchased_at fallback. The newer B1 reply
+in #113 also differs from B1's earlier #60 confirmation and design section 9.1.
+Until A1/B1/B2/C1 reconcile these statements, this implementation retains the
+existing split; this README does not settle the shared Transaction contract or
+enable forecasting. `recorded_at` is a planner argument, not a Transaction field;
+ChangeEvent records both occurred_at and recorded_at. A1's pending #71 helper
+resolves dates, #104 passes stored purchased_at through, and #96's current card
+producer does not supply a historical purchased_at. Helper/resolver support is
+not evidence that historical-date entry is wired through the Agent/App.
+
 ## Batch builder (#27 / #60)
 
 `ShoppingWriteBuilder(reader, resolver)` implements A1's `DomainWriteBuilder` port.
@@ -85,7 +97,8 @@ unit, name, location, resolved target, transaction/new-item ID and purchase time
 to the exact server-stored proposal. It must use fixed selected operation IDs,
 never resume-edited values, new retry IDs or fresh matching results. The pending
 save-time trial uses created_at temporarily for count-only planning; it authorizes
-nothing. A1's production resolver remains to be implemented/connected.
+nothing. A1's stored-card resolver is supplied by pending PR #104; production
+composition is proposed in pending PR #96. Neither is enabled by this C1 module.
 
 C1 additionally verifies the exact selected ID set, unique Shopping targets,
 card-bound source ETags, household, current source snapshots and absence of a new

@@ -358,10 +358,17 @@ def test_resolver_cannot_substitute_selection_target_versions_or_snapshots(misma
     assert not receipts(h)
 
 
-def test_uncommitted_timeout_retries_with_original_ids_times_and_fixed_selection():
-    h = setup(("existing", "new"))
+@pytest.mark.parametrize("historical", [False, True], ids=["decision-time", "historical-time"])
+def test_uncommitted_timeout_retries_with_original_ids_times_and_fixed_selection(historical):
+    h = setup(("existing", "new"), save=False)
+    for operation_id, entry in h.resolver.inputs.items():
+        h.resolver.inputs[operation_id] = replace(
+            entry, purchased_at=T0 - timedelta(days=1) if historical else None
+        )
+    run(h.service.save(h.card))
     execute = h.container.execute_batch
     failed = False
+    attempted_transactions = {}
 
     async def fail_once(*, partition_key, operations):
         nonlocal failed
@@ -369,6 +376,11 @@ def test_uncommitted_timeout_retries_with_original_ids_times_and_fixed_selection
             op.document.get("record_type") == "operation_receipt" for op in operations
         ):
             failed = True
+            attempted_transactions.update(
+                (op.document["transaction_id"], dict(op.document))
+                for op in operations
+                if op.document.get("record_type") == "transaction"
+            )
             raise TimeoutError("Nothing committed; response unavailable")
         return await execute(partition_key=partition_key, operations=operations)
 
@@ -383,8 +395,22 @@ def test_uncommitted_timeout_retries_with_original_ids_times_and_fixed_selection
     result = run(h.service.resume(request(h)))
     assert result.written and result.record.decided_at == datetime.fromisoformat(decision_time)
     assert len(receipts(h)) == 2
+    event_time = T0 - timedelta(days=1) if historical else datetime.fromisoformat(decision_time)
+    transactions = h.container.of_type("transaction")
+    assert len(transactions) == len(attempted_transactions) == 2
+    for transaction in transactions:
+        # The failed attempt and retry must retain IDs and all persisted values.
+        expected = attempted_transactions[transaction["transaction_id"]]
+        assert {key: transaction[key] for key in expected} == expected
+        assert datetime.fromisoformat(transaction["created_at"]) == event_time
     for event in h.container.of_type("change_event"):
         assert datetime.fromisoformat(event["recorded_at"]) == datetime.fromisoformat(decision_time)
+        assert datetime.fromisoformat(event["occurred_at"]) == event_time
+    for record_type in ("inventory_item", "shopping_item"):
+        for document in h.container.of_type(record_type):
+            assert datetime.fromisoformat(document["updated_at"]) == datetime.fromisoformat(
+                decision_time
+            )
     assert run(h.service.resume(request(h))).outcome == ResumeOutcome.ALREADY_COMPLETED
 
 

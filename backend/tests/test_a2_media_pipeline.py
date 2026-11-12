@@ -94,7 +94,7 @@ def mapping_storage(fake_client):
 
 @pytest.fixture
 def a2_storage(mapping_storage):
-    return LocalStagingMediaStorage(mapping_port=mapping_storage)
+    return LocalStagingMediaStorage(mapping_port=mapping_storage, auto_process=False)
 
 
 @pytest.mark.anyio
@@ -151,9 +151,9 @@ async def test_receive_staged_upload_transitions_to_received(a2_storage, mapping
     assert snapshot.record.file_size_bytes == 4
     assert snapshot.record.sha256_hash == sha256_expected
 
-    # Agent 門禁驗證：已上傳就緒 (RECEIVED) 允許進入推論流程
+    # Agent 門禁驗證：依據 Issue #98 與設計文件 §8.2，未處理完成前 (RECEIVED) 嚴格阻斷
     can_read = await a2_storage.verify_media_exists("home-alpha", auth.image_ref)
-    assert can_read is True
+    assert can_read is False
 
 
 @pytest.mark.anyio
@@ -173,8 +173,8 @@ async def test_full_pipeline_transitions_to_completed_and_agent_unlock(a2_storag
 
     await a2_storage.receive_staged_upload(token, b"cereal")
 
-    # RECEIVED 階段：就緒放行
-    assert await a2_storage.verify_media_exists("home-alpha", auth.image_ref) is True
+    # RECEIVED 階段：未完成處理前，Agent 門禁嚴格阻斷
+    assert await a2_storage.verify_media_exists("home-alpha", auth.image_ref) is False
 
     # 推進至 PROCESSING
     await a2_storage.begin_processing("home-alpha", auth.image_ref)
@@ -183,8 +183,8 @@ async def test_full_pipeline_transitions_to_completed_and_agent_unlock(a2_storag
     )
     assert snap_proc.record.status is MediaProcessingStatus.PROCESSING
 
-    # PROCESSING 階段：允許調用
-    assert await a2_storage.verify_media_exists("home-alpha", auth.image_ref) is True
+    # PROCESSING 階段：處理中尚未完成，Agent 門禁嚴格阻斷
+    assert await a2_storage.verify_media_exists("home-alpha", auth.image_ref) is False
 
     # 模擬推論完成，產出工件並推進至 COMPLETED
     artifact_data = '{"scene_type": "single_item", "detected_items": []}'
@@ -359,8 +359,10 @@ async def test_etag_conflict_on_concurrent_transition(a2_storage, mapping_storag
 
 
 @pytest.mark.anyio
-async def test_read_agent_integration_gate(a2_storage, mapping_storage):
-    """驗證 A1 ReadAgent 門禁與真實推論時序：未上傳阻斷，已上傳進入推論並自然 COMPLETED。"""
+async def test_read_agent_integration_gate(mapping_storage):
+    """驗證 A1 ReadAgent 門禁與 Ingest 管線時序：
+    未上傳阻斷，上傳完成自動 COMPLETED 且 Agent 放行。
+    """
     from langchain_core.messages import AIMessage
 
     from app.agent.read_agent import PHOTO_NOT_FOUND, ReadAgent, load_system_prompt
@@ -369,6 +371,9 @@ async def test_read_agent_integration_gate(a2_storage, mapping_storage):
     from app.models.vision import DetectedItem, SceneType, VisionAnalysisResult
     from app.services.vision import VisionService
     from app.tools.queries import QueryTools
+
+    # 使用真實執行期配置：啟用 auto_process Ingest Pipeline
+    runtime_storage = LocalStagingMediaStorage(mapping_port=mapping_storage, auto_process=True)
 
     class PipelineTrackingVisionService(VisionService):
         def __init__(self, storage):
@@ -416,10 +421,10 @@ async def test_read_agent_integration_gate(a2_storage, mapping_storage):
         content_type=AllowedMediaContentType.IMAGE_JPEG,
         file_size_bytes=4,
     )
-    auth = await a2_storage.create_upload_authorization(req)
+    auth = await runtime_storage.create_upload_authorization(req)
     token = auth.upload_url.split("/")[-1]
 
-    vision_service = PipelineTrackingVisionService(a2_storage)
+    vision_service = PipelineTrackingVisionService(runtime_storage)
     tools = QueryTools(get_inventory_service(), get_shopping_service())
     model = DummyModel(
         AIMessage(content="", tool_calls=[{"name": "analyze_photo", "args": {}, "id": "call-1"}]),
@@ -429,7 +434,7 @@ async def test_read_agent_integration_gate(a2_storage, mapping_storage):
         model,
         tools,
         load_system_prompt(),
-        media=a2_storage,
+        media=runtime_storage,
         vision=vision_service,
     )
 
@@ -445,10 +450,10 @@ async def test_read_agent_integration_gate(a2_storage, mapping_storage):
     )
     assert res_cross.message == PHOTO_NOT_FOUND
 
-    # 3. 完成 PUT 上傳二進位檔案，狀態推進至 RECEIVED
-    await a2_storage.receive_staged_upload(token, b"soup")
+    # 3. 完成 PUT 上傳二進位檔案，Ingest 管線自動推進至 COMPLETED
+    await runtime_storage.receive_staged_upload(token, b"soup")
 
-    # 4. 真實使用者請求路徑：RECEIVED 階段呼叫 Agent，門禁放行且自然流轉完成推論
+    # 4. 真實使用者請求路徑：COMPLETED 階段呼叫 Agent，門禁放行且自然消費推論結果
     res_allowed = await agent.respond(
         AgentRequest(household_id="home-alpha", message="辨識這個", image_ref=auth.image_ref)
     )
@@ -461,3 +466,83 @@ async def test_read_agent_integration_gate(a2_storage, mapping_storage):
     )
     assert snap_final.record.status is MediaProcessingStatus.COMPLETED
     assert "derived/vision_v1.json" in snap_final.record.artifact_ref
+
+
+@pytest.mark.anyio
+async def test_fail_processing_error_propagation_on_timeout(mapping_storage):
+    """驗證上傳逾時若 FAILED 狀態寫入失敗，例外會明確向上拋出，不再被靜默吞噬。"""
+    storage = LocalStagingMediaStorage(mapping_port=mapping_storage)
+    req = UploadAuthorizationRequest(
+        household_id="home-alpha",
+        filename="broken.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=10,
+    )
+    auth = await storage.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
+
+    # 人為模擬 token 逾時
+    storage._pending_tokens[token]["expires_at"] = time.time() - 1
+
+    # 模擬 fail_processing 遭遇 Cosmos 錯誤
+    async def mock_fail_error(*args, **kwargs):
+        raise RuntimeError("Cosmos DB write failure during fail_processing")
+
+    storage.fail_processing = mock_fail_error
+
+    with pytest.raises(RuntimeError, match="Cosmos DB write failure"):
+        await storage.receive_staged_upload(token, b"broken_data")
+
+
+@pytest.mark.anyio
+async def test_verify_media_exists_propagates_database_error(mapping_storage):
+    """驗證 Cosmos DB 查詢異常時，verify_media_exists 嚴格向外傳播，不偽裝為 False。"""
+    storage = LocalStagingMediaStorage(mapping_port=mapping_storage)
+
+    # 模擬 find_completed_by_image_ref 拋出網路或連線崩潰
+    async def mock_query_error(*args, **kwargs):
+        raise ConnectionResetError("Cosmos DB connection reset")
+
+    mapping_storage.find_completed_by_image_ref = mock_query_error
+
+    with pytest.raises(ConnectionResetError, match="Cosmos DB connection reset"):
+        await storage.verify_media_exists(
+            "home-alpha", "blob://households/home-alpha/media/test.jpg"
+        )
+
+
+@pytest.mark.anyio
+async def test_analyze_image_idempotency_on_completed_photo(mapping_storage):
+    """驗證已完成之照片多次調用 analyze_image 時，能安全等冪復用且不引發狀態機轉移衝突。"""
+    from app.services.vision import AzureOpenAIVisionService, VisionOpenAISettings
+
+    storage = LocalStagingMediaStorage(mapping_port=mapping_storage, auto_process=True)
+    req = UploadAuthorizationRequest(
+        household_id="home-alpha",
+        filename="repeat.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=6,
+    )
+    auth = await storage.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
+
+    # 上傳並自動推進至 COMPLETED
+    await storage.receive_staged_upload(token, b"repeat")
+
+    settings = VisionOpenAISettings(
+        endpoint="https://mock-vision.openai.azure.com/",
+        api_key="mock-key",
+        deployment="gpt-4o",
+    )
+    vision_service = AzureOpenAIVisionService(
+        settings=settings, media_storage=storage, mock_fallback=True
+    )
+
+    # 第一次調用：成功取得分析結果
+    res1 = await vision_service.analyze_image("home-alpha", auth.image_ref)
+    assert res1.image_ref == auth.image_ref
+
+    # 第二次調用：應安全復用快取，絕不可引發 COMPLETED -> PROCESSING 轉移例外
+    res2 = await vision_service.analyze_image("home-alpha", auth.image_ref)
+    assert res2.image_ref == auth.image_ref
+    assert res2.detected_items == res1.detected_items

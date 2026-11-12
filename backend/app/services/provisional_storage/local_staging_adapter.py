@@ -12,6 +12,7 @@
 """
 
 import hashlib
+import logging
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -28,9 +29,12 @@ from app.models.storage import (
     UploadAuthorizationResponse,
 )
 from app.services.media_mapping import (
+    MediaMappingNotReady,
     MediaMappingPort,
     MediaMappingSnapshot,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class LocalStagingMediaStorage:
@@ -40,9 +44,11 @@ class LocalStagingMediaStorage:
         self,
         base_staging_url: str | None = None,
         mapping_port: MediaMappingPort | None = None,
+        auto_process: bool = True,
     ) -> None:
         self._configured_base_url = base_staging_url
         self._mapping_port = mapping_port
+        self._auto_process = auto_process
         # In-memory registry tracking staged items: (household_id, image_ref) -> bytes
         self._staged_media: dict[tuple[str, str], bytes] = {}
         # In-memory registry tracking pending authorization tokens
@@ -138,8 +144,14 @@ class LocalStagingMediaStorage:
                     await self.fail_processing(
                         household_id, image_ref, MediaFailureReason.UPLOAD_TIMEOUT
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.error(
+                        "Failed to record FAILED state on upload timeout for image_ref=%s: %s",
+                        image_ref,
+                        exc,
+                        exc_info=True,
+                    )
+                    raise
             raise TimeoutError(f"Upload token '{upload_token}' has expired")
 
         if len(payload_bytes) == 0:
@@ -148,8 +160,14 @@ class LocalStagingMediaStorage:
                     await self.fail_processing(
                         household_id, image_ref, MediaFailureReason.VALIDATION_FAILED
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.error(
+                        "Failed to record FAILED state on empty payload for image_ref=%s: %s",
+                        image_ref,
+                        exc,
+                        exc_info=True,
+                    )
+                    raise
             raise ValueError("Payload cannot be empty")
 
         if len(payload_bytes) > 10_485_760:
@@ -158,8 +176,14 @@ class LocalStagingMediaStorage:
                     await self.fail_processing(
                         household_id, image_ref, MediaFailureReason.VALIDATION_FAILED
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.error(
+                        "Failed to record FAILED state on oversized payload for image_ref=%s: %s",
+                        image_ref,
+                        exc,
+                        exc_info=True,
+                    )
+                    raise
             raise ValueError(
                 f"Payload exceeds maximum allowed size of 10MB: {len(payload_bytes)} bytes"
             )
@@ -183,12 +207,18 @@ class LocalStagingMediaStorage:
             )
             self._snapshots[(household_id, image_ref)] = updated_snap
 
+            if self._auto_process:
+                await self.begin_processing(household_id, image_ref)
+                await self.complete_processing(household_id, image_ref)
+
         return (household_id, image_ref)
 
     async def begin_processing(self, household_id: str, image_ref: str) -> None:
         """Advance media mapping state to PROCESSING."""
         if self._mapping_port is not None:
             snap = await self._get_snapshot(household_id, image_ref)
+            if snap.record.status == MediaProcessingStatus.COMPLETED:
+                return
             now = datetime.now(UTC)
             updated_snap = await self._mapping_port.transition(
                 household_id=household_id,
@@ -213,6 +243,8 @@ class LocalStagingMediaStorage:
         artifact_ref = f"blob://households/{household_id}/media/{input_id}/derived/vision_v1.json"
 
         if self._mapping_port is not None and snap is not None:
+            if snap.record.status == MediaProcessingStatus.COMPLETED:
+                return snap.record.artifact_ref or artifact_ref
             now = datetime.now(UTC)
             updated_snap = await self._mapping_port.transition(
                 household_id=household_id,
@@ -250,19 +282,23 @@ class LocalStagingMediaStorage:
         """Check whether media exists, belongs to household, and is ready for agent."""
         if self._mapping_port is not None:
             try:
-                snapshot = await self._mapping_port.find_by_image_ref(
+                snapshot = await self._mapping_port.find_completed_by_image_ref(
                     household_id=household_id,
                     image_ref=image_ref,
                 )
-                if snapshot is None:
-                    return False
-                return snapshot.record.status in (
-                    MediaProcessingStatus.RECEIVED,
-                    MediaProcessingStatus.PROCESSING,
-                    MediaProcessingStatus.COMPLETED,
-                )
-            except Exception:
+                return snapshot is not None
+            except MediaMappingNotReady:
                 return False
+            except Exception as exc:
+                logger.error(
+                    "Unexpected persistence error verifying media existence for "
+                    "household_id=%s image_ref=%s: %s",
+                    household_id,
+                    image_ref,
+                    exc,
+                    exc_info=True,
+                )
+                raise
 
         return (household_id, image_ref) in self._staged_media
 

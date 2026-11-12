@@ -162,6 +162,7 @@ class AzureOpenAIVisionService:
         self.mock_fallback = mock_fallback
         self._fallback_service = MockVisionService()
         self._normalizer = ItemNormalizer()
+        self._results_cache: dict[tuple[str, str], VisionAnalysisResult] = {}
 
     async def analyze_image(
         self,
@@ -171,6 +172,10 @@ class AzureOpenAIVisionService:
     ) -> VisionAnalysisResult:
         if not image_ref or not image_ref.strip():
             raise ValueError("image_ref must be a non-empty string reference.")
+
+        cache_key = (household_id, image_ref.strip())
+        if cache_key in self._results_cache:
+            return self._results_cache[cache_key]
 
         # Offline / unconfigured protection
         if not self.settings.api_key or not self.settings.endpoint:
@@ -312,6 +317,7 @@ class AzureOpenAIVisionService:
             await self.media_storage.complete_processing(
                 household_id, image_ref.strip(), result.model_dump_json()
             )
+            self._results_cache[cache_key] = result
             return result
         except Exception as exc:
             logger.warning("Azure OpenAI Vision execution failed (%s)", exc)

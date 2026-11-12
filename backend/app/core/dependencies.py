@@ -1,4 +1,5 @@
 import atexit
+import logging
 import os
 import threading
 from collections.abc import Mapping
@@ -13,6 +14,7 @@ from app.services.cosmos_write import TransactionalBatchClient
 from app.services.demo import DemoInventoryService, DemoShoppingService
 from app.services.interfaces import InventoryService, ShoppingService
 from app.services.media_mapping import CosmosMediaMappingStorage, MediaMappingPort
+from app.services.provisional_storage.azure_blob_adapter import AzureBlobMediaStorage
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
 from app.services.speech import (
@@ -79,6 +81,9 @@ def _create_vision_service(
     return None
 
 
+logger = logging.getLogger(__name__)
+
+
 def _create_media_storage_service(
     read_repository: CosmosReadRepository | None = None,
     write_client: TransactionalBatchClient | None = None,
@@ -88,25 +93,65 @@ def _create_media_storage_service(
     env = os.environ if environment is None else environment
     base_url = env.get("NESTOCK_STAGING_BASE_URL")
     if mapping_port is None and read_repository is not None:
+        client_obj = getattr(read_repository, "_client", None) or getattr(
+            read_repository, "_query_client", None
+        )
         if write_client is not None:
             mapping_port = CosmosMediaMappingStorage(
                 read_repository=read_repository,
                 write_client=write_client,
             )
-        elif isinstance(getattr(read_repository, "_query_client", None), TransactionalBatchClient):
+        elif hasattr(client_obj, "execute_batch"):
             mapping_port = CosmosMediaMappingStorage(
                 read_repository=read_repository,
-                write_client=read_repository._query_client,  # type: ignore[arg-type]
+                write_client=client_obj,  # type: ignore[arg-type]
             )
-        elif hasattr(getattr(read_repository, "_query_client", None), "_container"):
+        elif hasattr(client_obj, "_container"):
             from app.services.cosmos_sdk import AzureCosmosTransactionalBatchClient
 
             mapping_port = CosmosMediaMappingStorage(
                 read_repository=read_repository,
                 write_client=AzureCosmosTransactionalBatchClient(
-                    read_repository._query_client._container
+                    client_obj._container
                 ),
             )
+
+    # 偵測雲端 Azure Blob Storage 配置 (支援連線字串或 Endpoint + DefaultAzureCredential)
+    conn_str = env.get("AZURE_STORAGE_CONNECTION_STRING")
+    blob_endpoint = env.get("AZURE_STORAGE_BLOB_ENDPOINT")
+    container_name = env.get("AZURE_STORAGE_CONTAINER_NAME", "media")
+
+    if conn_str:
+        try:
+            from azure.storage.blob import BlobServiceClient
+
+            blob_client = BlobServiceClient.from_connection_string(conn_str)
+            return AzureBlobMediaStorage(
+                blob_service_client=blob_client,
+                container_name=container_name,
+                base_staging_url=base_url,
+                mapping_port=mapping_port,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to initialize AzureBlobMediaStorage from connection string: %s", exc
+            )
+    elif blob_endpoint:
+        try:
+            from azure.identity import DefaultAzureCredential
+            from azure.storage.blob import BlobServiceClient
+
+            credential = DefaultAzureCredential()
+            blob_client = BlobServiceClient(account_url=blob_endpoint, credential=credential)
+            return AzureBlobMediaStorage(
+                blob_service_client=blob_client,
+                container_name=container_name,
+                base_staging_url=base_url,
+                mapping_port=mapping_port,
+            )
+        except Exception as exc:
+            logger.warning("Failed to initialize AzureBlobMediaStorage from blob endpoint: %s", exc)
+
     return LocalStagingMediaStorage(base_staging_url=base_url, mapping_port=mapping_port)
 
 

@@ -13,18 +13,21 @@ import 'agent_fixtures.dart';
 class DelayedAgent implements AgentClient {
   final result = Completer<AgentReply>();
   @override
-  Future<AgentReply> send(String message) => result.future;
+  Future<AgentReply> send(String message, {String? replacesApprovalId}) =>
+      result.future;
   @override
   Future<AgentReply> resume({
     required String approvalId,
     required bool approved,
+    String? selectedOptionId,
+    List<String>? approvedOperationIds,
   }) => result.future;
 }
 
 class MixedAgent implements AgentClient {
   int calls = 0;
   @override
-  Future<AgentReply> send(String message) async {
+  Future<AgentReply> send(String message, {String? replacesApprovalId}) async {
     if (calls++ == 0) {
       return const AgentReply(
         message: '已辨識',
@@ -38,6 +41,8 @@ class MixedAgent implements AgentClient {
   Future<AgentReply> resume({
     required String approvalId,
     required bool approved,
+    String? selectedOptionId,
+    List<String>? approvedOperationIds,
   }) async => const AgentReply(message: '完成');
 }
 

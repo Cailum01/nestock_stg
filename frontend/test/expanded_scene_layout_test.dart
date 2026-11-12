@@ -9,7 +9,7 @@ import 'camera_attachment_test.dart' as photo;
 
 class VisionAgent implements PhotoAwareAgentClient {
   @override
-  Future<AgentReply> send(String message) async =>
+  Future<AgentReply> send(String message, {String? replacesApprovalId}) async =>
       sendWithPhoto(message, 'ref');
   @override
   Future<AgentReply> sendWithPhoto(
@@ -34,6 +34,8 @@ class VisionAgent implements PhotoAwareAgentClient {
   Future<AgentReply> resume({
     required String approvalId,
     required bool approved,
+    String? selectedOptionId,
+    List<String>? approvedOperationIds,
   }) async => const AgentReply(message: '');
 }
 

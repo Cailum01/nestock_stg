@@ -21,7 +21,7 @@ class MockAgentClient implements AgentClient {
   int _sequence = 0;
 
   @override
-  Future<AgentReply> send(String message) async {
+  Future<AgentReply> send(String message, {String? replacesApprovalId}) async {
     if (scenario == MockScenario.conversation) {
       return const AgentReply(message: '這是對話介面示範回覆。');
     }
@@ -83,6 +83,8 @@ class MockAgentClient implements AgentClient {
   Future<AgentReply> resume({
     required String approvalId,
     required bool approved,
+    String? selectedOptionId,
+    List<String>? approvedOperationIds,
   }) async => AgentReply(
     message: approved ? '確認流程示範結束，沒有儲存任何變更。' : '已取消示範，沒有儲存任何變更。',
     results: const [

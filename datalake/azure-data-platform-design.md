@@ -1,14 +1,13 @@
 # Nestock Azure Data Platform Design
 
-**Status:** B1 persistence design; incorporates owner decisions where linked,
-and labels unresolved items as proposals or future work
+**Status:** B1 persistence design; records agreed boundaries and labels unresolved
+decisions as proposals or future work
 **Scope:** Persistence and storage boundaries for multimodal user input, inventory,
 transactions, descriptive notes, and future Agent workflows
-**Implementation status:** The backend defaults to offline demo data, but its
-approved, opt-in, Entra-authenticated Cosmos path performs read-only Inventory,
-Shopping, and forecast/TransactionHistory reads when all `NESTOCK_COSMOS_*`
-settings are supplied. Offline-testable write primitives exist; no domain write
-workflow or Azure write integration is connected.
+**Write boundary:** The opt-in Cosmos read path and storage primitives do not
+authorize or enable business mutations. Any write workflow requires applicable
+approval and must satisfy the scope, idempotency, and atomicity requirements
+below.
 
 This document records initial design decisions and their adjustment points. It is
 an implementation guide for AI-assisted development, not a second API schema.
@@ -24,10 +23,10 @@ approved as a domain-model change.
 | Original user media | Private Azure Blob Storage; required for uploaded binary files | Container layout, region, replication, and lifecycle policy are environment settings |
 | Text input and notes | Store as scoped records in Cosmos when the user action requires persistence | Separate Agent conversation history remains an A1 decision |
 | Data Lake | Do not require or deploy it for the first implementation | Add ADLS Gen2 only when analytics, long-term event replay, or a formal audit requirement justifies it |
-| Multimodal processing | Keep original media, bounded derived observations, and business records separate | A2's input/artifact metadata and processing lifecycle remain proposals; long-running task persistence is outside the current MVP |
-| Inventory and shopping writes | Persist the approved domain changes, transaction, operation receipt, and change event atomically within one household partition | Generic Cosmos SDK batch client exists, but no domain write workflow is connected |
+| Multimodal processing | Keep original media, bounded derived observations, and business records separate | Media lifecycle and B1 mapping-storage boundaries are agreed; artifact/schema versions and A2 integration require owner coordination; long-running task persistence is outside the current MVP |
+| Inventory and shopping writes | Persist the approved domain changes, transaction, operation receipt, and change event atomically within one household partition | A future bounded purchase flow requires shared read/write client composition and coordinated C2 presentation support |
 | Transaction history | B2 reads raw transactions through B1's household-scoped repository; B1 does not pre-aggregate | `item_id` remains required; no feature-only transaction or transaction-item link is in the selected contract |
-| Item resolution | Resolve an item before creating a Transaction; existing item aliases may be extended through an approved operation | A1 selected layered matching in Issue #36; alias mutation remains part of the future approved write flow |
+| Item resolution | Resolve an item before creating a Transaction; existing item aliases may be extended through an approved operation | Use layered matching; alias mutation remains part of a future approved write flow |
 | Inventory removal | Soft-delete inventory records; retain IDs and transaction history | Distinct from personal-data erasure and Blob retention |
 | Family member preferences | Keep household inventory shared and store `like` / `dislike` per member and item; missing preference means `normal` | Requires an approved identity/membership feature; excluded from Skeleton v1 |
 | Forecast evaluation | P0 uses B2's read-only historical backtesting; no evaluation record is persisted | Any future persisted evaluation requires a new B2 proposal and authorization/read-boundary review |
@@ -71,10 +70,9 @@ item preferences, but does not implement household accounts or membership.
 - **B2** owns forecast and transaction-history aggregation behavior. B2 reads
   raw transaction records and computes its own aggregates; B1 provides
   household-scoped source records and query filters, not forecast-ready summaries.
-- **C1** owns ShoppingService behavior and `complete_purchase`. The initial
-  same-household-partition batch boundary is agreed for the workflow described
-  in Issue #27; the generic Cosmos SDK batch client is not yet connected to a
-  mutation service.
+- **C1** owns ShoppingService behavior and `complete_purchase`. Related purchase
+  mutations must fit within one household-partition batch; storage primitives do
+  not define or authorize the business workflow.
 - **C2** owns frontend presentation and final wire mapping.
 
 For image perception, A2 services return observations and must not depend on
@@ -87,18 +85,36 @@ Normal API routes and Agent tools must call the same domain services. Business
 rules belong in `backend/app/services`, not in routes, storage repositories, or
 Agent adapters.
 
+### Requirements for a bounded purchase flow
+
+When implementing a bounded approval-gated purchase flow, preserve these
+requirements:
+
+- `POST /agent/messages` may persist a pending approval record, but must not
+  mutate Inventory, Shopping, or Transaction records.
+- `POST /agent/resume` may apply only the stored, server-validated, user-approved
+  purchase values. The approval transition, operation receipts, per-operation
+  Shopping and Transaction changes, change events, and any shared Inventory
+  update must commit atomically in the same household partition.
+- B1 requires the read and write repositories in application composition to
+  share one `CosmosClient`, created through the common repository factory.
+- C2 must coordinate support for rendering and handling the `pending_approval`
+  response before this flow is enabled for users.
+- This boundary does not authorize `create_item`, standalone stock
+  adjustments, generic Agent write tools, or any unapproved value changes.
+
 ### Out of scope for Skeleton v1
 
-- Connecting to cloud services for writes or media/analytics processing.
-  Exception: the explicitly approved, opt-in, Entra-authenticated, read-only
-  Cosmos path for Inventory, Shopping, and forecast/TransactionHistory reads may
-  be used for development validation; it is disabled by default and does not
-  authorize users or enable writes.
+- Write-capable cloud connections require an approved, bounded business workflow.
+  The opt-in, Entra-authenticated Cosmos path for Inventory, Shopping, and
+  forecast/TransactionHistory reads is read-only and does not authorize users
+  or enable writes.
 - Connecting the backend to Blob Storage, ADLS Gen2, Azure AI services, queues,
   or any other cloud service beyond that read-only Cosmos exception.
 - Implementing authentication, accounts, household membership, member
   preferences, real uploads, real Agent execution, task resume, approval
-  persistence, or domain mutations.
+  persistence, or domain mutations without the required owner decisions and
+  approval boundary.
 - Choosing a final Agent conversation/checkpoint schema or final wire protocol.
 - Implementing forecasting, shopping orchestration, checkout, or payment.
 - Treating AI-generated observations as confirmed inventory facts.
@@ -256,7 +272,7 @@ The following are proposed storage concepts, not final public models:
 | `user_input` | Text or reference to original media | Metadata may change for processing/deletion |
 | `note` | Descriptive user-provided context | Editable/deletable under explicit user action |
 | `agent_task_metadata` | Not used for a separate persisted task in the current one-turn MVP | Future long-running task/checkpoint persistence is an A1 decision |
-| `pending_approval` | Server-side confirmation proposal and state in the household partition | Conditional state transition; configurable 30-minute expiry per closed Issue #39 |
+| `pending_approval` | Server-side confirmation proposal and state in the household partition | Conditional state transition; configurable 30-minute expiry |
 | `operation_receipt` | Idempotency and stored operation outcome | Immutable after successful commit |
 | `change_event` | Business change provenance and future export source | Append-only |
 | `forecast_snapshot` | Withdrawn B2 P0 proposal for point-in-time forecast persistence | Not used in P0; B2 uses read-only historical backtesting |
@@ -264,13 +280,34 @@ The following are proposed storage concepts, not final public models:
 | `forecast_evaluation` | Possible future evaluation record if a later product need requires persisted outcomes | Not used in P0; any future write requires a new B2 proposal and agreement on authorization and read-only API boundaries |
 
 Use namespaced IDs to avoid collisions, for example
-`inventory:<item_id>`, `transaction:<transaction_id>`,
+`inventory_item:<item_id>`, `transaction:<transaction_id>`,
 `input:<input_id>`, `note:<note_id>`, `operation:<operation_id>`, and
 `event:<event_id>`. Do not use user-provided filenames as Cosmos IDs or Blob paths.
 Do not expose Cosmos `id`, partition implementation, or storage envelope as
 public API fields unless owners approve a contract change.
 
-#### Pending approval storage (aligned in Issues #28 and #41)
+#### New inventory item IDs
+
+For a `create_item` operation that creates one inventory item, B1 provides
+the backend helper `resolve_inventory_item_id(operation_id: str) -> str` as the
+single source of its `item_id`. The helper deterministically maps the stable
+`operation_id`; retries of the same operation therefore resolve to the same ID.
+It uses UUIDv5 with the standard URL namespace and the name
+`nestock:inventory-item:{operation_id}`; changing this derivation would change
+persisted identities and requires an explicit migration decision. Despite its
+name, the helper does not look up or match existing inventory items. A1 and C1
+must treat the returned ID as opaque and must not encode it themselves. Flutter
+neither generates nor needs to receive it. The implementation and fixed-output
+tests are in `backend/app/services/inventory_item_identity.py` and
+`backend/tests/test_inventory_item_identity.py`.
+
+Create the item only after approval, in the same household batch as the
+operation receipt and other approved writes. The current scope is one new item
+per operation. If one operation later creates multiple items, define and include
+a stable per-item key in the resolver. This does not change the approval card
+payload.
+
+#### Pending approval storage
 
 The MVP does not persist a separate Agent task or task-input schema. It persists
 each pending confirmation as a `pending_approval` record in the existing
@@ -307,12 +344,10 @@ Cosmos transactional batches, enforces the 100-operation limit, and maps indexed
 409/412 conflicts to the repository conflict type. It logs request charge,
 operation count, conflict index/status, and duration without document contents.
 A read/write factory creates both repositories over one container/client.
-Neither is wired into application composition, a domain service, API, or Agent
-tool; this is not an approval or business-write workflow. A1 owns approval
-lifecycle and validation, and no resume flow is implemented.
+These storage primitives are not themselves an approval or business-write
+workflow; A1 owns the approval lifecycle, validation, and resume.
 
-Per the decision in the closed [Issue #39](https://github.com/nestock-app/nestock/issues/39),
-confirmation expiry is 30 minutes and must remain configurable rather than
+Confirmation expiry is 30 minutes and must remain configurable rather than
 hard-coded. The server calculates the expiry and rejects confirmation after it;
 the user must start a new request to receive a new confirmation. Navigation,
 app close/reopen, and other client lifecycle events do not restart the timer or
@@ -323,14 +358,12 @@ pending approvals on their next message rather than relying on background
 scheduling or push notifications. A1 owns the lifecycle and server-side
 validation; this remains a storage contract, not an implemented approval flow.
 
-#### Transaction identity and item resolution (Issue #36)
+#### Transaction identity and item resolution
 
-The selected A1 approach in [Issue #36](https://github.com/nestock-app/nestock/issues/36)
-resolves a transaction to an inventory item before writing it. Keep the existing
+Resolve a transaction to an inventory item before writing it. Keep the existing
 Transaction contract: `item_id` remains required; do not add `feature_keywords`,
 make `item_id` optional, or introduce `transaction_item_link` records for this
-flow. The B2 proposal for a separate `recorded_at` field was part of that
-withdrawn feature-only/link alternative and is not part of the current contract.
+flow. A separate `recorded_at` field is not part of the current contract.
 
 For B2 history queries, use the existing `created_at` field as the transaction
 event time for filtering and ordering. The household-scoped query supports an
@@ -345,25 +378,23 @@ alias change and associated purchase must be shown in the same confirmation and
 written atomically with the related operation. This is a future write capability,
 not an implemented alias mutation path.
 
-#### Operation receipts and reconciliation (Issues #27 and #28)
+#### Operation receipts and reconciliation
 
 Each logical operation uses its stable `operation_id`; an idempotency receipt is
 created atomically with its domain effects. The B1 repository boundary must
 support looking up a receipt by `(household_id, operation_id)` and reading the
 related Inventory/Shopping/Transaction records. The current write primitive
-checks a receipt during an idempotent retry, but a dedicated lookup/reconciliation
-service is not yet implemented.
+checks a receipt during an idempotent retry. Domain services must also be able
+to query the receipt and related records for reconciliation.
 
-If receipt state and related domain records disagree, stop automatic writes.
-Do not infer whether an operation committed from current Inventory quantity
-alone, and do not retry under a newly generated operation ID. C1 confirmed the
-MVP policy in Issue #27: stop business writes, report
-`reconciliation-required`, and do not auto-repair partial receipts or mismatched
-domain data. A completed approval returns its stored outcome; a confirmed
-approval with no receipts may retry under the lifecycle using the same
-selection and operation IDs. A changed target requires fresh confirmation.
-A1/C1 own the user-facing recovery flow; there is no automated reconciliation
-service yet. Confirm implementation alignment and test the integrated path
+If receipt state and related domain records disagree, stop business writes,
+report `reconciliation-required`, and do not auto-repair. Do not infer whether
+an operation committed from current Inventory quantity alone, and do not retry
+under a newly generated operation ID. A completed approval returns its stored
+outcome; a confirmed approval with no receipts may retry under the lifecycle
+using the same selection and operation IDs. A changed target requires fresh
+confirmation.
+A1/C1 own the user-facing recovery flow. Define and test the integrated path
 before wiring `complete_purchase` or approval resume.
 
 ### 6.3 Notes and relationships
@@ -483,7 +514,8 @@ and shared batch writes with a batch fingerprint. A partial set of existing
 receipts stops with a reconciliation error instead of applying the batch. These
 are storage primitives, not a recovery policy: they do not compare receipts with
 Inventory, Shopping, or Transaction state. The generic Azure SDK batch client
-exists but is not wired to a domain service, API, or Agent tool.
+executes the operations it is given; it does not interpret approval or define a
+business workflow.
 
 Transaction signs, unit conversions, and quantity arithmetic policy remain
 domain decisions; persistence must store the already validated domain operation,
@@ -504,24 +536,24 @@ updates, and transactional batches; it does not interpret approval. Reusing an
 with different canonical values is a conflict and requires a newly resolved
 proposal and approval.
 
-Per A1's proposal and B1's response on [Issue #28](https://github.com/nestock-app/nestock/issues/28),
-the current MVP does not persist separate Agent tasks; pending confirmation
-records are the persistence boundary. The lifecycle is settled in
+The current MVP does not persist separate Agent tasks; pending confirmation
+records are the persistence boundary. The lifecycle is defined in
 [`contracts/approval-lifecycle.md`](../contracts/approval-lifecycle.md): the
 first `pending → confirmed` transition is an approval-only ETag update;
 `confirmed → completed` is atomic with domain writes and operation receipts;
 `cancelled` and `expired` are approval-only conditional updates; there is no
 stored `failed` status. Retries reuse the same approval and operation identities.
-Handling the unexpected partial-receipt/data-mismatch case remains open in
-Issue #27. Approval and successful execution are distinct facts: a user
-decision alone must never be reported as a completed write.
+For an unexpected partial-receipt or data mismatch, stop and report
+`reconciliation-required`; do not auto-repair. Approval and successful
+execution are distinct facts: a user decision alone must never be reported as
+a completed write.
 
 A1 owns rejecting invalid or cross-household approval IDs before calling B1.
 Rejection performs no business write; cancelling after a committed write does
 not roll it back. A failed or timed-out attempt must retain enough authoritative
 state to resolve or retry using the original approval and operation identities.
 
-#### Multi-operation confirmation batch (agreed in Issue #42)
+#### Multi-operation confirmation batch
 
 Cosmos transactional batches can provide all-or-nothing writes when all
 operations target one container and one logical partition. The current
@@ -536,17 +568,21 @@ not be passed as mutable values to resume.
 All writes for the approved subset must succeed or fail together in one
 same-container, same-household-partition batch. This includes C1's purchase
 workflow. Do not promise cross-container, cross-partition, or cross-service
-atomicity. Before enabling the SDK adapter, validate the final operation count,
-request size, and execution-time limits against Cosmos transactional-batch
-limits; reject an oversized group before any write rather than splitting it into
-partially successful writes. The batch and resume implementation remain future
-work.
+atomicity. The SDK adapter must validate the final operation count, request size,
+and execution-time limits against Cosmos transactional-batch limits; it must
+reject an oversized group before any write rather than splitting it into
+partially successful writes.
 
-#### C1 purchase workflow integration (aligned on Issue #27)
+#### C1 purchase workflow integration
 
-C1's response to [Issue #27](https://github.com/nestock-app/nestock/issues/27)
-confirms the following boundary for a purchase already resolved to an existing
-inventory item:
+The cross-owner implementation boundary is provisional per D-3: A1 validates
+the stored, user-approved values and target versions and resolves them into typed
+purchase inputs; C1's `ShoppingWriteBuilder` owns shopping-domain planning; B1's
+repository adapter persists the approved plan in the household-scoped Cosmos
+batch. A1 must not duplicate C1's purchase planning or batch composition.
+
+For a purchase already resolved to an existing inventory item, preserve this
+boundary:
 
 - Read the pending `ShoppingItem`, its resolved `InventoryItem`, and the current
   server-side approval state. Use only the user-reported, approved purchase
@@ -575,12 +611,10 @@ distinguishable from explicitly removed items. The marker is storage metadata,
 not a new public Pydantic field or status. A household-scoped conditional update
 must preserve the record and its identity.
 
-The domain behavior above is agreed, not approval to implement domain writes.
-In Issue #27, C1 accepted B1's storage-only `deleted_at` representation for
-manual removal. A future removal must validate household scope, server-side
-approval and target version, then apply the ETag-conditional marker and
-necessary operation receipt in the same household batch. It does not change
-Inventory, create a purchase or Transaction, or reverse existing history.
+A removal must validate household scope, server-side approval and
+target version, then apply the ETag-conditional marker and necessary operation
+receipt in the same household batch. It does not change Inventory, create a
+purchase or Transaction, or reverse existing history.
 
 Approval-state participation in the business batch is settled in
 [`contracts/approval-lifecycle.md`](../contracts/approval-lifecycle.md). C1
@@ -591,8 +625,8 @@ that a domain write adapter or user-facing recovery flow is implemented.
 
 #### C2 confirmation UI integration boundary
 
-C2's response to [Issue #32](https://github.com/nestock-app/nestock/issues/32)
-distinguishes presentation state from approval and server truth:
+The frontend must distinguish presentation state from approval and server
+truth:
 
 - Field edits are local drafts until the user submits a correction. A correction
   is sent to the Agent to resolve a new proposal; it is not approval and does
@@ -602,19 +636,20 @@ distinguishes presentation state from approval and server truth:
   proposal; the UI control and local selection state are not authorization.
 - A pending card may retain its view/draft state while navigating within the
   active app session. This alone does not require restoring an approval after
-  process restart; server-side approval persistence follows the boundary agreed
-  in Issues #28 and #41.
+  process restart; server-side approval persistence follows
+  [Pending approval storage](#pending-approval-storage) above.
 - On an ambiguous confirmation timeout, the UI retains the proposal and retries
   with the original approval/operation identities. Only an authoritative server
   outcome can show the operation as completed; client state cannot infer whether
   a write committed.
 
 This records C2's presentation requirements, not an authoritative wire model.
-Correction request fields remain subject to A1/C2 agreement. The same-partition
-atomicity and selected-operation semantics are agreed in Issue #42; server-side
-approval validation and write execution remain unimplemented.
+The correction request is defined in section 7 of
+[`contracts/approval-lifecycle.md`](../contracts/approval-lifecycle.md). The
+same-partition atomicity and selected-operation semantics are required;
+server-side approval validation and write execution follow that contract.
 
-#### Item matching and alias persistence (Issue #36)
+#### Item matching and alias persistence
 
 A1 selected resolving the inventory item before writing a Transaction. The
 Transaction remains linked directly by its required `item_id`; do not create
@@ -650,42 +685,29 @@ use (for example, the latest N soy sauce purchases). The caller chooses the
 window/limit; B1 does not pre-compute consumption or predictions.
 
 For B2's history queries, `created_at` is the event-time field used for
-filtering and ordering. The feature-only transaction, `recorded_at`, and
-transaction-to-item link alternatives discussed in [Issue #31](https://github.com/nestock-app/nestock/issues/31)
-were not selected. A1 selected resolving the item before writing in
-[Issue #36](https://github.com/nestock-app/nestock/issues/36); `item_id` remains
-required. B1 therefore does not implement feature-keyword transaction queries,
-link resolution, or link indexes. A1 owns matching; B1 provides the exact item
-and household reads needed by the domain service.
+filtering and ordering. The Transaction remains linked directly to its
+required `item_id`; do not add `recorded_at`, feature-keyword transaction
+queries, transaction-to-item links, or link indexes. A1 owns matching; B1
+provides the exact item and household reads needed by the domain service.
 
 Also support non-B2 household-scoped reads for listing active inventory, loading
 records by stable ID, and loading notes explicitly linked to a known record.
 Separate persisted Agent-task reads are outside the current MVP; input metadata
 reads require an agreed input persistence workflow before implementation.
 
-B2's response to [Issue #31](https://github.com/nestock-app/nestock/issues/31)
-confirms its current forecast adapter reads household Transaction history through
-B1's `TransactionQuery` and `CosmosReadRepository`; the current B2 adapter
-composition opens a second read-only Cosmos client to the same configured
-container. **B1's composition decision is to share one repository/client instance.**
-The B1 dependency composition now retains the repository and exposes it through
-`get_cosmos_read_repository()`; Inventory and Shopping continue using that same
-instance. When integrating B2's service, its `TransactionHistory` Cosmos adapter
-should receive this repository rather than create another client or credential.
-This avoids duplicate connections and duplicate lifecycle management while
-preserving B1's query boundary. The B2 wiring still needs coordination when
-integrating PR #16. This does not expose a new public Transaction route or change
-the current read-only scope.
+Forecast history adapters use the shared B1 `TransactionQuery` and
+`CosmosReadRepository`; application composition should inject the same
+repository/client used by Inventory and Shopping rather than create another
+client or credential. This avoids duplicate connections and lifecycle
+management while preserving B1's query boundary. This does not expose a new
+public Transaction route or change the read-only scope.
 
-#### Forecast test connectivity (PR #53)
+#### Forecast test connectivity
 
-The team meeting explicitly decided that forecast API integration tests use the
-real configured Cosmos DB through the read-only data path whenever all
-`NESTOCK_COSMOS_*` settings are present. Earlier generic offline-only wording did
-not capture this decision and blocked AI development; this subsection is the
-current guidance and supersedes that interpretation. Do not override the
-Inventory or TransactionHistory dependencies to force demo services in this
-Cosmos-configured test mode. Use synthetic development records, keep household
+When all `NESTOCK_COSMOS_*` settings are present, forecast API integration tests
+use the configured Cosmos DB through the read-only data path. Do not override
+the Inventory or TransactionHistory dependencies to force demo services in this
+mode. Use synthetic development records, keep household
 scope, and do not assume demo-only records such as `demo-rice` exist in the
 configured container. Without Cosmos settings, the existing demo fallback
 remains available. This decision permits read-only development access only; it
@@ -730,15 +752,14 @@ follow-up question rather than writing an unresolved Transaction. A2's proposed
 versioned unit whitelist remains subject to owner agreement; no global unit
 registry or general conversion engine is implied.
 
-#### P0 countable quantities and Shopping Intent (Issue #52)
+#### P0 countable quantities and Shopping Intent
 
-Issue #52 is closed with the following cross-owner P0 contract. Persisted
-`InventoryItem.quantity` and `Transaction.quantity_delta` use integers for
-countable inventory units. `ShoppingItem.quantity` is an optional integer and
-`ShoppingItem.unit` is optional: a Shopping entry may contain only its `name`,
-and omitting quantity must not silently default it to `1`. This does not make
-weight or volume package specifications inventory quantities, and it does not
-constrain B2's calculated forecast values to integers.
+Persisted `InventoryItem.quantity` and `Transaction.quantity_delta` use
+integers for countable inventory units. `ShoppingItem.quantity` is an optional
+integer and `ShoppingItem.unit` is optional: a Shopping entry may contain only
+its `name`, and omitting quantity must not silently default it to `1`. This
+does not make weight or volume package specifications inventory quantities,
+and it does not constrain B2's calculated forecast values to integers.
 
 Keep the planned Shopping quantity distinct from the actual purchased quantity.
 On purchase completion, only the user-confirmed actual integer quantity updates
@@ -748,15 +769,14 @@ invent one. Agent additions retain their HITL confirmation; a Direct Shopping
 UI submission is explicit user intent but still requires backend validation and
 must report success only after persistence. Both entry paths use C1's shared
 ShoppingService. Stable request identity and its binding to operation IDs,
-approvals, and receipts remain part of the cross-owner integration tracked by
-Issue #60.
+approvals, and receipts require cross-owner integration.
 
 B2 has identified a possible need for an authoritative time marking when an
 Inventory quantity was last confirmed, distinct from general `updated_at`.
-`quantity_confirmed_at` or equivalent is not part of the current domain model
-decision in Issue #31. Before adding it, B2 must define the forecast semantics
-and affected quantity-changing workflows with B1/C1; do not infer it from
-`updated_at` or introduce a persistence-only timestamp without that agreement.
+`quantity_confirmed_at` or equivalent is not part of the current domain model.
+Before adding it, B2 must define the forecast semantics and affected
+quantity-changing workflows with B1/C1; do not infer it from `updated_at` or
+introduce a persistence-only timestamp without that agreement.
 
 When forecast inputs are insufficient, B2 returns a status and suggested next
 step; it does not persist an inferred adjustment. The Agent may politely ask
@@ -768,14 +788,13 @@ scheduler or push notification for this behavior.
 
 #### B2 forecast evaluation (P0 uses read-only backtesting)
 
-Per B2's follow-up on [Issue #31](https://github.com/nestock-app/nestock/issues/31),
-`forecast_snapshot` and the previously described `forecast_evaluation` are the
-same proposed persistence concept. B2 withdrew that proposal for P0. Instead,
-B2 will evaluate its rule-based forecast offline by replaying historical
-household Transactions as of past dates and comparing computed consumption with
-subsequent purchase/consumption records. This requires only the existing
-household-scoped, read-only Transaction history; B1 does not add a record type,
-write, index, or forecast-specific repository method for this P0 approach.
+P0 forecasting uses read-only backtesting rather than persisted
+`forecast_snapshot` or `forecast_evaluation` records. B2 evaluates its
+rule-based forecast offline by replaying historical household Transactions as
+of past dates and comparing computed consumption with subsequent
+purchase/consumption records. This requires only the existing household-scoped,
+read-only Transaction history; B1 does not add a record type, write, index, or
+forecast-specific repository method for this P0 approach.
 
 The backtest can evaluate daily consumption, but Transactions do not record the
 historical confirmed inventory quantity needed to fully evaluate the date stock
@@ -785,8 +804,8 @@ any writes coexist with read-only forecast/API behavior. Do not silently restore
 the withdrawn P0 proposal.
 
 The proposed `sufficiency_check` record and “no second confirmation” answer
-write are now P1 and out of current B1 scope per B2's follow-up on Issue #31.
-Do not implement its schema, reads, or writes as part of the current B1 work.
+write are P1 and out of current B1 scope. Do not implement its schema, reads,
+or writes as part of the current B1 work.
 
 No forecast persistence schema, stable-ID policy, retention rule, or write
 authorization is needed for this P0 backtest. If a later B2 requirement adds
@@ -807,8 +826,8 @@ B1 proposes representing explicit Shopping removal with the same storage-only
 `deleted_at` marker on the `shopping_item` document, rather than adding a third
 public Shopping status or physically deleting the record. The active Shopping
 List read returns only `pending` records without a deletion marker; completed
-entries remain distinguishable from explicitly removed entries. C1 accepted
-this representation in Issue #27. When implemented, removal must use the
+entries remain distinguishable from explicitly removed entries. This
+storage-only representation is agreed with C1. When implemented, removal must use the
 household partition, validate the approval and target version, and conditionally
 write the marker with its operation receipt in the same batch to avoid removing
 a stale item.
@@ -883,25 +902,20 @@ and may include:
 The exact model and API shape remain provisional. Do not add a generic “all
 possible fields” model to the domain contract before the owners agree on it.
 
-In its response to [Issue #30](https://github.com/nestock-app/nestock/issues/30),
-A2 proposed `user_input` and `derived_artifact` records and an input-processing
-lifecycle. A2 subsequently withdrew persistence of complete Vision reasoning
-and confirmed the boundary should contain only bounded, structured, objective
-observations; hidden model reasoning is never persisted. A2 also corrected the
-public identifier boundary: clients and Agent requests continue to use opaque
-`image_ref`; `input_id` is an internal persistence identity and is not exposed
-by the current upload authorization API. In Issue #30 (closed 2026-11-06) A2
-and B1 agreed the mapping is created and validated server-side: when the
-backend authorizes an upload it writes an initial mapping record (internal
-`input_id`, opaque `image_ref`, `household_id`, `content_type`, expected
-`file_size_bytes`, state `allocated`) instead of parsing client-supplied paths,
-and later use of an `image_ref` is validated by a household-scoped server-side
-lookup. A2's pipeline never accesses Cosmos directly; it calls a storage port
-provided by B1. This is the first planned formal Cosmos write path and is gated
-on B1's write adapter progress (PR #51 provides offline primitives only; no
-Azure SDK batch client yet), so A2 stays on local staging storage until that
-port exists. Do not assume a 1:1 mapping to an internal media ID without
-validating ownership.
+The internal persistence boundary may use `user_input` and
+`derived_artifact` records and an input-processing lifecycle. Persist only
+bounded, structured, objective observations; never persist hidden model
+reasoning. Clients and Agent requests use opaque `image_ref`; `input_id` is an
+internal persistence identity and is not exposed by the upload authorization
+API. The mapping is created and validated server-side: when the backend
+authorizes an upload it writes an initial mapping record (internal `input_id`,
+opaque `image_ref`, `household_id`, `content_type`, expected `file_size_bytes`,
+state `allocated`) instead of parsing client-supplied paths, and later use of
+an `image_ref` is validated by a household-scoped server-side lookup. A2's
+pipeline never accesses Cosmos directly; it calls a storage port provided by
+B1. Internal record and method names are provisional, not public API schema.
+Do not assume a 1:1 mapping to an internal media ID without validating
+ownership.
 
 The proposed artifact set, producer/schema versions, retention classes, and
 input-record fields remain subject to the relevant owner agreement. Original
@@ -917,9 +931,7 @@ media-processing lifecycle:
 allocated -> received -> processing -> completed / failed
 ```
 
-This state machine is confirmed between A2 and B1 (Issue #30, 2026-11-06) with
-four lifecycle triggers; it remains an agreed boundary, not an implemented
-service or a public contract:
+This is an agreed internal boundary, not a public contract:
 
 - **Create**: `POST /api/media/upload-authorization` allocates the internal
   `input_id` and opaque `image_ref`, writes the initial mapping record as
@@ -940,7 +952,7 @@ service or a public contract:
   and Blob lifecycle policy. Media attached to a confirmed business record is
   retained while the attachment is active (Section 1.1), not for a fixed
   90 days; the mapping record's retention is symmetric with its media. The
-  confirmation-card 30-minute expiry (Issue #39) is a business deadline only
+  confirmation-card 30-minute expiry is a business deadline only
   and does not define orphanhood. Deletion relies on infrastructure
   TTL/lifecycle policies; service code does not implement deletion schedulers.
 
@@ -955,8 +967,8 @@ only bounded task metadata (scope, status, timestamps, attempt/error category,
 and references), not prompts, hidden reasoning, raw media, or unbounded model
 output.
 
-Feature-keyword normalization is not used for Transaction persistence under the
-selected item-resolution approach in Issue #36. A2's name/quantity/unit
+Feature-keyword normalization is not used for Transaction persistence; resolve
+the inventory item before writing. A2's name/quantity/unit
 extraction, unit whitelist/version, artifact producer/schema version format, and
 retention classes still require the relevant owner/policy agreement. Derived
 artifacts must be bounded objective observations such as detected-item facts,
@@ -986,9 +998,7 @@ This provides an exportable event document only for committed changes. Do not us
 Cosmos Change Feed alone as an audit log: ordinary item updates can be coalesced
 to the latest state, and deletes require explicit handling.
 
-**Provisional contract per [Issue #60](https://github.com/nestock-app/nestock/issues/60).**
-B1 defines `ChangeEvent` (`backend/app/models/domain.py`) and builds its create
-operation with `change_event_create()` (`backend/app/services/cosmos_write.py`):
+**Provisional ChangeEvent contract.** Its shape and batch placement are:
 
 - One event per `operation_id`; `event_id` equals `operation_id` and the Cosmos
   document id is `change_event:{operation_id}`, so a retry maps to the same
@@ -1018,12 +1028,8 @@ If none applies, keep events in Cosmos according to the agreed operational polic
 and do not duplicate them into a lake. When activated, export only event records
 and approved fields, not raw files or unrestricted Cosmos documents.
 
-For the current forecast workload, B2 has stated in
-[Issue #31](https://github.com/nestock-app/nestock/issues/31) that it has no
-approved analytics consumer, lake query, long-term replay, or separate audit
-retention need: forecasts and accuracy checks read Cosmos on demand, with an
-estimated 700–3,000 Transactions per household per year. This workload does not
-trigger Data Lake activation. Do not build a B2 lake pipeline unless an approved
+Forecasting served by household-scoped Cosmos reads does not by itself trigger
+Data Lake activation. Do not build a forecast lake pipeline unless an approved
 consumer or other Section 9.2 criterion emerges.
 
 ### 9.3 Future export behavior

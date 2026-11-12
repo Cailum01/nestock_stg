@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.agent import (
+    AgentRequest,
     AgentResponse,
     AgentResult,
     ApprovalPresentation,
@@ -112,6 +113,7 @@ def test_provisional_approval_and_result_concepts(presentation):
             operations=[
                 ProposedOperation(
                     operation_id="operation-1",
+                    action="add_to_shopping_list",
                     description="Add milk",
                     values={"name": "牛奶", "quantity": 1, "unit": "瓶"},
                 )
@@ -124,6 +126,77 @@ def test_provisional_approval_and_result_concepts(presentation):
 def test_empty_approval_is_invalid():
     with pytest.raises(ValidationError):
         PendingApproval(approval_id="empty", presentation="single_action", operations=[])
+
+
+def test_item_match_and_new_item_cards_follow_issue_90():
+    item_match = {
+        "approval_id": "approval-1",
+        "presentation": "item_match",
+        "operations": [
+            {
+                "operation_id": "operation-1",
+                "action": "confirm_item_match",
+                "description": "這是家裡的洗潔精嗎？",
+                "values": {
+                    "user_term": "洗碗精",
+                    "candidate_item_id": "item-dish-soap",
+                    "candidate_name": "洗潔精",
+                    "quantity": 1,
+                    "unit": "瓶",
+                },
+            }
+        ],
+        "options": [
+            {"option_id": "same_item", "label": "是，加到洗潔精"},
+            {"option_id": "new_item", "label": "不是，這是新的東西"},
+        ],
+    }
+    new_item = {
+        "approval_id": "approval-2",
+        "presentation": "single_action",
+        "operations": [
+            {
+                "operation_id": "operation-2",
+                "action": "create_item",
+                "description": "會新增一個庫存品項：洗碗精",
+                "values": {"name": "洗碗精", "quantity": 1, "unit": "瓶", "location": "廚房"},
+            }
+        ],
+    }
+    for card in (item_match, new_item):
+        parsed = PendingApproval.model_validate(card)
+        assert parsed.model_dump(mode="json") == card | {"options": card.get("options", [])}
+
+
+@pytest.mark.parametrize("action", [None, ""])
+def test_every_operation_says_what_it_does(action):
+    fields = dict(operation_id="operation-1", description="Add milk", values={})
+    if action is not None:
+        fields["action"] = action
+    with pytest.raises(ValidationError):
+        ProposedOperation(**fields)
+
+
+def test_agent_request_may_name_the_card_it_changes():
+    """送出修改 on a card sends the change with the card's approval_id (Issue #91)."""
+    change = AgentRequest(
+        household_id="demo-household",
+        message="衛生紙：數量改成 3，位置改成 浴室櫃",
+        replaces_approval_id="approval-1",
+    )
+    assert change.replaces_approval_id == "approval-1"
+
+    chat = AgentRequest(household_id="demo-household", message="家裡還有白米嗎？")
+    assert chat.replaces_approval_id is None
+
+
+def test_agent_request_rejects_a_blank_card_to_replace():
+    with pytest.raises(ValidationError):
+        AgentRequest(
+            household_id="demo-household",
+            message="衛生紙：數量改成 3",
+            replaces_approval_id="",
+        )
 
 
 def resume_data(**changes):

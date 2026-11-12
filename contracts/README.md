@@ -24,15 +24,18 @@ Stable operation identity is necessary for future durable idempotency.
 
 | Model | Current minimal purpose |
 | --- | --- |
-| AgentRequest | household scope and natural-language message |
+| AgentRequest | household scope, natural-language message, optional opaque `image_ref`, optional `replaces_approval_id` when the user changes a card (Issue #91) |
 | AgentResponse | speech, result list, optional pending approval |
 | AgentResult | kind, display summary, provisional structured data |
-| PendingApproval | identity, presentation, proposed operation group, purchase options (`purchase_options` only) |
-| ProposedOperation | stable identity, description, resolved values for display |
-| ResumeRequest | scope, approval identity, approve/reject decision, and the user's selection (`approved_operation_ids` for batch, `selected_option_id` for purchase options; D-10) |
+| PendingApproval | identity, presentation, proposed operation group, options (`purchase_options` and `item_match` only) |
+| ProposedOperation | stable identity, `action` marker the App shows the operation by (Issue #90), description, resolved values for display |
+| ResumeRequest | scope, approval identity, approve/reject decision, and the user's selection (`approved_operation_ids` for batch, `selected_option_id` for purchase options and item match; D-10, Issue #90) |
 
 Result kinds: inventory, vision, forecast, purchase_options, action_result.
-Approval presentations: single_action, batch_action, purchase_options.
+Approval presentations: single_action, batch_action, purchase_options, item_match
+(Issue #90). The item-match and new-item cards are described in
+`contracts/approval-lifecycle.md` section 10. `action` names other than
+`confirm_item_match` and `create_item` (Issue #90) are provisional.
 
 ```json
 {
@@ -43,6 +46,7 @@ Approval presentations: single_action, batch_action, purchase_options.
     "presentation": "single_action",
     "operations": [{
       "operation_id": "demo-operation-1",
+      "action": "add_to_shopping_list",
       "description": "Add milk to the demo household Shopping List",
       "values": {"household_id": "demo-household", "name": "牛奶", "quantity": 1, "unit": "瓶", "status": "pending"}
     }]
@@ -57,7 +61,7 @@ currently return 501. Example resume:
 {"household_id":"demo-household","approval_id":"demo-approval-1","approved":true}
 ```
 
-The same envelope carries the user's selection for the other two presentations
+The same envelope carries the user's selection for batch and purchase-options cards
 (v8 section 12, `contracts/open-decisions.md` D-10). Selection fields are
 ignored when `approved` is false:
 
@@ -76,6 +80,7 @@ A `purchase_options` card lists its options on the card itself (v8 section 12);
   "presentation": "purchase_options",
   "operations": [{
     "operation_id": "op-purchase-001",
+    "action": "add_to_shopping_list",
     "description": "Add toilet paper to the Shopping List",
     "values": {"name": "衛生紙"}
   }],

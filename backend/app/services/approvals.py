@@ -5,13 +5,18 @@ option B): one card per approval, `pending -> confirmed -> completed`, no stored
 `failed` status, expiry decided from `expires_at`, and recovery by reading the
 card and its operation receipts before any retry.
 
-Not wired to HTTP: `POST /agent/resume` still returns 501 until B1's write adapter
-and the C1/B1 domain write builders exist. Tests use in-memory fakes.
+Not wired to HTTP: `POST /agent/resume` still returns 501 until the domain write
+builder (A1 adapter over C1's purchase plan, Issue #60) exists.
+
+The Cosmos batch limit is checked when a card is saved, before it can be shown
+(A1's answer in Issue #60): a card whose largest approval would not fit one batch
+is never stored. The check runs again at confirmation, because records can change
+in between.
 
 Storage goes through `ApprovalStoragePort`, which uses the same method names and
-arguments as B1's `CosmosWriteRepository` (PR #51 merged; `create_pending_approval`
-and `replace_pending_approval` in PR #54), so that repository fits without an
-adapter. `list_open_approvals` is A1's proposal for B1 (not in PR #51 or #54).
+arguments as B1's `CosmosWriteRepository` (PR #51, #54; `list_open_approvals` in
+PR #61, with its query client wired in PR #72), so that repository fits without an
+adapter. `tests/test_approvals_cosmos_write.py` runs this service on that repository.
 
 What each approved operation writes (inventory, transaction, shopping status,
 alias) belongs to the domain owners (C1, B1) through `DomainWriteBuilder`; this
@@ -186,6 +191,9 @@ class DomainWritePlan:
     """What the approved operations write, built by the domain owners (C1, B1)."""
 
     operations_by_id: Mapping[str, Sequence[BatchOperation]]
+    shared_operations: Sequence[BatchOperation] = ()
+    """Writes shared by several operations, such as one merged inventory update when two
+    approved items add to the same inventory record (B1's mapping in Issue #60)."""
     outcome: Mapping[str, JsonValue] = field(default_factory=dict)
     """Result of each operation, stored on the card and returned on retries."""
 
@@ -239,7 +247,7 @@ class ApprovalStoragePort(Protocol):
         """
         ...
 
-    # A1's proposal for B1 (not in PR #51 or #54).
+    # Same name and arguments as CosmosWriteRepository in PR #61.
     async def list_open_approvals(self, *, household_id: str) -> Sequence[StoredApproval]:
         """Cards whose stored status is `pending` or `confirmed`."""
         ...
@@ -372,18 +380,45 @@ class ApprovalService:
     async def save(self, record: ApprovalRecord) -> ApprovalRecord:
         """Store a card from `prepare`. Safe to call again with the same card.
 
+        Before storing, the writes are planned as if every operation were approved (on a
+        purchase-options card, once per option). If that would exceed the Cosmos batch
+        limit, `BatchTooLarge` is raised and the card is not stored, so the user never
+        sees it; the Agent has to spread the items over several cards (Issue #60).
+        `TargetChanged` from this check means a record changed after the Agent read it;
+        the card is not stored either.
+
         B1's `create_pending_approval` (PR #54) returns the stored card when the same
         approval_id already exists with identical content, and refuses different
         content. So retrying after a lost response never adds a second card.
         """
         if record.status is not ApprovalStatus.PENDING:
             raise ValueError("Only a pending card can be saved.")
+        await self._check_batch_limit(record)
         stored = await self._storage.create_pending_approval(
             household_id=record.household_id,
             approval=record.to_document(self._lifetime),
             ttl_seconds=record.ttl_seconds(self._lifetime),
         )
         return ApprovalRecord.from_document(stored.document)
+
+    async def _check_batch_limit(self, record: ApprovalRecord) -> None:
+        """Raise `BatchTooLarge` if the largest possible approval would not fit one batch.
+
+        Approving every operation is the largest selection; on a purchase-options card
+        each option is tried, because options may write different amounts. `decided_at`
+        is not known yet, so `created_at` stands in for it: the time changes values on
+        the writes, not how many writes there are.
+        """
+        option_ids: list[str | None] = [option.option_id for option in record.options]
+        for option_id in option_ids or [None]:
+            trial = record.model_copy(
+                update={
+                    "approved_operation_ids": record.operation_ids,
+                    "selected_option_id": option_id,
+                    "decided_at": record.created_at,
+                }
+            )
+            _check_plan_size(trial, await self._writes.build(trial))
 
     @staticmethod
     def to_pending_approval(record: ApprovalRecord) -> PendingApproval:
@@ -393,6 +428,7 @@ class ApprovalService:
         operations = [
             ProposedOperation(
                 operation_id=operation.operation_id,
+                action=operation.action,
                 description=operation.description,
                 values=dict(operation.values),
             )
@@ -450,15 +486,19 @@ class ApprovalService:
             if record.is_past_expiry(now):
                 return await self._record_expired(record, etag)
             approved_ids, option_id = _selection_for(record, request)
+            # decided_at is fixed before planning, so the builder can use it (for example as
+            # the change event's recorded_at, Issue #60) and a retry plans with the same value.
             selected = record.model_copy(
-                update={"approved_operation_ids": approved_ids, "selected_option_id": option_id}
+                update={
+                    "approved_operation_ids": approved_ids,
+                    "selected_option_id": option_id,
+                    "decided_at": now,
+                }
             )
             plan = await self._plan(selected, etag)
             if isinstance(plan, ResumeResult):
                 return plan
-            confirmed = selected.model_copy(
-                update={"status": ApprovalStatus.CONFIRMED, "decided_at": now}
-            )
+            confirmed = selected.model_copy(update={"status": ApprovalStatus.CONFIRMED})
             try:
                 stored_confirmed = await self._storage.replace_pending_approval(
                     household_id=record.household_id,
@@ -486,19 +526,15 @@ class ApprovalService:
         return await self._write(record, etag, plan)
 
     async def _plan(self, record: ApprovalRecord, etag: str) -> DomainWritePlan | ResumeResult:
-        """Build the writes and check the batch limit before anything is written."""
+        """Build the writes and check the batch limit again before anything is written.
+
+        `save` already checked the limit; records may have changed since then.
+        """
         try:
             plan = await self._writes.build(record)
         except TargetChanged:
             return await self._replace_after_change(record, etag)
-        approved = set(record.approved_operation_ids or ())
-        if set(plan.operations_by_id) != approved:
-            raise ValueError("The write plan must cover exactly the approved operations.")
-        size = len(plan.operations_by_id) + sum(len(ops) for ops in plan.operations_by_id.values())
-        if size + 1 > MAX_BATCH_OPERATIONS:
-            raise BatchTooLarge(
-                f"{size + 1} operations exceed the Cosmos batch limit of {MAX_BATCH_OPERATIONS}."
-            )
+        _check_plan_size(record, plan)
         return plan
 
     async def _write(
@@ -515,12 +551,14 @@ class ApprovalService:
         receipts = len(plan.operations_by_id)
         domain_writes = sum(len(ops) for ops in plan.operations_by_id.values())
         # PR #51 orders a batch as: receipts, per-operation writes, shared writes.
-        approval_index = receipts + domain_writes
+        # The completed card goes last, after the plan's own shared writes.
+        approval_index = receipts + domain_writes + len(plan.shared_operations)
         try:
             status = await self._storage.execute_idempotent_batches(
                 household_id=confirmed.household_id,
                 operations_by_id=plan.operations_by_id,
                 shared_operations=(
+                    *plan.shared_operations,
                     ReplaceDocument(completed.to_document(self._lifetime), if_match_etag=etag),
                 ),
             )
@@ -642,6 +680,22 @@ class ApprovalService:
         return stored
 
 
+def _check_plan_size(record: ApprovalRecord, plan: DomainWritePlan) -> None:
+    """The plan covers exactly the approved operations and fits one Cosmos batch."""
+    if set(plan.operations_by_id) != set(record.approved_operation_ids or ()):
+        raise ValueError("The write plan must cover exactly the approved operations.")
+    size = (
+        len(plan.operations_by_id)  # one operation receipt per operation
+        + sum(len(ops) for ops in plan.operations_by_id.values())
+        + len(plan.shared_operations)
+        + 1  # the completed card is one more write in the same batch
+    )
+    if size > MAX_BATCH_OPERATIONS:
+        raise BatchTooLarge(
+            f"{size} operations exceed the Cosmos batch limit of {MAX_BATCH_OPERATIONS}."
+        )
+
+
 def _finished_result(record: ApprovalRecord) -> ResumeResult | None:
     if record.status is ApprovalStatus.COMPLETED:
         return ResumeResult(ResumeOutcome.ALREADY_COMPLETED, record)
@@ -657,7 +711,13 @@ def _check_card_shape(
     operations: Sequence[NewOperation],
     options: Sequence[NewOption],
 ) -> None:
-    """The three card types (v8 section 12)."""
+    """The three card types (v8 section 12).
+
+    The item_match card (Issue #90) has an agreed format but no confirm rules yet;
+    they are built together with the Agent issuing cards, so it is refused here.
+    """
+    if presentation is ApprovalPresentation.ITEM_MATCH:
+        raise ValueError("Item-match cards are not supported yet.")
     if not operations:
         raise ValueError("A card needs at least one operation.")
     if presentation is ApprovalPresentation.PURCHASE_OPTIONS:

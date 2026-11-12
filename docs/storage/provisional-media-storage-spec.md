@@ -98,13 +98,6 @@ Infer items & OCR text            .../derived/vision_v1.json      Status: COMPLE
 
 ```ini
 # Cosmos DB
-NESTOCK_COSMOS_ENDPOINT="https://<account-name>.documents.azure.com:443/"
-NESTOCK_COSMOS_DATABASE="nestock-database"
-NESTOCK_COSMOS_CONTAINER="household-data"
-
-# Azure Blob Storage (二選一，推薦使用 DefaultAzureCredential)
-AZURE_STORAGE_BLOB_ENDPOINT="https://<account-name>.blob.core.windows.net/"
-AZURE_STORAGE_CONTAINER_NAME="media"
 # 或使用連線字串
 # AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"
 ```

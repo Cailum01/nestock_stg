@@ -2,9 +2,11 @@
 
 Same layout as test_b2_tool_cases.py. A case with `photo: true` gets the same
 PHOTO_ATTACHED system message the Agent adds when a request carries a photo.
+The live test calls the model synchronously: `asyncio.run` per case with one
+shared model left its connection pool on a closed event loop, so every second
+case failed with "Event loop is closed" on Windows.
 """
 
-import asyncio
 import json
 from collections import Counter
 from pathlib import Path
@@ -85,7 +87,7 @@ def test_live_model_selects_the_expected_tools(live_model, case):
     if case.get("photo"):
         messages.append(SystemMessage(PHOTO_ATTACHED))
     messages.append(HumanMessage(case["utterance"]))
-    reply = asyncio.run(live_model.ainvoke(messages))
+    reply = live_model.invoke(messages)
     calls = reply.tool_calls
     names = {call["name"] for call in calls}
 

@@ -18,7 +18,7 @@ class ApprovalPresentation(StrEnum):
     ITEM_MATCH = "item_match"
     """"Is this the household item you meant?" (Issue #90): one operation and the
     options `same_item` and `new_item`. Not issued yet: the approval service rejects
-    it until the Agent issues cards."""
+    it until its confirm rules are built."""
 
 
 class ResultKind(StrEnum):
@@ -44,8 +44,8 @@ class AgentRequest(ContractModel):
 
     `message` then describes only the changed fields, and the old card is replaced
     by a new one (contracts/approval-lifecycle.md section 7). Ordinary chat leaves
-    it out. Accepted but not acted on yet: the Agent makes no cards until the
-    approval wiring lands.
+    it out. Accepted but not acted on yet: changing a card is built after the
+    purchase card.
     """
 
 

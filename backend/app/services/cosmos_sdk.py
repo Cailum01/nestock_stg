@@ -1,4 +1,4 @@
-"""Azure Cosmos SDK clients for B1 repositories; writes are not application-wired."""
+"""Azure Cosmos SDK clients for B1 repositories."""
 
 import asyncio
 import logging
@@ -337,8 +337,17 @@ def create_azure_cosmos_repositories(
     endpoint: str,
     database_name: str,
     container_name: str,
-) -> tuple[CosmosReadRepository, CosmosWriteRepository, Callable[[], None]]:
-    """Create read/write repository clients sharing one Cosmos container and SDK client."""
+) -> tuple[
+    CosmosReadRepository,
+    CosmosWriteRepository,
+    AzureCosmosDocumentQueryClient,
+    Callable[[], None],
+]:
+    """Create read/write repositories and a raw document reader on one SDK client.
+
+    The raw reader returns stored documents unchanged (including storage-only
+    metadata), for write planners that replace whole documents.
+    """
     container, close = _create_azure_cosmos_container(
         endpoint=endpoint,
         database_name=database_name,
@@ -349,7 +358,8 @@ def create_azure_cosmos_repositories(
         AzureCosmosTransactionalBatchClient(container),
         query_client=AzureCosmosDocumentQueryClient(container),
     )
-    return read_repository, write_repository, close
+    document_reader = AzureCosmosDocumentQueryClient(container)
+    return read_repository, write_repository, document_reader, close
 
 
 def _create_azure_cosmos_container(

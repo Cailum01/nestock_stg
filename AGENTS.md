@@ -40,10 +40,10 @@ confirmed P0 scope. Keep the six-owner foundation small and independently usable
 - Agent/HITL models, service ports and Dart view projections are PROVISIONAL.
   Coordinate changes with affected owners; do not freeze a final protocol here.
 - Cosmos DB for NoSQL, Azure OpenAI and LangGraph are planned baselines.
-  The A1 read-only Agent (`POST /agent/messages`) connects to Azure OpenAI only
+  The A1 Agent (`POST /agent/messages`) connects to Azure OpenAI only
   when `backend/.env` is configured, and returns 501 otherwise. Until their owners
-  deliver them, do not connect any other cloud service or implement real writes,
-  Vision, forecast or commerce.
+  deliver them, do not connect any other cloud service or implement Vision,
+  forecast or commerce. Agent writes go only through approval cards (HITL rule 8).
 
 ## Mandatory product invariants
 
@@ -72,10 +72,12 @@ confirmed P0 scope. Keep the six-owner foundation small and independently usable
 6. Retries of the same logical write reuse the same operation identity. UI retries,
    timeouts, lost responses and Agent resume must never duplicate logical writes.
 7. Backend validation is mandatory; frontend validation is not authorization.
-8. `POST /agent/messages` is read-only: the Agent has no write tools.
-   `POST /agent/resume` and the approval UI still write nothing and return 501
-   until write services and approval storage are agreed. Do not interpret generic
-   proposed values or a client boolean as permission to write.
+8. `POST /agent/messages` writes no domain data. Its only card tool,
+   `complete_purchase` (v8 flow C), stores a pending approval card and returns it.
+   `POST /agent/resume` writes only what that stored card holds, after the checks in
+   `contracts/approval-lifecycle.md`. Cards need Cosmos; without it the Agent offers
+   no card tool and `/agent/resume` returns 503. Do not interpret generic proposed
+   values or a client boolean as permission to write.
 
 ## Owners and intentionally open decisions
 
@@ -110,7 +112,9 @@ Do not add primary three-tab navigation or spend skeleton work on final art/anim
 No speculative P1: full Box/QR, notification center, scheduler, push notifications,
 analytics, transaction-history UI, prediction/promotion dashboards, settings,
 advanced animation, external checkout or payment. Do not add common-but-unagreed
-fields or entities. Do not implement full HITL persistence/resume in this skeleton.
+fields or entities. Agent approval storage and resume follow
+`contracts/approval-lifecycle.md`; add no Agent write path outside it. The App's direct
+Shopping List add agreed in Issue #52 is a separate, C1-owned path.
 
 ## Validation and collaboration
 

@@ -316,12 +316,17 @@ added here once agreed.
 - Every operation: `action` `complete_purchase`; `description` such as
   `衛生紙 +2 包（從待購清單完成購買）`.
 - `values`: `name`, `purchased_quantity` (a whole number, at least 1),
-  `purchased_unit` (the unit of the Shopping List entry and the inventory item),
-  `shopping_item_id`, `item_id`, `transaction_id`. There is no `location`: the
-  purchase adds to an inventory item the household already has.
-- An item gets a line only if its Shopping List entry is still pending, is linked to
-  an inventory item with the same unit, and the bought quantity is not more than the
-  listed quantity. Other items are left off the card and the Agent says why.
+  `purchased_unit` (the inventory item's unit), `shopping_item_id`, `item_id`,
+  `transaction_id`. There is no `location`: the purchase adds to an inventory item
+  the household already has.
+- An item gets a line only if its Shopping List entry is still pending and linked to
+  an inventory item, the entry's unit (when it has one) is the inventory unit, and
+  the bought quantity is not more than the listed quantity (when there is one). Other
+  items are left off the card and the Agent says why.
+- A Shopping List entry may have no quantity or unit (Issue #52). Without a unit,
+  the card uses the inventory unit and the user confirms it on the card. This is
+  A1's choice, not a v8 or team rule (v8 does not cover units); A1 supplies
+  `purchased_unit` as agreed with C1 in Issue #60.
 - The reply uses the normal `ResumeRequest`: `approved: true` or `false` for
   `single_action`; for `batch_action`, `approved_operation_ids` lists the items the
   user kept checked (all of them when nothing was unchecked). Unchecked items are not

@@ -64,8 +64,9 @@ def client(items, records, *, confirmed: bool = True) -> TestClient:
     return TestClient(app)
 
 
-# "a" has about 3 days left, "b" about 1 day, "c" about 40 days; "d" has no history.
-ITEMS = [item("a", 1), item("b", 0.3), item("c", 8), item("d", 5)]
+# Quantities are whole numbers. Daily use of "a" and "b" is 0.3, so "a" has about 7 days left,
+# "b" about 3 days, "c" about 40 days; "d" has no history.
+ITEMS = [item("a", 2), item("b", 1), item("c", 8), item("d", 5)]
 RECORDS = [
     consumption("a", 20, 3, 1),
     consumption("a", 10, 3, 2),

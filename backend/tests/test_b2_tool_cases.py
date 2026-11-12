@@ -1,9 +1,9 @@
 """B2 tool selection cases: offline structure checks plus an opt-in live selection test."""
 
-import asyncio
 import json
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,18 +72,30 @@ def live_model():
     return build_chat_model(settings).bind_tools(TOOL_SCHEMAS)
 
 
+@pytest.mark.live_eval
 @pytest.mark.parametrize("case", CASES, ids=[c["id"] for c in CASES])
 def test_live_model_selects_the_expected_tools(live_model, case):
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    reply = asyncio.run(
-        live_model.ainvoke([SystemMessage(load_system_prompt()), HumanMessage(case["utterance"])])
+    reply = live_model.invoke(
+        [SystemMessage(load_system_prompt()), HumanMessage(case["utterance"])]
     )
     calls = reply.tool_calls
     names = {call["name"] for call in calls}
 
     assert set(case["expect_calls"]) <= names, (case["id"], names)
     assert not names & set(case["must_not_call"]), (case["id"], names)
+    if not case["expect_calls"]:
+        assert not calls, (case["id"], names)
     for argument, text in case.get("args_contain", {}).items():
         called = next(c for c in calls if c["name"] == case["tool"])
         assert text in str(called["args"].get(argument, "")), (case["id"], called["args"])
+
+
+def test_no_tool_case_rejects_an_unexpected_unlisted_tool():
+    case = next(case for case in CASES if not case["expect_calls"])
+    reply = SimpleNamespace(tool_calls=[{"name": "list_shopping", "args": {}}])
+    model = SimpleNamespace(invoke=lambda messages: reply)
+
+    with pytest.raises(AssertionError):
+        test_live_model_selects_the_expected_tools(model, case)

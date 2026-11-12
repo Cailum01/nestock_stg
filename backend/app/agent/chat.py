@@ -1,4 +1,7 @@
-"""LOCAL TRY-OUT ONLY: chat with the read-only Agent in the terminal.
+"""LOCAL TRY-OUT ONLY: chat with the Agent in the terminal.
+
+With Cosmos configured the Agent may make a purchase card; it cannot be confirmed
+here (use the App or `POST /agent/resume`), so nothing is written.
 
 Run from backend/:  uv run python -m app.agent.chat
 Needs backend/.env (see .env.example). Type 離開 or press Ctrl+C to quit.

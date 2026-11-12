@@ -62,12 +62,13 @@ flutter devices
 flutter run -d <android-or-ios-device-id>
 ```
 
-The app injects `MockAgentClient` and `DemoCatalog` in `lib/main.dart`. It works
-offline and does not call the backend. Any nonempty message produces the same
-demonstration proposal; it does not perform language understanding. Confirmation
-and cancellation both leave the catalog unchanged. Photo entry shows an unavailable
-message. Cabinet/cart buttons push independent screens; native back returns home.
-Page navigation is a replaceable scaffold, not the final presentation decision.
+By default the app now calls the real backend Agent. Before testing, put the three
+Azure OpenAI values in `backend/.env` and start (or restart) the backend; otherwise
+the app only shows 「暫時無法完成，請重試。」 The Agent can only answer questions for
+now; it cannot save anything yet. Inventory and Shopping still show fixed demo data
+(`DemoCatalog`). The default address `http://10.0.2.2:8000` only works on the Android
+emulator; on a physical phone, run with
+`--dart-define=MEDIA_API_BASE=<an address the phone can reach>`.
 
 ```sh
 dart format --output=none --set-exit-if-changed lib test
@@ -98,8 +99,11 @@ Open `http://127.0.0.1:8000/health` for `{"status":"ok"}` and
 | `GET /health` | 200; process health, no cloud connectivity check |
 | `GET /inventory` | read-only demo inventory, fixed household scope |
 | `GET /shopping` | read-only demo shopping list, fixed household scope |
-| `POST /agent/messages` | read-only Agent via Azure OpenAI when `backend/.env` is set; otherwise 501 |
-| `POST /agent/resume` | validates provisional request, then 501; no writes |
+| `GET /forecast` | read-only forecast for active inventory items; uses configured Cosmos reads when set, otherwise demo data; currently `insufficient_data` pending confirmation of Transaction `created_at` semantics (B2, mounted by PR #53) |
+| `GET /forecast/reorder` | read-only list of items worth restocking soon (`consider_restock`), soonest first; empty when none qualify or while Transaction `created_at` semantics are unconfirmed; same selection the Agent reuses via `ForecastService.reorder_candidates` (B2) |
+| `GET /forecast/{item_id}` | read-only forecast for one inventory item; 404 if missing; uses configured Cosmos reads when set, otherwise demo data; currently `insufficient_data` pending confirmation of Transaction `created_at` semantics (B2, mounted by PR #53) |
+| `POST /agent/messages` | Agent via Azure OpenAI when `backend/.env` is set; otherwise 501. With Cosmos it may return a purchase confirmation card, which writes nothing until confirmed |
+| `POST /agent/resume` | the user's answer to a confirmation card: writes what the stored card holds (v8 flow C purchases so far); 503 without Cosmos |
 | `POST /api/media/upload-authorization` | provisional photo upload authorization (A2, PR #5) |
 | `PUT /staging/upload/{upload_token}` | provisional local photo staging upload (A2, PR #5) |
 | `POST /api/speech/transcribe` | speech-to-text; returns demo text until a provider is connected (A2, PR #12) |
@@ -110,7 +114,7 @@ uv run ruff format --check .
 uv run pytest
 ```
 
-The backend starts without any secrets. To enable the read-only Agent, copy
+The backend starts without any secrets. To enable the Agent, copy
 `backend/.env.example` to `backend/.env` and fill in the three Azure OpenAI values;
 never commit `backend/.env`. Change local demo configuration in
 `backend/app/core/config.py`. Keep development endpoints local; authentication and

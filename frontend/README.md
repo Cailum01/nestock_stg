@@ -1,36 +1,46 @@
 # Nestock｜窩有 frontend
 
-Android/iOS scene-based Flutter skeleton. See the [root README](../README.md)
-for setup, validation, ownership boundaries, and current mock limitations.
+Android/iOS scene-based Flutter application. See the [root README](../README.md)
+for setup, validation, and ownership boundaries.
 
-The entry point injects AgentClient and CatalogClient. The shipped implementations
-are offline demos. The backend Pydantic models are the contract source of truth;
-Dart types are provisional display projections without wire serializers.
+The entry point injects `AgentClient` and `CatalogClient`. By default,
+`HttpAgentClient` sends messages to the backend `POST /agent/messages` endpoint.
+It preserves structured result data for presentation and renders inventory items
+when returned. Photo-aware requests can forward an uploaded, opaque `image_ref`.
+Backend Pydantic models remain the contract source of truth; Dart view types and
+the current HTTP mapping are provisional.
 
-## C2 offline development
+## C2 development
 
-Select a deterministic fixture with `flutter run --dart-define=MOCK_SCENARIO=batchAction`.
-Values: `completed`, `singleAction` (default), `batchAction`, `purchaseOptions`,
-`partialSuccess`, `error`, `timeout`. Partial success is a display outcome, not an
-Agent lifecycle or wire status. Approvals are mock-only and persist nothing.
+For Android Emulator, the HTTP clients default to `http://10.0.2.2:8000`.
+Override the base with `--dart-define=MEDIA_API_BASE=http://127.0.0.1:8000`
+for an iOS simulator or local host, or use a reachable host address on a physical
+device. Camera capture and photo upload use injectable clients; successful uploads
+retain the returned `image_ref`. The composer also supports push-to-talk recording
+and sends audio to `POST /api/speech/transcribe`; the transcript is inserted into
+the input for review and manual sending.
 
-Future HTTP adapters can receive `AppConfig.local`; override the Android emulator
-base URL with `--dart-define=API_BASE_URL=http://10.0.2.2:8000`. For iOS simulator
-or desktop host use `http://127.0.0.1:8000`; physical devices need a reachable
-host address. No widget or current mock opens a network connection.
+For a physical Android device using `adb reverse tcp:8000 tcp:8000`, set
+`MEDIA_API_BASE` to `http://127.0.0.1:8000`. Local staging upload URLs remain
+on localhost. With the emulator default `http://10.0.2.2:8000`, local staging
+upload URLs are adapted to the emulator host address.
 
-`PhotoClient` is an injectable A2 seam; its default reports unavailable and a
-future implementation must handle denied permissions. No capture or upload is
-implemented. A2/C2 still need to agree upload format, lifecycle, image reference,
-Vision invocation and provider. A1/C2 still need to agree request/response mapping,
-conversation identity, checkpoint/resume, HITL resume, batch partial approval, and
-purchase-option selection. The temporary page navigation and visual design remain
-C2 decisions. No client-side approval authorizes backend writes.
+For local Agent fixtures, use `--dart-define=AGENT_TRANSPORT=mock` and optionally
+select `--dart-define=MOCK_SCENARIO=batchAction`. Scenarios are `conversation`
+(default), `completed`, `singleAction`, `batchAction`, `purchaseOptions`,
+`partialSuccess`, `error`, and `timeout`. These are
+presentation fixtures, not backend lifecycle or wire statuses. Selecting the mock
+Agent does not disable the independently configured photo or speech HTTP clients.
 
-For the offline work-surface demo use `--dart-define=MOCK_SCENARIO=visionDemo`;
-`visionMany` supplies seven presentation-only items for scrolling checks. Enter
-any message to open the panel. Confirmation is a no-write demonstration. These
-fixtures are not a Vision or upload contract.
+Vision and Confirmation presentation fixtures are test-only injected `AgentClient`
+responses under `test/agent_fixtures.dart`; no user-entered runtime command opens
+either fixture. Confirmation remains a no-write demonstration; its fixture is not
+a Vision or upload contract.
+
+The HTTP client does not implement `/agent/resume` and rejects pending approvals.
+Persistent HITL writes and Cosmos writes are not implemented in the frontend;
+Vision confirmation/write flow is not complete. No client-side approval authorizes
+backend writes.
 
 Inventory cabinet and toolbar shortcuts open the same room overlay using a
 read-only mock presentation client. Search matches names and aliases locally.

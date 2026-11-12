@@ -1,3 +1,7 @@
+import 'dart:convert';
+
+import 'package:http/http.dart' as http;
+
 /// Presentation projections only; these do not define the backend wire contract.
 class InventoryViewItem {
   const InventoryViewItem(
@@ -41,3 +45,75 @@ class DemoInventoryViewClient implements InventoryViewClient {
     const InventoryViewItem('肥皂', '2', '個'),
   ];
 }
+
+class HttpInventoryViewClient implements InventoryViewClient {
+  HttpInventoryViewClient({
+    required this.baseUrl,
+    http.Client? client,
+    this.timeout = const Duration(seconds: 15),
+  }) : client = client ?? http.Client();
+
+  final Uri baseUrl;
+  final http.Client client;
+  final Duration timeout;
+
+  @override
+  Future<List<InventoryViewItem>> load() async {
+    final response = await client
+        .get(baseUrl.resolve('/inventory'))
+        .timeout(timeout);
+    if (response.statusCode != 200) {
+      throw StateError('Inventory request failed (${response.statusCode})');
+    }
+
+    final body = jsonDecode(response.body);
+    if (body is! List) {
+      throw const FormatException('Inventory response must be a list');
+    }
+    return body
+        .whereType<Map>()
+        .map((record) => _viewItemFromJson(Map<String, dynamic>.from(record)))
+        .whereType<InventoryViewItem>()
+        .toList(growable: false);
+  }
+
+  InventoryViewItem? _viewItemFromJson(Map<String, dynamic> record) {
+    final name = record['name'];
+    final quantity = record['quantity'];
+    final unit = record['unit'];
+    if (name is! String ||
+        name.trim().isEmpty ||
+        quantity is! num ||
+        unit is! String ||
+        unit.trim().isEmpty) {
+      return null;
+    }
+
+    final aliases = record['aliases'];
+    final location = record['location'];
+    final expiry = record['expiry_date'];
+    return InventoryViewItem(
+      name.trim(),
+      quantity.toString(),
+      unit.trim(),
+      aliases: aliases is List
+          ? aliases
+                .whereType<String>()
+                .map((alias) => alias.trim())
+                .where((alias) => alias.isNotEmpty)
+                .toList(growable: false)
+          : const [],
+      location: location is String && location.trim().isNotEmpty
+          ? location.trim()
+          : null,
+      expiry: expiry is String ? DateTime.tryParse(expiry) : null,
+    );
+  }
+}
+
+InventoryViewClient inventoryViewClientForTransport({
+  required String transport,
+  required Uri baseUrl,
+}) => transport == 'mock'
+    ? const DemoInventoryViewClient()
+    : HttpInventoryViewClient(baseUrl: baseUrl);

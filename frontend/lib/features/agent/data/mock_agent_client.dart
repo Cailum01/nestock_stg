@@ -13,8 +13,6 @@ enum MockScenario {
   partialSuccess,
   error,
   timeout,
-  visionDemo,
-  visionMany,
 }
 
 class MockAgentClient implements AgentClient {
@@ -23,29 +21,8 @@ class MockAgentClient implements AgentClient {
   int _sequence = 0;
 
   @override
-  Future<AgentReply> send(String message) async {
-    if (message.trim() == '/vision-demo') {
-      const items = [
-        (name: '衛生紙', quantity: '3 包', location: '儲藏櫃'),
-        (name: '洗衣精', quantity: '1 瓶', location: '洗衣間'),
-        (name: '咖啡', quantity: '2 包', location: '廚房'),
-      ];
-      return AgentReply(
-        message: '照片辨識示範',
-        mockVisionItems: [
-          ...items,
-          if (scenario == MockScenario.visionMany) ...[
-            (name: '茶', quantity: '1 盒', location: '廚房'),
-            (name: '肥皂', quantity: '2 個', location: '浴室'),
-            (name: '米', quantity: '1 包', location: '廚房'),
-            (name: '麵', quantity: '3 包', location: '櫃子'),
-          ],
-        ],
-      );
-    }
-    if (scenario == MockScenario.conversation ||
-        scenario == MockScenario.visionDemo ||
-        scenario == MockScenario.visionMany) {
+  Future<AgentReply> send(String message, {String? replacesApprovalId}) async {
+    if (scenario == MockScenario.conversation) {
       return const AgentReply(message: '這是對話介面示範回覆。');
     }
     if (scenario == MockScenario.error) throw StateError('demo error');
@@ -106,6 +83,8 @@ class MockAgentClient implements AgentClient {
   Future<AgentReply> resume({
     required String approvalId,
     required bool approved,
+    String? selectedOptionId,
+    List<String>? approvedOperationIds,
   }) async => AgentReply(
     message: approved ? '確認流程示範結束，沒有儲存任何變更。' : '已取消示範，沒有儲存任何變更。',
     results: const [

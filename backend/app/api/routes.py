@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated, Literal
 
 from fastapi import (
@@ -12,9 +13,11 @@ from fastapi import (
     status,
 )
 
+from app.agent.cards import resume_response
 from app.agent.read_agent import ReadAgent, get_read_agent
 from app.core.config import settings
 from app.core.dependencies import (
+    get_approval_service,
     get_inventory_service,
     get_media_storage_service,
     get_shopping_service,
@@ -28,11 +31,13 @@ from app.models.storage import (
     UploadAuthorizationRequest,
     UploadAuthorizationResponse,
 )
+from app.services.approvals import ApprovalNotFound, ApprovalService, InvalidSelection
 from app.services.interfaces import InventoryService, ShoppingService
 from app.services.provisional_storage.interfaces import MediaStorageService
-from app.services.speech import SpeechToTextService
+from app.services.speech import SpeechServiceError, SpeechToTextService
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class HealthResponse(ContractModel):
@@ -71,7 +76,8 @@ async def agent_message(
     request: AgentRequest,
     agent: Annotated[ReadAgent | None, Depends(get_read_agent)],
 ) -> AgentResponse:
-    """Read-only Agent (Day 5): answers inventory/shopping questions, writes nothing."""
+    """Agent: answers questions; may return a purchase card, which writes nothing until
+    the user confirms it in `/agent/resume`."""
     if agent is None:
         raise HTTPException(501, "Agent is not configured: set AZURE_OPENAI_* in backend/.env.")
     try:
@@ -84,10 +90,30 @@ async def agent_message(
     "/agent/resume",
     response_model=AgentResponse,
     tags=["provisional"],
-    responses={501: {"description": "Approval/resume intentionally unimplemented"}},
+    responses={
+        404: {"description": "No such card in this household"},
+        409: {"description": "The selection does not fit this card"},
+        500: {"description": "Some writes exist without the card completing; nothing more"},
+        503: {"description": "Approval cards need Cosmos (NESTOCK_COSMOS_*); nothing written"},
+    },
 )
-async def agent_resume(request: ResumeRequest) -> AgentResponse:
-    raise HTTPException(501, "Approval/resume is not implemented; no changes were saved.")
+async def agent_resume(
+    request: ResumeRequest,
+    approvals: Annotated[ApprovalService | None, Depends(get_approval_service)],
+) -> AgentResponse:
+    """The user's answer to a card. Writes only what the stored card holds (PR #47 §4)."""
+    if approvals is None:
+        raise HTTPException(503, "Approval cards need Cosmos; no changes were saved.")
+    try:
+        result = await approvals.resume(request)
+    except ApprovalNotFound as error:
+        raise HTTPException(404, "Card not found; no changes were saved.") from error
+    except InvalidSelection as error:
+        raise HTTPException(409, f"{error} No changes were saved.") from error
+    try:
+        return resume_response(result)
+    except RuntimeError as error:  # receipts without completion: stop and report (§6)
+        raise HTTPException(500, "Write state needs checking; nothing more was written.") from error
 
 
 @router.post(
@@ -97,9 +123,14 @@ async def agent_resume(request: ResumeRequest) -> AgentResponse:
 )
 async def create_upload_authorization(
     request: UploadAuthorizationRequest,
+    http_request: Request,
     storage: Annotated[MediaStorageService, Depends(get_media_storage_service)],
 ) -> UploadAuthorizationResponse:
-    return await storage.create_upload_authorization(request)
+    dynamic_staging_base = f"{str(http_request.base_url).rstrip('/')}/staging/upload"
+    return await storage.create_upload_authorization(
+        request,
+        base_staging_url=dynamic_staging_base,
+    )
 
 
 @router.put(
@@ -169,13 +200,23 @@ SUPPORTED_AUDIO_EXTENSIONS = {".m4a", ".aac", ".mp4", ".wav", ".mp3", ".webm"}
         400: {"description": "Empty or corrupted audio payload"},
         413: {"description": "Audio payload exceeds maximum 5MB size limit"},
         415: {"description": "Unsupported audio media type"},
+        502: {"description": "Upstream speech service failed"},
+        503: {"description": "Speech service is not configured"},
     },
 )
 async def transcribe_speech(
     file: UploadFile = File(...),
     language: str | None = Form(None),
-    speech_service: Annotated[SpeechToTextService, Depends(get_speech_service)] = None,
+    speech_service: Annotated[SpeechToTextService | None, Depends(get_speech_service)] = None,
 ) -> SpeechTranscribeResponse:
+    if speech_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Speech service is not configured. Set AZURE_SPEECH_KEY or NESTOCK_SPEECH_MOCK=1."
+            ),
+        )
+
     payload_bytes = await file.read()
 
     # 1. Zero-byte check (400)
@@ -209,8 +250,15 @@ async def transcribe_speech(
             detail=f"Unsupported audio content type '{content_type}' or extension '{ext}'",
         )
 
-    return await speech_service.transcribe(
-        audio_bytes=payload_bytes,
-        content_type=content_type,
-        language=language,
-    )
+    try:
+        return await speech_service.transcribe(
+            audio_bytes=payload_bytes,
+            content_type=content_type,
+            language=language,
+        )
+    except SpeechServiceError as exc:
+        logger.error("Speech transcription failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Speech transcription failed due to upstream service error",
+        ) from exc

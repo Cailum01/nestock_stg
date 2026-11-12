@@ -7,8 +7,8 @@ asked A1 to do that part (Issue #60, Issue #27). This module is only that step:
 - Only the operations in the card's fixed `approved_operation_ids` are resolved, in
   card order. Nothing comes from the App; `/agent/resume` only picks the card and
   its lines.
-- Each line is a `complete_purchase` line in the format A1's cards use (PR #95,
-  `purchase_operation`): `purchased_quantity`, `purchased_unit`,
+- Each line is a `complete_purchase` line in the format A1's cards use
+  (`purchase_operation` in `app/agent/cards.py`): `purchased_quantity`, `purchased_unit`,
   `shopping_item_id`, `item_id`, `transaction_id`, and the version (ETag) of the
   shopping entry and the inventory item when the card was made. An optional
   `purchased_at` is passed through; without it C1 uses `decided_at`.

@@ -422,7 +422,7 @@ def test_lifetime_is_configurable():
         (ApprovalPresentation.BATCH_ACTION, 1, [NewOption(option_id="o1", values={})]),
         (ApprovalPresentation.PURCHASE_OPTIONS, 2, [NewOption(option_id="o1", values={})]),
         (ApprovalPresentation.PURCHASE_OPTIONS, 1, []),
-        # Issue #90 format only: no confirm rules until the Agent issues cards.
+        # Issue #90 format only: no confirm rules yet.
         (
             ApprovalPresentation.ITEM_MATCH,
             1,

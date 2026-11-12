@@ -65,7 +65,10 @@ PURCHASE_TOOL_SCHEMA: dict[str, Any] = {
                             "quantity": {
                                 "type": "integer",
                                 "minimum": 1,
-                                "description": "使用者說買了幾個，用待購清單上的單位。",
+                                "description": (
+                                    "使用者說買了幾個，用待購清單上的單位；"
+                                    "清單沒寫單位時，照使用者說的數量。"
+                                ),
                             },
                         },
                         "required": ["shopping_item_id", "quantity"],
@@ -100,12 +103,20 @@ def purchase_operation(
     C1's preview checks the line first, so a purchase the plan would refuse (more than
     listed, not linked to an inventory item, a different unit) never reaches a card;
     it raises `ShoppingDecisionRequired` or `ShoppingPreviewError`.
+
+    A Shopping List entry may have no unit (Issue #52). The line then uses the linked
+    inventory item's unit, shown on the card for the user to confirm; A1 supplies
+    `purchased_unit` as agreed in Issue #60.
     """
+    unit = None
+    if shopping.record.unit is None and inventory is not None:
+        unit = inventory.record.unit
     preview = ShoppingPreviewService().preview_purchase(
         household_id=shopping.record.household_id,
         shopping=shopping.record,
         inventory=None if inventory is None else inventory.record,
         purchased_quantity=quantity,
+        purchased_unit=unit,
     )
     if inventory is None or shopping.etag is None or inventory.etag is None:
         raise ValueError("Both records must be read with their ETag.")
@@ -191,14 +202,14 @@ class PurchaseCards:
         entry = shopping.record
         if not entry.item_id:
             return None, NOT_LINKED
-        if quantity > entry.quantity:
+        if entry.quantity is not None and quantity > entry.quantity:
             return None, MORE_THAN_LISTED
         inventory = await self._reader.read_inventory_item_with_etag(
             household_id=household_id, item_id=entry.item_id
         )
         if inventory is None:
             return None, NOT_LINKED
-        if inventory.record.unit != entry.unit:
+        if entry.unit is not None and inventory.record.unit != entry.unit:
             return None, OTHER_UNIT
         try:
             return purchase_operation(shopping=shopping, inventory=inventory, quantity=quantity), ""

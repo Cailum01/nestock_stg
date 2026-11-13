@@ -1,0 +1,226 @@
+{
+  "_about": "A1 tool selection cases (v8 section 20: >=3 example utterances and >=1 confusion case per tool) for the read tools wired in backend/app/agent/read_agent.py besides B2's two. Same fields as b2_tool_cases.json, plus optional `photo`: true means the request carries a photo, so the test adds the same PHOTO_ATTACHED system message the Agent adds. Per v8 the tool owners are B1 (list_inventory), C1 (list_shopping) and A2 (analyze_photo, search_purchase_options); they may edit or add cases. C1 owns the Golden Prompts set and may merge these in.",
+  "cases": [
+    {
+      "id": "inventory-01",
+      "tool": "list_inventory",
+      "kind": "positive",
+      "utterance": "家裡還有衛生紙嗎？",
+      "expect_calls": [
+        "list_inventory"
+      ],
+      "must_not_call": [
+        "search_purchase_options",
+        "get_consumption_forecast",
+        "get_reorder_candidates"
+      ],
+      "note": "Prompt forecast rule 3: a 家裡還有嗎 question gets inventory facts only, no forecast."
+    },
+    {
+      "id": "inventory-02",
+      "tool": "list_inventory",
+      "kind": "positive",
+      "utterance": "螺絲起子放在哪裡？",
+      "expect_calls": [
+        "list_inventory"
+      ],
+      "must_not_call": [
+        "search_purchase_options"
+      ]
+    },
+    {
+      "id": "inventory-03",
+      "tool": "list_inventory",
+      "kind": "positive",
+      "utterance": "牛奶還剩幾瓶？",
+      "expect_calls": [
+        "list_inventory"
+      ],
+      "must_not_call": [
+        "get_consumption_forecast"
+      ],
+      "note": "How many are left now is a fact, not a forecast."
+    },
+    {
+      "id": "inventory-04",
+      "tool": "list_inventory",
+      "kind": "positive",
+      "utterance": "我要買 AA 電池，家裡還有嗎？",
+      "expect_calls": [
+        "list_inventory"
+      ],
+      "must_not_call": [
+        "search_purchase_options",
+        "get_consumption_forecast",
+        "get_reorder_candidates"
+      ],
+      "note": "v8 Flow B entry sentence. The team decided Flow B states facts only and does not look up prices or advise buying."
+    },
+    {
+      "id": "inventory-neg-01",
+      "tool": "list_inventory",
+      "kind": "negative",
+      "utterance": "幫我查 AA 電池哪裡有賣",
+      "expect_calls": [
+        "search_purchase_options"
+      ],
+      "must_not_call": [
+        "list_inventory"
+      ],
+      "note": "Where to buy is a price lookup, not an inventory question."
+    },
+    {
+      "id": "shopping-01",
+      "tool": "list_shopping",
+      "kind": "positive",
+      "utterance": "購物清單上有什麼？",
+      "expect_calls": [
+        "list_shopping"
+      ],
+      "must_not_call": [
+        "search_purchase_options"
+      ]
+    },
+    {
+      "id": "shopping-02",
+      "tool": "list_shopping",
+      "kind": "positive",
+      "utterance": "待購清單上，我還要買哪些東西？",
+      "expect_calls": [
+        "list_shopping"
+      ],
+      "must_not_call": [
+        "get_reorder_candidates"
+      ],
+      "note": "What is already on the list, not what might run out."
+    },
+    {
+      "id": "shopping-03",
+      "tool": "list_shopping",
+      "kind": "positive",
+      "utterance": "待購清單給我看",
+      "expect_calls": [
+        "list_shopping"
+      ],
+      "must_not_call": [
+        "search_purchase_options"
+      ]
+    },
+    {
+      "id": "shopping-neg-01",
+      "tool": "list_shopping",
+      "kind": "negative",
+      "utterance": "家裡什麼東西快用完了？",
+      "expect_calls": [
+        "get_reorder_candidates"
+      ],
+      "must_not_call": [
+        "list_shopping"
+      ],
+      "note": "Running low is B2's reorder candidates, not the shopping list."
+    },
+    {
+      "id": "photo-01",
+      "tool": "analyze_photo",
+      "kind": "positive",
+      "utterance": "這是冰箱，幫我看有什麼",
+      "photo": true,
+      "expect_calls": [
+        "analyze_photo"
+      ],
+      "must_not_call": [],
+      "args_contain": {
+        "scene_type": "pantry_scene"
+      },
+      "note": "Prompt photo rule 2: the user says what the photo is, so scene_type is filled."
+    },
+    {
+      "id": "photo-02",
+      "tool": "analyze_photo",
+      "kind": "positive",
+      "utterance": "這張是發票",
+      "photo": true,
+      "expect_calls": [
+        "analyze_photo"
+      ],
+      "must_not_call": [],
+      "args_contain": {
+        "scene_type": "receipt"
+      }
+    },
+    {
+      "id": "photo-03",
+      "tool": "analyze_photo",
+      "kind": "positive",
+      "utterance": "幫我認一下這個",
+      "photo": true,
+      "expect_calls": [
+        "analyze_photo"
+      ],
+      "must_not_call": []
+    },
+    {
+      "id": "photo-neg-01",
+      "tool": "analyze_photo",
+      "kind": "negative",
+      "utterance": "幫我看看這張照片",
+      "expect_calls": [],
+      "must_not_call": [
+        "analyze_photo"
+      ],
+      "note": "No photo is attached, so analyze_photo must not be called."
+    },
+    {
+      "id": "price-01",
+      "tool": "search_purchase_options",
+      "kind": "positive",
+      "utterance": "衛生紙哪裡買最便宜？",
+      "expect_calls": [
+        "search_purchase_options"
+      ],
+      "must_not_call": [],
+      "args_contain": {
+        "item_name": "衛生紙"
+      }
+    },
+    {
+      "id": "price-02",
+      "tool": "search_purchase_options",
+      "kind": "positive",
+      "utterance": "洗衣精現在多少錢？",
+      "expect_calls": [
+        "search_purchase_options"
+      ],
+      "must_not_call": [],
+      "args_contain": {
+        "item_name": "洗衣精"
+      }
+    },
+    {
+      "id": "price-03",
+      "tool": "search_purchase_options",
+      "kind": "positive",
+      "utterance": "幫我比價 AA 電池",
+      "expect_calls": [
+        "search_purchase_options"
+      ],
+      "must_not_call": [],
+      "args_contain": {
+        "item_name": "AA"
+      }
+    },
+    {
+      "id": "price-neg-01",
+      "tool": "search_purchase_options",
+      "kind": "negative",
+      "utterance": "家裡還有洗衣精嗎？",
+      "expect_calls": [
+        "list_inventory"
+      ],
+      "must_not_call": [
+        "search_purchase_options"
+      ],
+      "note": "An inventory question gets facts only; no price lookup."
+    }
+  ]
+}

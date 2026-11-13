@@ -5,8 +5,10 @@ change confirmed inventory. The history source sits behind `get_transaction_hist
 so the Cosmos adapter (or a later lake adapter) replaces the demo without changing
 these routes.
 
-Until the Transaction contract owners confirm what `created_at` means, every item
-returns `insufficient_data` (see "Time semantics" in services/forecast.py).
+`Transaction.created_at` is read as event time per Issue #113; when no event date
+is provided, the first confirmation time (`decided_at`) is used. Forecasting is
+enabled, while individual items without enough history still return
+`insufficient_data` (see "Time semantics" in services/forecast.py).
 """
 
 from collections.abc import Callable

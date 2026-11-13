@@ -370,11 +370,17 @@ async def test_read_agent_integration_gate(mapping_storage):
     from app.core.dependencies import get_inventory_service, get_shopping_service
     from app.models.agent import AgentRequest
     from app.models.vision import VisionAnalysisResult
-    from app.services.vision import AzureOpenAIVisionService, VisionOpenAISettings
+    from app.services.vision import (
+        AzureOpenAIVisionService,
+        MockVisionService,
+        VisionOpenAISettings,
+    )
     from app.tools.queries import QueryTools
 
-    # 使用真實執行期配置：啟用 auto_process Ingest Pipeline
-    runtime_storage = LocalStagingMediaStorage(mapping_port=mapping_storage, auto_process=True)
+    # 使用測試顯式注入之 MockVisionService 配置：啟用 auto_process Ingest Pipeline
+    runtime_storage = LocalStagingMediaStorage(
+        mapping_port=mapping_storage, auto_process=True, vision_service=MockVisionService()
+    )
 
     class DummyModel:
         def __init__(self, *replies):
@@ -540,3 +546,62 @@ async def test_analyze_image_idempotency_on_completed_photo(mapping_storage):
     res2 = await vision_service.analyze_image("home-alpha", auth.image_ref)
     assert res2.image_ref == auth.image_ref
     assert res2.detected_items == res1.detected_items
+
+
+@pytest.mark.anyio
+async def test_unconfigured_vision_does_not_mock_detect_and_gate_fails_closed(mapping_storage):
+    """驗證未配置真實 Vision 時，上傳後嚴格保持 RECEIVED，不產生假 Mock 工件，門禁嚴格阻斷。"""
+    storage = LocalStagingMediaStorage(
+        mapping_port=mapping_storage, auto_process=True, vision_service=None
+    )
+    req = UploadAuthorizationRequest(
+        household_id="home-alpha",
+        filename="real_photo.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=6,
+    )
+    auth = await storage.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
+
+    await storage.receive_staged_upload(token, b"real_bytes")
+
+    # 1. 映射狀態必須維持 RECEIVED，不可為 COMPLETED
+    snap = await mapping_storage.find_by_image_ref(
+        household_id="home-alpha", image_ref=auth.image_ref
+    )
+    assert snap is not None
+    assert snap.record.status is MediaProcessingStatus.RECEIVED
+    assert snap.record.artifact_ref is None
+
+    # 2. 不可持久化任何衍生工件
+    artifact = await storage.get_derived_artifact("home-alpha", auth.image_ref)
+    assert artifact is None
+
+    # 3. Agent 門禁嚴格阻斷
+    assert await storage.verify_media_exists("home-alpha", auth.image_ref) is False
+
+
+@pytest.mark.anyio
+async def test_local_staging_auto_process_false_gate_blocks():
+    """驗證 LocalStaging 在 auto_process=False 且無 mapping_port 時，門禁嚴格阻斷。"""
+    storage = LocalStagingMediaStorage(auto_process=False)
+    req = UploadAuthorizationRequest(
+        household_id="home-alpha",
+        filename="no_auto.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=4,
+    )
+    auth = await storage.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
+
+    await storage.receive_staged_upload(token, b"test")
+
+    # 原始 bytes 已寫入
+    assert await storage.get_media_bytes("home-alpha", auth.image_ref) == b"test"
+
+    # 未完成處理前，門禁嚴格回傳 False
+    assert await storage.verify_media_exists("home-alpha", auth.image_ref) is False
+
+    # 處理完成並寫入衍生工件後，門禁放行
+    await storage.complete_processing("home-alpha", auth.image_ref, '{"items": []}')
+    assert await storage.verify_media_exists("home-alpha", auth.image_ref) is True

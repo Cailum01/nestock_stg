@@ -14,6 +14,7 @@
 import logging
 from typing import Any
 
+from app.models.domain import MediaProcessingStatus
 from app.services.media_mapping import MediaMappingNotReady, MediaMappingPort
 from app.services.provisional_storage._lifecycle import BaseMediaStorageLifecycle
 
@@ -82,7 +83,9 @@ class LocalStagingMediaStorage(BaseMediaStorageLifecycle):
                 )
                 raise
 
-        return (household_id, image_ref) in self._staged_media
+        if (household_id, image_ref) not in self._staged_media:
+            return False
+        return self._local_status.get((household_id, image_ref)) == MediaProcessingStatus.COMPLETED
 
     async def get_media_bytes(self, household_id: str, image_ref: str) -> bytes | None:
         """Retrieve media raw binary bytes if present for the specified household."""
@@ -103,3 +106,4 @@ class LocalStagingMediaStorage(BaseMediaStorageLifecycle):
     ) -> None:
         """Helper method for local tests simulating client direct upload to storage."""
         self._staged_media[(household_id, image_ref)] = payload_bytes
+        self._local_status[(household_id, image_ref)] = MediaProcessingStatus.COMPLETED

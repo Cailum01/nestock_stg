@@ -38,6 +38,7 @@ from app.services.media_mapping import (
 )
 from app.services.provisional_storage.azure_blob_adapter import AzureBlobMediaStorage
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
+from app.services.vision import MockVisionService
 
 
 class FakeBlobProperties:
@@ -416,6 +417,7 @@ async def test_receive_staged_upload_auto_process_ingest(fake_blob_service, mapp
         container_name="media",
         mapping_port=mapping_port,
         auto_process=True,
+        vision_service=MockVisionService(),
     )
     req = UploadAuthorizationRequest(
         household_id="home-dev",
@@ -512,6 +514,7 @@ async def test_azure_blob_orphan_expiration_deletes_blobs_and_preserves_attached
         container_name="media",
         mapping_port=mapping_port,
         auto_process=True,
+        vision_service=MockVisionService(),
     )
     req_orphan = UploadAuthorizationRequest(
         household_id="home-dev",
@@ -619,6 +622,7 @@ async def test_begin_processing_idempotent_on_completed(fake_blob_service, mappi
         container_name="media",
         mapping_port=mapping_port,
         auto_process=True,
+        vision_service=MockVisionService(),
     )
     req = UploadAuthorizationRequest(
         household_id="home-dev",
@@ -637,3 +641,56 @@ async def test_begin_processing_idempotent_on_completed(fake_blob_service, mappi
     # 二次調用 complete_processing：安全回傳 artifact_ref
     ref = await storage.complete_processing("home-dev", auth.image_ref)
     assert "derived/vision_v1.json" in ref
+
+
+@pytest.mark.anyio
+async def test_blob_delete_failure_prevents_purged_flag_and_allows_retry(
+    fake_blob_service, mapping_port
+):
+    """驗證當 Blob 刪除拋出 OSError 時，記錄不可標記為 purged，且允許後續重試。"""
+    storage = AzureBlobMediaStorage(
+        blob_service_client=fake_blob_service,
+        container_name="media",
+        mapping_port=mapping_port,
+        auto_process=False,
+    )
+    req = UploadAuthorizationRequest(
+        household_id="home-dev",
+        filename="fail_del.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=6,
+    )
+    auth = await storage.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
+    await storage.receive_staged_upload(token, b"fail_del_bytes")
+
+    blob_path = auth.image_ref.removeprefix("blob://").lstrip("/")
+
+    # 模擬磁碟或網路異常
+    original_delete = FakeBlobClient.delete_blob
+
+    async def mock_broken_delete(self, *args, **kwargs):
+        raise OSError("Simulated IO disk error")
+
+    FakeBlobClient.delete_blob = mock_broken_delete
+
+    future_now = datetime.now(UTC) + timedelta(seconds=86410)
+    try:
+        purged = await storage.cleanup_expired_blobs(now=future_now)
+
+        # 刪除失敗時，不可包含在回傳之 purged 清單
+        assert auth.image_ref not in purged
+        # 內部標記不可為 purged=True
+        rec = storage._retention_records.get(("home-dev", auth.image_ref))
+        assert rec is not None
+        assert rec["purged"] is False
+        # Blob 仍存在於存儲中
+        assert blob_path in fake_blob_service.storage["media"]
+    finally:
+        FakeBlobClient.delete_blob = original_delete
+
+    # 恢復正常後，重試刪除應成功
+    purged_retry = await storage.cleanup_expired_blobs(now=future_now)
+    assert auth.image_ref in purged_retry
+    assert rec["purged"] is True
+    assert blob_path not in fake_blob_service.storage["media"]

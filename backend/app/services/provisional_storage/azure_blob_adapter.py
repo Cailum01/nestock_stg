@@ -110,7 +110,18 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
             if delete_func is not None:
                 await self._call_client(delete_func)
         except Exception as exc:
-            logger.debug("Blob delete skipped or failed for %s: %s", blob_path, exc)
+            cls_name = exc.__class__.__name__
+            status_code = getattr(exc, "status_code", None)
+            error_code = getattr(exc, "error_code", None)
+            if (
+                cls_name == "ResourceNotFoundError"
+                or status_code == 404
+                or error_code in {"BlobNotFound", "ResourceNotFound"}
+            ):
+                logger.debug("Blob %s already deleted or not found: %s", blob_path, exc)
+                return
+            logger.error("Failed to delete blob at %s: %s", blob_path, exc)
+            raise
 
     async def _set_blob_metadata(self, blob_path: str, metadata: dict[str, str]) -> None:
         try:

@@ -42,6 +42,7 @@ class BaseMediaStorageLifecycle:
         self._pending_tokens: dict[str, dict[str, Any]] = {}
         self._snapshots: dict[tuple[str, str], MediaMappingSnapshot] = {}
         self._retention_records: dict[tuple[str, str], dict[str, Any]] = {}
+        self._local_status: dict[tuple[str, str], MediaProcessingStatus] = {}
 
     def bind_vision_service(self, vision_service: Any) -> None:
         """Bind a VisionService instance for automatic ingest analysis."""
@@ -90,6 +91,7 @@ class BaseMediaStorageLifecycle:
         info = {"input_id": media_id, "household_id": hid, "image_ref": image_ref}
         self._pending_tokens[token] = info | {"content_type": ctype, "expires_at": exp_ts}
         self._init_retention(hid, image_ref, media_id, now)
+        self._local_status[(hid, image_ref)] = MediaProcessingStatus.ALLOCATED
         if self._mapping_port is not None:
             m_kw = info | {"content_type": ctype, "expected_file_size_bytes": sz}
             t_kw = {"upload_authorization_expires_at": exp_dt, "created_at": now, "updated_at": now}
@@ -136,6 +138,7 @@ class BaseMediaStorageLifecycle:
         self._pending_tokens.pop(upload_token, None)
         sha = hashlib.sha256(payload_bytes).hexdigest()
         meta = {"file_size_bytes": len(payload_bytes), "sha256_hash": sha}
+        self._local_status[(hid, image_ref)] = MediaProcessingStatus.RECEIVED
         await self._transition_mapping(hid, image_ref, MediaProcessingStatus.RECEIVED, **meta)
         if self._auto_process:
             await self._run_ingest_analysis(hid, image_ref)
@@ -149,9 +152,13 @@ class BaseMediaStorageLifecycle:
             return None
 
     async def _run_ingest_analysis(self, hid: str, ref: str) -> None:
-        from app.services.vision import MockVisionService
+        svc = self._resolve_vision_service()
+        if svc is None:
+            logger.info(
+                "No vision service configured; skipping automatic ingest analysis for %s", ref
+            )
+            return
 
-        svc = self._resolve_vision_service() or MockVisionService()
         result = await svc.analyze_image(hid, ref)
         snap = self._snapshots.get((hid, ref)) or await self.get_media_snapshot(hid, ref)
         if snap is None or snap.record.status != MediaProcessingStatus.COMPLETED:
@@ -161,6 +168,9 @@ class BaseMediaStorageLifecycle:
 
     async def begin_processing(self, household_id: str, image_ref: str) -> None:
         """Advance media mapping state to PROCESSING with COMPLETED idempotency guard."""
+        current_status = self._local_status.get((household_id, image_ref))
+        if current_status != MediaProcessingStatus.COMPLETED:
+            self._local_status[(household_id, image_ref)] = MediaProcessingStatus.PROCESSING
         if self._mapping_port is not None:
             snap = await self._get_snapshot(household_id, image_ref)
             if snap.record.status != MediaProcessingStatus.COMPLETED:
@@ -174,7 +184,9 @@ class BaseMediaStorageLifecycle:
         """Persist derived artifact and advance media mapping state to COMPLETED."""
         hid, ref, now = household_id, image_ref, datetime.now(UTC)
         snap = await self._get_snapshot(hid, ref) if self._mapping_port else None
-        done = snap is not None and snap.record.status == MediaProcessingStatus.COMPLETED
+        done = (
+            snap is not None and snap.record.status == MediaProcessingStatus.COMPLETED
+        ) or self._local_status.get((hid, ref)) == MediaProcessingStatus.COMPLETED
         if not done and not artifact_data:
             raise ValueError("Derived artifact_data is required before COMPLETED transition.")
         iid = snap.record.input_id if snap else "mock"
@@ -185,6 +197,7 @@ class BaseMediaStorageLifecycle:
             raw = artifact_data.encode("utf-8") if isinstance(artifact_data, str) else artifact_data
             await self._store_artifact_bytes(hid, ref, art_ref, raw, rec)
             rec["artifact_ref"] = art_ref
+        self._local_status[(hid, ref)] = MediaProcessingStatus.COMPLETED
         if done and snap is not None:
             return snap.record.artifact_ref or art_ref
         st = MediaProcessingStatus.COMPLETED
@@ -195,6 +208,7 @@ class BaseMediaStorageLifecycle:
         self, household_id: str, image_ref: str, failure_reason: MediaFailureReason = DEFAULT_REASON
     ) -> None:
         """Advance media mapping state to FAILED with explicit failure reason."""
+        self._local_status[(household_id, image_ref)] = MediaProcessingStatus.FAILED
         st = MediaProcessingStatus.FAILED
         await self._transition_mapping(household_id, image_ref, st, failure_reason=failure_reason)
 
@@ -208,7 +222,13 @@ class BaseMediaStorageLifecycle:
         return True
 
     async def cleanup_expired_blobs(self, now: datetime | None = None) -> list[str]:
-        """Purge expired orphan media and derived artifacts while preserving attached media."""
+        """[TEST_HELPER / LOCAL_DEV_ONLY] Purge expired orphan media from in-memory tracking.
+
+        Per Azure Data Platform Design §8.2, production orphan cleanup relies on
+        infrastructure TTL (Cosmos DB default TTL 86,400s) and Azure Blob Storage
+        Lifecycle Management policies. Service code does not run a production deletion
+        scheduler. This method is provided strictly for testing and local development.
+        """
         effective_now, purged = now or datetime.now(UTC), []
         for (hid, image_ref), rec in list(self._retention_records.items()):
             exp = rec.get("expires_at")
@@ -220,10 +240,13 @@ class BaseMediaStorageLifecycle:
             if snap is not None and snap.record.ttl_seconds is None:
                 await self.retain_media(hid, image_ref)
                 continue
-            await self._delete_media_and_artifact(hid, image_ref, rec)
-            rec["purged"] = True
-            self._snapshots.pop((hid, image_ref), None)
-            purged.append(image_ref)
+            try:
+                await self._delete_media_and_artifact(hid, image_ref, rec)
+                rec["purged"] = True
+                self._snapshots.pop((hid, image_ref), None)
+                purged.append(image_ref)
+            except Exception as exc:
+                logger.error("Failed deleting media/artifact for %s %s: %s", hid, image_ref, exc)
         return purged
 
     async def get_media_snapshot(

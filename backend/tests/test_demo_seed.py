@@ -347,3 +347,30 @@ def test_manifest_rejects_non_demo_household_and_dangling_transaction_item():
     manifest["transactions"][0]["item_id"] = "missing-item"
     with pytest.raises(ValidationError, match="outside the seed inventory"):
         DemoSeedManifest.model_validate(manifest)
+
+
+def test_manifest_loads_unlinked_shopping_item():
+    manifest_data = make_manifest().model_dump(mode="json")
+    manifest_data["shopping"].append(
+        {
+            "shopping_item_id": "seed-shopping-toothpaste",
+            "household_id": DEMO_HOUSEHOLD_ID,
+            "name": "牙膏",
+            "quantity": 1,
+            "unit": "條",
+            "status": ShoppingStatus.PENDING.value,
+            "item_id": None,
+            "created_at": SEED_TIME.isoformat(),
+            "updated_at": SEED_TIME.isoformat(),
+        }
+    )
+    manifest = DemoSeedManifest.model_validate(manifest_data)
+    container = FakeSeedContainer()
+
+    result = load_demo_seed(container, manifest, apply=True)
+
+    toothpaste = next(
+        document for document in container.documents.values() if document.get("name") == "牙膏"
+    )
+    assert result.records_created == 4
+    assert toothpaste.get("item_id") is None

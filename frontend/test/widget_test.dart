@@ -19,7 +19,7 @@ class ControlledAgent implements AgentClient {
   final List<String> messages = [];
   final List<(String, bool)> decisions = [];
   @override
-  Future<AgentReply> send(String message) {
+  Future<AgentReply> send(String message, {String? replacesApprovalId}) {
     messages.add(message);
     return pending.future;
   }
@@ -28,6 +28,8 @@ class ControlledAgent implements AgentClient {
   Future<AgentReply> resume({
     required String approvalId,
     required bool approved,
+    String? selectedOptionId,
+    List<String>? approvedOperationIds,
   }) {
     decisions.add((approvalId, approved));
     return pending.future;

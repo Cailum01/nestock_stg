@@ -17,7 +17,7 @@ from app.main import create_app
 from app.models.agent import AgentRequest, ResultKind
 from app.models.domain import InventoryItem
 from app.models.forecast import ForecastStatus, ItemForecast, SuggestedAction
-from app.services.forecast import ForecastService, ForecastSettings
+from app.services.forecast import ForecastService, ForecastSettings, reorder_summary
 from app.services.transaction_history import DemoTransactionHistory
 from app.tools.queries import QueryTools
 
@@ -111,6 +111,10 @@ class FakeForecast:
             raise self.error
         return self.forecasts
 
+    async def reorder_candidates(self, household_id: str, now: datetime):
+        """B2's own picking and ordering, run on the prepared results."""
+        return reorder_summary(await self.forecast_household(household_id, now))
+
 
 def _agent(model, forecast, inventory=None) -> ReadAgent:
     tools = QueryTools(inventory or get_inventory_service(), get_shopping_service())
@@ -157,6 +161,18 @@ def test_running_low_lists_only_flagged_items_soonest_first():
     assert result.kind is ResultKind.FORECAST
     assert "預估" in result.summary
     assert forecast.calls == [(HOUSEHOLD, NOW)]
+
+
+def test_running_low_leaves_out_items_no_longer_in_the_household_list():
+    tissue, soap = _item("tissue", "衛生紙"), _item("soap", "肥皂")
+    forecast = FakeForecast(
+        [_forecast(tissue, days=4.0, restock=True), _forecast(soap, days=1.0, restock=True)]
+    )
+    model = ScriptedModel(_call("get_reorder_candidates"), AIMessage(content="衛生紙快用完了。"))
+
+    _ask(_agent(model, forecast, _Inventory(tissue)), "什麼快用完了？")
+
+    assert [row["name"] for row in _seen(model)["running_low"]] == ["衛生紙"]
 
 
 def test_running_low_with_the_switch_off_says_there_is_not_enough_data():

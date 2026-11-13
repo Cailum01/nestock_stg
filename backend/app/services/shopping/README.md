@@ -1,9 +1,37 @@
-# C1 shopping plans and approval write builder
+# C1 ShoppingService design and approval write builder
 
-This module implements purchase/removal domain planning and batch assembly. The
-planner and `ShoppingWriteBuilder` do not execute or authorize writes themselves;
-they build the exact batch that A1's `ApprovalService` commits through B1's
-`CosmosWriteRepository`.
+This module implements C1's Shopping purchase/removal rules, pure domain planning,
+and approval batch assembly. Normal Shopping reads use the shared `ShoppingService`
+port. Writes that span Shopping and other domains go through the approval workflow:
+the planner and `ShoppingWriteBuilder` do not authorize or execute mutations;
+they build the exact household batch that A1's `ApprovalService` commits through
+B1's `CosmosWriteRepository`.
+
+## C1 decisions and implementation boundary
+
+- Shopping quantity is the user's original planned quantity. Actual purchased
+  quantity is a separate, explicitly supplied and approved value. Only that actual
+  value increments Inventory and becomes the purchase Transaction delta; completion
+  preserves the original Shopping quantity and does not create a remainder intent.
+- One approval's selected writes are one household-scoped atomic batch. Each logical
+  write keeps its stored operation identity across retries. Cancellation performs
+  no Shopping, Inventory, Transaction, event, or receipt business write.
+- Removing a pending Shopping entry is a soft delete (`deleted_at`). It leaves the
+  public status and Inventory unchanged and creates no purchase Transaction/event.
+- A new Inventory target requires confirmed name, actual quantity, unit, and
+  location (location may be absent only when the user confirmed that absence).
+  C1 accepts the stable `item_id` produced by B1's
+  `resolve_inventory_item_id(operation_id)`; C1 and the App do not define its
+  encoding. Creation uses a create operation in the same approval batch, never a
+  fabricated zero-quantity snapshot or ETag.
+- Validation and planning are all-or-nothing. A failed member rejects the group;
+  no partial plan is returned. A fresh card is required when a target, quantity,
+  unit, location, or other approved value changes.
+
+The C1 planner and builder, including new-target creates, are implemented and
+covered by offline integration tests. Production stored-card support for new
+targets remains an A1 integration dependency (PR #140); this README describes the
+C1 handoff and does not claim the Agent/App journey is enabled end to end.
 
 The production composition now injects A1's `CardInputResolver` into
 `ShoppingWriteBuilder`. It rehydrates only the fixed, server-stored card lines and
@@ -16,6 +44,35 @@ and `/agent/resume` returns 503 without saving changes. Plans are not approval.
 
 ## Domain semantics
 
+### Direct Shopping additions (#52)
+
+Shopping represents purchase intent. A Direct App addition needs a name; planned
+quantity and unit are optional and must not be fabricated. Direct App and Agent
+additions must use the shared C1 ShoppingService, with backend validation and a
+success response only after persistence succeeds. The App's explicit Add action is
+the confirmation for this direct Shopping write; Agent initiated additions remain
+behind the Agent approval flow.
+
+Issue #52 did not freeze a public endpoint or request/response DTO. Before enabling
+the Direct App write path, C1, A1 and B1 must agree how a stable request identity
+binds to the operation ID and durable receipt across retries and lost responses;
+C1 and C2 must then align the DTO. Do not treat the local Shopping presentation
+prototype or the purchase flow's approval receipt as that contract. Cosmos
+document mapping, partition key, receipt schema and ID rules remain authoritative
+in [`datalake/azure-data-platform-design.md`](../../../../datalake/azure-data-platform-design.md)
+and its linked B1 decisions; this C1 document describes only the service handoff.
+
+`ShoppingIntentService.add(AddShoppingIntent)` now implements the C1 domain write:
+it validates a named pending intent, permits optional planned quantity and unit,
+builds the authoritative `ShoppingItem` document, and calls B1's
+`execute_idempotent_batches` with the caller-resolved operation identity. Replaying
+the same command returns the repository's `already_applied` result; changed values
+under the same identity are rejected by its durable receipt fingerprint. The
+trusted caller must supply stable operation/item IDs and timestamp on retries.
+This is an internal C1 service seam; it is not yet composed into a public route or
+Agent tool. Request-ID-to-operation-ID mapping and the wire DTO remain pending the
+cross-owner agreement above.
+
 Per [Issue #27](https://github.com/nestock-app/nestock/issues/27), Shopping quantity
 is the original plan. Planning two bottles and actually buying one completes this
 Shopping task, keeps the planned quantity at two, adds one to Inventory and creates
@@ -25,8 +82,8 @@ entries disappear from the active list without hard deletion.
 Per [Issue #63](https://github.com/nestock-app/nestock/issues/63), counts use integer
 arithmetic. Shopping planned quantity/unit can be absent; no value of one or default
 unit is invented. Actual purchase quantity must be explicit and positive. Fractional,
-nonfinite, boolean and string counts fail. Integral floats are accepted only for
-compatibility with the old model while B1's integer/optional model PR #64 is pending.
+nonfinite, boolean and string counts fail. The current Pydantic models use integer
+counts; no floating-point compatibility path is part of the contract.
 An actual unit must be resolved and match the Inventory target and any planned unit.
 There is no unit conversion or automatic purchase beyond an existing plan.
 
@@ -58,7 +115,10 @@ all-or-nothing, and repeated stored inputs produce identical IDs and values. Pur
 planning cannot prove absence, freshness, authorization or durable idempotency.
 
 A1 resolves ambiguous existing-item matches and any alias approval before handing
-inputs to C1. This builder does not execute item-match cards or standalone gifts /
+inputs to C1. The caller obtains a new item's stable ID from B1's resolver and
+binds it to the stored operation; the C1 planner validates and carries that exact
+ID through the create, Transaction, event, receipt, and outcome. This builder does
+not execute item-match cards or standalone gifts /
 add_stock without a Shopping entry. Those need A1's card lifecycle and B1's event
 scope agreement; no dummy Shopping ID or event field is invented here.
 
@@ -79,13 +139,8 @@ past stock. A1 owns natural-language date/timezone resolution and showing dates;
 changed dates require a new card. B1 confirmed event-time queries and no production
 history migration; B2 still owns forecast enablement.
 
-Issue #113 proposes treating Transaction.created_at as recording time in every
-case. That differs from the #60 event-time handoff above when purchased_at is
-historical; it agrees only with the no-purchased_at fallback. The newer B1 reply
-in #113 also differs from B1's earlier #60 confirmation and design section 9.1.
-Until A1/B1/B2/C1 reconcile these statements, this implementation retains the
-existing split; this README does not settle the shared Transaction contract or
-enable forecasting. `recorded_at` is a planner argument, not a Transaction field;
+Issue #113 closed with the event-time decision above. `recorded_at` is a planner
+argument, not a Transaction field;
 ChangeEvent records both occurred_at and recorded_at. A1's pending #71 helper
 resolves dates, #104 passes stored purchased_at through, and #96's current card
 producer does not supply a historical purchased_at. Helper/resolver support is
@@ -161,11 +216,10 @@ timeouts before/after commit, stable retries, partial receipts and exact 100-act
 acceptance / oversized save rejection. These are offline integration tests, not
 Agent/App end-to-end or live Cosmos evidence.
 
-The real name-only Pydantic test is explicitly skipped on main's old required
-fields and runs with #64's actual schema. Joint validation applies only #64's model
-and model-test patch to current main plus C1, retaining the newer ChangeEvent model.
-No B1 files are edited in this working tree. Coordinate review/merge with B1; keep
-#63 open until both sides land. See the linked Issues and pull requests for current integration evidence and owner work.
+The name-only Pydantic case exercises the current optional Shopping quantity/unit
+model. The tests use B1's stable ID resolver for new-target fixtures and do not
+redefine its format. See the linked Issues and pull requests for current integration
+evidence and owner work.
 
 ## Final Demo core purchase acceptance contract
 
@@ -208,6 +262,15 @@ reopen read-back. It is not evidence for new Inventory items, unlinked Shopping
 rows, over-pending quantities, different units, direct Shopping additions, price
 options, or media attachments.
 
+The shared `demo-household` is not a disposable test partition. Before any reset or
+rehearsal write, obtain explicit authorization from the data owner for the records
+that may be changed, run and review a complete read-only partition preflight against
+the current data, and confirm the approved reset procedure and expected baseline.
+Use the isolated `c1-test-*` household for synthetic write acceptance. After an
+authorized Demo reset, read back and reconcile the complete 31-record baseline
+before continuing; the isolated acceptance script does not authorize or perform a
+Demo household reset.
+
 `tests.manual_test_shopping_cosmos` records the isolated backend/Cosmos portion of
 this contract in a fresh `c1-test-*` household. Its JSON result includes the core
 approval, operation and Transaction identities; it explicitly checks baseline
@@ -221,12 +284,13 @@ reset plus read-back is the separate final-Demo evidence for that last step.
 
 ## Current limits and Demo prerequisites
 
-The integrated route supports only existing Inventory targets linked from pending
-Shopping entries, with an explicit positive whole-number purchase quantity no larger
-than the planned quantity and the same unit. `CardInputResolver` does not yet cover
-manual removals, unlinked/new Inventory targets, purchases above the pending amount,
-different units, media attachment retention, or a historical purchase time supplied
-by the Agent/App. These remain unsupported user journeys, not fallback writes.
+The currently integrated Agent route supports existing Inventory targets linked
+from pending Shopping entries, with an explicit positive whole-number purchase
+quantity no larger than the planned quantity and the same unit. The C1 planner and
+builder also support confirmed new Inventory targets and removal, but A1's stored
+card resolver does not yet expose those journeys. Purchases above the pending amount,
+unit conversion, media attachment retention, and historical purchase-time entry
+remain unsupported in the Agent/App flow; they do not fall back to unapproved writes.
 
 The route is backend integration, not App E2E: C2 still needs to connect the Android
 approval-card and retry/cancel flows to the Agent API. Production evidence also still
@@ -234,10 +298,10 @@ requires B1's resettable Demo baseline and durable Cosmos read-back, plus B2's
 Transaction/read-side validation. The isolated `c1-test-*` check below is not the
 Demo baseline and must not be presented as Android acceptance.
 
-`ShoppingWriteBuilder` still supports its wider internal planning surfaces (removal,
-new targets and optional media retention) when an owner-approved resolver and ports
-are injected. They are deliberately not exposed by the current A1 card flow. Stable
-new-item IDs, non-Shopping event scope, media detach/cleanup, oversized-card
+`ShoppingWriteBuilder` supports removal and new targets when an approved stored-card
+resolver supplies the exact values and B1 stable ID. Optional media retention remains
+disabled in production composition pending A2/B1 integration. Non-Shopping event
+scope, media detach/cleanup, oversized-card
 splitting and broader live conflict/reconciliation validation remain cross-owner
 work. Until those decisions and C2 flow are complete, do not claim #27 or #90 is
 complete end-to-end. Retain **provisional per D-3** in an integration PR while the

@@ -1,0 +1,153 @@
+{
+  "_about": "B2 tool selection cases (v8 section 20: >=3 example utterances and >=1 confusion case per tool). Tool names follow backend/app/agent/read_agent.py TOOL_SCHEMAS. C1 owns the Golden Prompts set and may merge these in; the format here is only B2's proposal.",
+  "cases": [
+    {
+      "id": "reorder-01",
+      "tool": "get_reorder_candidates",
+      "kind": "positive",
+      "utterance": "最近有什麼快用完？",
+      "expect_calls": [
+        "get_reorder_candidates"
+      ],
+      "must_not_call": [
+        "get_consumption_forecast"
+      ],
+      "note": "v8 Workflow D entry sentence."
+    },
+    {
+      "id": "reorder-02",
+      "tool": "get_reorder_candidates",
+      "kind": "positive",
+      "utterance": "家裡有哪些東西該補貨了？",
+      "expect_calls": [
+        "get_reorder_candidates"
+      ],
+      "must_not_call": [
+        "get_consumption_forecast"
+      ]
+    },
+    {
+      "id": "reorder-03",
+      "tool": "get_reorder_candidates",
+      "kind": "positive",
+      "utterance": "有沒有什麼快沒了，幫我看一下",
+      "expect_calls": [
+        "get_reorder_candidates"
+      ],
+      "must_not_call": [
+        "get_consumption_forecast"
+      ]
+    },
+    {
+      "id": "reorder-04",
+      "tool": "get_reorder_candidates",
+      "kind": "positive",
+      "utterance": "最近有什麼快用完？衛生紙還能用多久？",
+      "expect_calls": [
+        "get_reorder_candidates"
+      ],
+      "must_not_call": [],
+      "note": "Two questions in one: the list question must reach get_reorder_candidates. Also calling get_consumption_forecast for the second question is acceptable, so it is not forbidden."
+    },
+    {
+      "id": "reorder-neg-01",
+      "tool": "get_reorder_candidates",
+      "kind": "negative",
+      "utterance": "家裡現在有哪些東西？",
+      "expect_calls": [
+        "list_inventory"
+      ],
+      "must_not_call": [
+        "get_reorder_candidates",
+        "get_consumption_forecast"
+      ],
+      "note": "Confusion: listing stock is not asking what is running low."
+    },
+    {
+      "id": "reorder-neg-02",
+      "tool": "get_reorder_candidates",
+      "kind": "negative",
+      "utterance": "我要買 AA 電池，家裡還有嗎？",
+      "expect_calls": [
+        "list_inventory"
+      ],
+      "must_not_call": [
+        "get_reorder_candidates",
+        "get_consumption_forecast"
+      ],
+      "note": "v8 Workflow B: a duplicate-purchase check reads stock; forecast is not forced into every inventory lookup."
+    },
+    {
+      "id": "forecast-01",
+      "tool": "get_consumption_forecast",
+      "kind": "positive",
+      "utterance": "衛生紙大概還能用多久？",
+      "expect_calls": [
+        "get_consumption_forecast"
+      ],
+      "args_contain": {
+        "item_name": "衛生紙"
+      },
+      "must_not_call": [
+        "get_reorder_candidates"
+      ],
+      "note": "v8 B2 scenario sentence."
+    },
+    {
+      "id": "forecast-02",
+      "tool": "get_consumption_forecast",
+      "kind": "positive",
+      "utterance": "洗衣精什麼時候會用完？",
+      "expect_calls": [
+        "get_consumption_forecast"
+      ],
+      "args_contain": {
+        "item_name": "洗衣精"
+      },
+      "must_not_call": [
+        "get_reorder_candidates"
+      ]
+    },
+    {
+      "id": "forecast-03",
+      "tool": "get_consumption_forecast",
+      "kind": "positive",
+      "utterance": "牛奶還能撐幾天？",
+      "expect_calls": [
+        "get_consumption_forecast"
+      ],
+      "args_contain": {
+        "item_name": "牛奶"
+      },
+      "must_not_call": [
+        "get_reorder_candidates"
+      ]
+    },
+    {
+      "id": "forecast-neg-01",
+      "tool": "get_consumption_forecast",
+      "kind": "negative",
+      "utterance": "衛生紙還剩幾包？",
+      "expect_calls": [
+        "list_inventory"
+      ],
+      "must_not_call": [
+        "get_consumption_forecast",
+        "get_reorder_candidates"
+      ],
+      "note": "Confusion: asks for a quantity now, not for how long it lasts."
+    },
+    {
+      "id": "forecast-neg-02",
+      "tool": "get_consumption_forecast",
+      "kind": "negative",
+      "utterance": "幫我把衛生紙的庫存改成 3 包",
+      "expect_calls": [],
+      "must_not_call": [
+        "get_consumption_forecast",
+        "get_reorder_candidates"
+      ],
+      "note": "Forecast tools only read; a request to change stock must not be answered with an estimate, and the estimate never overwrites a confirmed quantity (AGENTS.md)."
+    }
+  ]
+}

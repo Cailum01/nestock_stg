@@ -58,6 +58,12 @@ class CosmosTransactionalContainer(CosmosContainer, Protocol):
     ) -> Sequence[Mapping[str, object]]: ...
 
 
+class CosmosSeedContainer(CosmosTransactionalContainer, Protocol):
+    def create_item(self, *, body: Mapping[str, object]) -> Mapping[str, object]: ...
+
+    def delete_item(self, *, item: str, partition_key: str) -> None: ...
+
+
 class AzureCosmosDocumentQueryClient:
     """Run household-partitioned SDK queries without blocking the event loop."""
 
@@ -362,12 +368,26 @@ def create_azure_cosmos_repositories(
     return read_repository, write_repository, document_reader, close
 
 
+def create_azure_cosmos_seed_container(
+    *,
+    endpoint: str,
+    database_name: str,
+    container_name: str,
+) -> tuple[CosmosSeedContainer, Callable[[], None]]:
+    """Create the raw container client used by the explicit Demo seeder."""
+    return _create_azure_cosmos_container(
+        endpoint=endpoint,
+        database_name=database_name,
+        container_name=container_name,
+    )
+
+
 def _create_azure_cosmos_container(
     *,
     endpoint: str,
     database_name: str,
     container_name: str,
-) -> tuple[CosmosTransactionalContainer, Callable[[], None]]:
+) -> tuple[CosmosSeedContainer, Callable[[], None]]:
     if not endpoint.startswith("https://"):
         raise ValueError("Cosmos endpoint must use HTTPS.")
     if not database_name or not container_name:

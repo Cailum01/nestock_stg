@@ -146,6 +146,11 @@ class PurchaseWriteBuilder:
             transaction_id = f"tx-{operation.operation_id}"
             shopping, shopping_etag = current[values["shopping_record_id"]]
             inventory = current[values["inventory_record_id"]]
+            event_time = values.get("purchased_at")
+            if event_time is None:
+                event_time = record.decided_at.isoformat()
+            if not isinstance(event_time, str):
+                raise ValueError("purchased_at must be a datetime string when provided.")
             added[values["inventory_record_id"]] = (
                 added.get(values["inventory_record_id"], 0) + values["quantity"]
             )
@@ -160,7 +165,7 @@ class PurchaseWriteBuilder:
                         "operation_id": operation.operation_id,
                         "item_id": values["item_id"],
                         "quantity_delta": values["quantity"],
-                        "created_at": values["purchased_at"],
+                        "created_at": event_time,
                     }
                 ),
                 ReplaceDocument(shopping_update, if_match_etag=shopping_etag),
@@ -173,7 +178,7 @@ class PurchaseWriteBuilder:
                         transaction_id=transaction_id,
                         shopping_item_id=values["shopping_item_id"],
                         item_id=values["item_id"],
-                        occurred_at=datetime.fromisoformat(values["purchased_at"]),
+                        occurred_at=datetime.fromisoformat(event_time),
                         recorded_at=record.decided_at,
                     )
                 ),
@@ -234,20 +239,22 @@ def setup():
     return service, container, builder, clock, (shopping_etags, inventory_etag)
 
 
-def purchase(etags, quantity=1, entry=0):
+def purchase(etags, quantity=1, entry=0, purchased_at=PURCHASED_AT):
     shopping_etags, inventory_etag = etags
     shopping_record_id = (SHOPPING, SHOPPING_2)[entry]
+    values = {
+        "shopping_item_id": shopping_record_id.split(":")[1],
+        "item_id": "tissue",
+        "shopping_record_id": shopping_record_id,
+        "inventory_record_id": INVENTORY,
+        "quantity": quantity,
+    }
+    if purchased_at is not None:
+        values["purchased_at"] = purchased_at
     return NewOperation(
         action="complete_purchase",
         description=f"衛生紙買回來 {quantity} 串",
-        values={
-            "shopping_item_id": shopping_record_id.split(":")[1],
-            "item_id": "tissue",
-            "shopping_record_id": shopping_record_id,
-            "inventory_record_id": INVENTORY,
-            "quantity": quantity,
-            "purchased_at": PURCHASED_AT,
-        },
+        values=values,
         targets=[
             TargetVersion(record_id=shopping_record_id, etag=shopping_etags[entry]),
             TargetVersion(record_id=INVENTORY, etag=inventory_etag),
@@ -392,6 +399,43 @@ def test_confirm_writes_purchase_receipts_events_and_completion_in_one_b1_batch(
         datetime.fromisoformat(event["occurred_at"]) == datetime.fromisoformat(PURCHASED_AT)
         for event in events
     )
+    assert {
+        datetime.fromisoformat(transaction["created_at"])
+        for transaction in container.of_type("transaction")
+    } == {datetime.fromisoformat(PURCHASED_AT)}
+
+
+def test_missing_event_time_uses_first_decision_time_across_operation_retry():
+    service, container, _, clock, etags = setup()
+    card = asyncio.run(
+        service.save(
+            service.prepare(
+                household_id=HOME,
+                presentation=ApprovalPresentation.SINGLE_ACTION,
+                operations=[purchase(etags, purchased_at=None)],
+            )
+        )
+    )
+    clock.advance(5)
+
+    request = ResumeRequest(household_id=HOME, approval_id=card.approval_id, approved=True)
+    first = asyncio.run(service.resume(request))
+    transaction = container.of_type("transaction")[0]
+    event = container.of_type("change_event")[0]
+    first_decision = first.record.decided_at
+    assert first.outcome is ResumeOutcome.COMPLETED
+    assert datetime.fromisoformat(transaction["created_at"]) == first_decision
+    assert datetime.fromisoformat(event["occurred_at"]) == first_decision
+    assert datetime.fromisoformat(event["recorded_at"]) == first_decision
+
+    clock.advance(10)
+    retry = asyncio.run(service.resume(request))
+
+    assert retry.outcome is ResumeOutcome.ALREADY_COMPLETED
+    assert retry.record.decided_at == first_decision
+    assert container.of_type("transaction") == [transaction]
+    assert container.of_type("change_event") == [event]
+    assert container.get(INVENTORY)["quantity"] == 2
 
 
 # ----- 5. lost response after the batch committed ----------------------------------------

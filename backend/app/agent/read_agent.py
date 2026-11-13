@@ -28,6 +28,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Awaitable, Callable, Protocol, TypedDict
@@ -101,7 +102,18 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "查詢家裡目前的庫存：品名、數量、單位、放置位置、別名。"
                 "會一起附上待購清單裡還沒買的東西。"
             ),
-            "parameters": {"type": "object", "properties": {}},
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item_name": {
+                        "type": "string",
+                        "description": (
+                            "使用者問某一樣東西時填：使用者說的品名（例如衛生紙）。"
+                            "問家裡有什麼、要看整份庫存時不要填。"
+                        ),
+                    }
+                },
+            },
         },
     },
     {
@@ -354,6 +366,18 @@ def _text(message: AnyMessage) -> str:
     return str(text) if isinstance(text, str) else text()
 
 
+_HEADING = re.compile(r"(?m)^#{1,6}[ \t]+")
+
+
+def _plain(text: str) -> str:
+    """The App prints the reply as typed, so Markdown bold and headings show as symbols.
+
+    The prompt asks for plain text; this removes what the model adds anyway (A1-89,
+    seen in Issue #124's screenshot): `**` pairs and `#` at the start of a line.
+    """
+    return _HEADING.sub("", text.replace("**", ""))
+
+
 class ReadAgent:
     """Implements AgentRuntime.respond. Cards it makes are answered in `/agent/resume`."""
 
@@ -415,6 +439,12 @@ class ReadAgent:
                     if found is not None:
                         earlier = update.get("purchase_options", state.get("purchase_options", []))
                         update["purchase_options"] = [*earlier, found]
+                elif call["name"] == "list_inventory":
+                    content, rows = await self._inventory_answer(
+                        state["household_id"], call.get("args") or {}
+                    )
+                    if rows is not None:
+                        update["inventory"] = rows
                 elif call["name"] == PURCHASE_TOOL_SCHEMA["function"]["name"]:
                     content, card = await self._propose_purchase(state, update, call)
                     if card is not None:
@@ -425,9 +455,6 @@ class ReadAgent:
                     items = await handler(state["household_id"])
                     rows = [item.model_dump(mode="json") for item in items]
                     content = json.dumps(rows, ensure_ascii=False)
-                    if call["name"] == "list_inventory":
-                        update["inventory"] = rows
-                        content = await self._with_shopping_list(state["household_id"], rows)
                 update["messages"].append(ToolMessage(content, tool_call_id=call["id"]))
             return update
 
@@ -442,7 +469,36 @@ class ReadAgent:
         builder.add_edge("look", "think")
         return builder.compile()
 
-    async def _with_shopping_list(self, household_id: str, rows: list[dict[str, Any]]) -> str:
+    async def _inventory_answer(
+        self, household_id: str, args: dict[str, Any]
+    ) -> tuple[str, list[dict[str, Any]] | None]:
+        """(result for the model, rows for the App's inventory card).
+
+        With an `item_name`, only the household items with that name or alias are
+        returned, so a question about 衛生紙 shows 衛生紙 and nothing else (DEMO
+        checklist v3, section 3 B). When nothing has that name, the model gets the
+        household's item names to judge another name for the same thing (AA 電池 and
+        電池) and asks again; no card is shown for that lookup. Without a name, the
+        whole inventory is returned as before.
+        """
+        items = await self._handlers["list_inventory"](household_id)
+        item_name = str(args.get("item_name") or "").strip()
+        if not item_name:
+            rows = [item.model_dump(mode="json") for item in items]
+            return await self._with_shopping_list(household_id, {"inventory": rows}), rows
+        match = match_term(item_name, items)
+        if not match.items:
+            view: dict[str, Any] = {
+                "item_name": item_name,
+                "found": False,
+                "household_items": [_household_item_view(item) for item in items],
+            }
+            return await self._with_shopping_list(household_id, view), None
+        rows = [item.model_dump(mode="json") for item in match.items]
+        view = {"item_name": item_name, "inventory": rows}
+        return await self._with_shopping_list(household_id, view), rows
+
+    async def _with_shopping_list(self, household_id: str, view: dict[str, Any]) -> str:
         """v8 Flow B: an inventory lookup also shows what is already on the shopping list.
 
         If the list cannot be read (for example Cosmos is unreachable), the inventory is
@@ -453,8 +509,8 @@ class ReadAgent:
             shopping = await self._handlers["list_shopping"](household_id)
         except Exception:  # only the extra read failed; the inventory was read
             logger.warning("Shopping list read failed during an inventory lookup", exc_info=True)
-            view: dict[str, Any] = {
-                "inventory": rows,
+            view = {
+                **view,
                 "shopping_list": None,
                 "shopping_list_error": SHOPPING_LIST_UNAVAILABLE,
             }
@@ -462,7 +518,7 @@ class ReadAgent:
             pending = [
                 item.model_dump(mode="json") for item in shopping if item.status == "pending"
             ]
-            view = {"inventory": rows, "shopping_list": pending}
+            view = {**view, "shopping_list": pending}
         return json.dumps(view, ensure_ascii=False)
 
     async def _forecast_answer(
@@ -609,7 +665,7 @@ class ReadAgent:
                 )
             )
         return AgentResponse(
-            message=_text(final["messages"][-1]),
+            message=_plain(_text(final["messages"][-1])),
             results=results,
             pending_approval=final.get("pending_approval"),
         )

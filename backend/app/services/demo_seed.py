@@ -18,7 +18,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.domain import InventoryItem, ShoppingItem, Transaction
 from app.services.cosmos_read import CosmosDocumentMapper
-from app.services.cosmos_sdk import CosmosSeedContainer, create_azure_cosmos_seed_container
+from app.services.cosmos_sdk import (
+    COSMOS_TRANSACTIONAL_BATCH_LIMIT,
+    CosmosSeedContainer,
+    create_azure_cosmos_seed_container,
+)
 
 DEMO_HOUSEHOLD_ID = "demo-household"
 _COSMOS_SYSTEM_FIELDS = frozenset({"_attachments", "_etag", "_rid", "_self", "_ts"})
@@ -99,13 +103,9 @@ def load_demo_seed(
     _validate_existing_documents(existing)
 
     if reset:
+        operations = _build_reset_operations(existing, desired)
         if apply:
-            for document in existing:
-                container.delete_item(
-                    item=str(document["id"]),
-                    partition_key=DEMO_HOUSEHOLD_ID,
-                )
-            _create_documents(container, desired)
+            _execute_reset_batch(container, operations)
             _verify_documents(container, desired)
         return DemoSeedResult(
             action="reset",
@@ -202,6 +202,45 @@ def _create_documents(
 ) -> None:
     for document in documents:
         container.create_item(body=document)
+
+
+def _build_reset_operations(
+    existing: Sequence[Mapping[str, object]],
+    desired: Sequence[Mapping[str, object]],
+) -> list[tuple[str, tuple[object, ...]]]:
+    operations: list[tuple[str, tuple[object, ...]]] = [
+        ("delete", (str(document["id"]),)) for document in existing
+    ]
+    operations.extend(("create", (dict(document),)) for document in desired)
+    if len(operations) > COSMOS_TRANSACTIONAL_BATCH_LIMIT:
+        raise DemoSeedError(
+            f"Demo reset requires {len(operations)} Cosmos transactional batch operations; "
+            f"the limit is {COSMOS_TRANSACTIONAL_BATCH_LIMIT}. No writes were submitted."
+        )
+    return operations
+
+
+def _execute_reset_batch(
+    container: CosmosSeedContainer,
+    operations: Sequence[tuple[str, tuple[object, ...]]],
+) -> None:
+    request_charges: list[str] = []
+
+    def capture_response(headers: Mapping[str, str], _body: list[Mapping[str, object]]) -> None:
+        charge = headers.get("x-ms-request-charge")
+        if charge is not None:
+            request_charges.append(charge)
+
+    container.execute_item_batch(
+        batch_operations=operations,
+        partition_key=DEMO_HOUSEHOLD_ID,
+        response_hook=capture_response,
+    )
+    _LOGGER.info(
+        "demo_seed_reset_batch_completed operation_count=%d request_charges=%s",
+        len(operations),
+        ",".join(request_charges) or "unavailable",
+    )
 
 
 def _verify_documents(

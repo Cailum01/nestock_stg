@@ -858,15 +858,22 @@ manifest's Inventory, Shopping, and Transaction records. Before applying it,
 an operator must inspect the target environment and confirm that all records in
 that household may be discarded. The command requires an explicit
 `demo-household` confirmation, deletes only within that household partition,
-recreates the manifest, and verifies the resulting records by reading them
-back. Reset is also not atomic: an interrupted reset requires inspection before
-retry, and must not be used where unrelated household data must be retained.
-If a delete, create, or read-back step fails, stop and inspect the partition
-read-only; do not assume rollback. If every remaining record is disposable and
-the reset is still authorized, rerun the complete reset with the same reviewed
-manifest and explicit confirmation, then verify its read-back. If unrelated
-data is present or the state is uncertain, stop and obtain owner approval before
-any further writes. A normal load is not recovery for a partial reset.
+and recreates the manifest in one same-container, same-household-partition
+Cosmos transactional batch. The loader must calculate the complete delete/create
+operation count before submission and fail without writing if it exceeds
+Cosmos's 100-operation limit. It must not split an oversized reset into multiple
+batches or fall back to sequential deletes and creates. Cosmos request-size and
+execution-time limits also apply; a rejected or failed transaction must leave
+the pre-reset partition unchanged. After a successful batch, verify the
+resulting records by reading them back.
+
+If a batch call fails or times out, its outcome may be unknown to the caller.
+Inspect the partition read-only: if it exactly matches the manifest, treat the
+reset as completed; if it still matches the pre-reset state and the reset
+remains authorized, rerun the complete batch with the same reviewed manifest
+and explicit confirmation. If the partition matches neither state, stop and
+obtain owner approval before any further writes. A normal load is not recovery
+for an uncertain reset.
 
 Reset also deletes stored confirmation-card records. Any card created before
 reset will no longer be confirmable (its approval record may return 404); finish
@@ -1173,7 +1180,7 @@ or acceptance. OPEN issues and PR review states remain authoritative.
 | --- | --- | --- | --- |
 | Approved Shopping persistence (#27, #60) | The household-batch boundary, stable operation identities, receipts, change event, stop-on-mismatch behavior, and storage-only Shopping removal marker are documented in §6.5. | PR #105 → #104 → #96 are merged. B1 live synthetic acceptance passed 36 checks in `c1-test-b1-removal-20261113-0202`, including purchase, cancellation without domain writes, approved Shopping removal/tombstone, active-list filtering, and removal retry. Earlier runs passed the purchase-failure matrix and cancellation coverage. The test resolver remains a stand-in, so this is not full Agent/App E2E. | Coordinate C2 approval UI / Agent-App E2E separately. Keep #27/#60 OPEN for the remaining cross-owner evidence, not as a design or B1 persistence gate. |
 | Cosmos pilot acceptance | Required isolation, ETag, atomicity, retry, timeout, receipt-mismatch, TTL, and error-observation checks are identified in this design and B1 follow-up work. | The B1-owned live synthetic matrix passed against Cosmos, including request metrics, fail-closed receipt mismatch, cancellation no-domain-write behavior, and Shopping removal. A read-only query found no household under the earlier `c1-test-b1-accept-20261113-*` prefix. Successful test partitions are retained for review; the bounded runner reports progress, uses 20-second per-request timeout and 300-second overall timeout by default. | Do not delete test partitions. Keep full Agent/App E2E separate; do not treat this B1/C1 builder run as production-resolver coverage. |
-| Demo seed/reset (#126) | The bounded loader, destructive-reset guard, dry-run, non-atomic failure behavior, and read-back requirements are documented in §6.8. | B1 implementation and offline dry-run/read-back tests pass. A read-only Cosmos inventory found 4 `user_input` records in `demo-household`; no load/reset was performed. The final B2 manifest and C1 baseline are not yet available. | Do not reset or load yet. First agree the manifest/baseline and determine whether all 4 existing records are disposable; reset deletes every household document, while normal load rejects a nonempty partition. |
+| Demo seed/reset (#126) | The bounded loader, destructive-reset guard, dry-run, single-batch atomic reset, operation-limit fail-closed behavior, timeout inspection, and read-back requirements are documented in §6.8. | B1 offline tests pass, including failure injection preserving the prior partition and an over-limit plan submitting no batch. A read-only Cosmos inventory found 4 `user_input` records in `demo-household`; no load/reset was performed. The final B2 manifest and C1 baseline are not yet available. | Do not reset or load yet. First agree the manifest/baseline and determine whether all 4 existing records are disposable; reset deletes every household document, while normal load rejects a nonempty partition. |
 | Media mapping and retention (#98) | B1 mapping storage and retention boundary are documented; A2 owns upload/processing and derived-artifact details. | B1 mapping port is merged in PR #97; 9 offline mapping tests pass, and the live synthetic purchase acceptance verified media TTL and the same-household retention update. PR #109 remains OPEN with changes requested and a merge conflict; upload/processing integration and detach/replacement lifecycle are not accepted end-to-end. | Resolve the A2 artifact/schema/version and media detach/replacement policy with A2/C1; do not invent those fields or lifecycle rules in B1 storage. |
 | Transaction event time (#113) | The event-time rule is recorded in §9.1 and B1/B2 have agreed to the current proposal. | #113 remains OPEN; PR #128 has changes requested. B1 added offline integration coverage for explicit event time and missing-event-time fallback to the first `decided_at`, including a retry with stable identity/time. | B1/C1 may use the current rule provisionally for agreed purchase work and tests; B2 resolves the PR review. Update if the final decision changes. Forecast enablement remains B2's decision. |
 

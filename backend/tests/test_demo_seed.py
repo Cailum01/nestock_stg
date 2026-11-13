@@ -30,6 +30,8 @@ class FakeSeedContainer:
         self.created: list[str] = []
         self.deleted: list[str] = []
         self.queried_partitions: list[str] = []
+        self.batch_calls: list[dict[str, object]] = []
+        self.fail_batch_after: int | None = None
 
     def query_items(
         self,
@@ -63,6 +65,39 @@ class FakeSeedContainer:
         assert document["household_id"] == partition_key
         self.deleted.append(item)
         del self.documents[item]
+
+    def execute_item_batch(self, *, batch_operations, partition_key, response_hook):
+        self.batch_calls.append(
+            {"batch_operations": batch_operations, "partition_key": partition_key}
+        )
+        staged = deepcopy(self.documents)
+        created: list[str] = []
+        deleted: list[str] = []
+        for index, (operation, arguments) in enumerate(batch_operations, start=1):
+            if operation == "delete":
+                item = str(arguments[0])
+                document = staged[item]
+                assert document["household_id"] == partition_key
+                del staged[item]
+                deleted.append(item)
+            elif operation == "create":
+                document = dict(arguments[0])
+                document_id = str(document["id"])
+                if document_id in staged:
+                    raise AssertionError(f"duplicate create for {document_id}")
+                staged[document_id] = document
+                created.append(document_id)
+            else:
+                raise AssertionError(f"unsupported batch operation {operation!r}")
+
+            if self.fail_batch_after == index:
+                raise RuntimeError("injected transactional batch failure")
+
+        self.documents = staged
+        self.created.extend(created)
+        self.deleted.extend(deleted)
+        response_hook({"x-ms-request-charge": "1"}, [])
+        return []
 
 
 def make_manifest() -> DemoSeedManifest:
@@ -192,6 +227,7 @@ def test_reset_dry_run_reports_scope_without_deleting():
     assert result.documents_deleted == 0
     assert container.deleted == []
     assert container.created == []
+    assert container.batch_calls == []
 
 
 def test_reset_only_deletes_demo_household_then_reloads_the_manifest():
@@ -219,6 +255,14 @@ def test_reset_only_deletes_demo_household_then_reloads_the_manifest():
     assert result.documents_deleted == 1
     assert result.records_created == 3
     assert container.deleted == ["inventory_item:old-demo"]
+    assert len(container.batch_calls) == 1
+    assert container.batch_calls[0]["partition_key"] == DEMO_HOUSEHOLD_ID
+    assert [operation for operation, _ in container.batch_calls[0]["batch_operations"]] == [
+        "delete",
+        "create",
+        "create",
+        "create",
+    ]
     assert container.documents["inventory_item:other"]["household_id"] == "other-household"
     assert (
         len(
@@ -230,6 +274,66 @@ def test_reset_only_deletes_demo_household_then_reloads_the_manifest():
         )
         == 3
     )
+
+
+def test_reset_batch_failure_preserves_previous_partition_state():
+    container = FakeSeedContainer()
+    container.documents = {
+        "inventory_item:old-demo": {
+            "id": "inventory_item:old-demo",
+            "household_id": DEMO_HOUSEHOLD_ID,
+        },
+        "pending_approval:old-demo": {
+            "id": "pending_approval:old-demo",
+            "household_id": DEMO_HOUSEHOLD_ID,
+        },
+        "inventory_item:other": {
+            "id": "inventory_item:other",
+            "household_id": "other-household",
+        },
+    }
+    original_documents = deepcopy(container.documents)
+    container.fail_batch_after = 2
+
+    with pytest.raises(RuntimeError, match="injected transactional batch failure"):
+        load_demo_seed(
+            container,
+            make_manifest(),
+            apply=True,
+            reset=True,
+            confirm_household_wipe=DEMO_HOUSEHOLD_ID,
+        )
+
+    assert container.documents == original_documents
+    assert len(container.batch_calls) == 1
+    assert container.created == []
+    assert container.deleted == []
+
+
+def test_reset_fails_before_batch_when_operation_limit_would_be_exceeded():
+    container = FakeSeedContainer()
+    container.documents = {
+        f"inventory_item:old-demo-{index}": {
+            "id": f"inventory_item:old-demo-{index}",
+            "household_id": DEMO_HOUSEHOLD_ID,
+        }
+        for index in range(100)
+    }
+    original_documents = deepcopy(container.documents)
+
+    with pytest.raises(DemoSeedError, match="No writes were submitted"):
+        load_demo_seed(
+            container,
+            make_manifest(),
+            apply=True,
+            reset=True,
+            confirm_household_wipe=DEMO_HOUSEHOLD_ID,
+        )
+
+    assert container.documents == original_documents
+    assert container.batch_calls == []
+    assert container.created == []
+    assert container.deleted == []
 
 
 def test_manifest_rejects_non_demo_household_and_dangling_transaction_item():

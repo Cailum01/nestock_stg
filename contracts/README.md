@@ -54,8 +54,8 @@ Approval presentations: single_action, batch_action, purchase_options, item_matc
 }
 ```
 
-This is documentation, not a successful backend response: Agent HTTP routes
-currently return 501. Example resume:
+This is documentation, not a recorded backend response: the only card the Agent
+makes so far is the purchase card (`complete_purchase`). Example resume:
 
 ```json
 {"household_id":"demo-household","approval_id":"demo-approval-1","approved":true}

@@ -5,8 +5,9 @@ option B): one card per approval, `pending -> confirmed -> completed`, no stored
 `failed` status, expiry decided from `expires_at`, and recovery by reading the
 card and its operation receipts before any retry.
 
-Not wired to HTTP: `POST /agent/resume` still returns 501 until the domain write
-builder (A1 adapter over C1's purchase plan, Issue #60) exists.
+`POST /agent/resume` calls this service when Cosmos is configured. The only domain
+write builder so far is C1's `ShoppingWriteBuilder`, fed by A1's `CardInputResolver`
+(`services/purchase_inputs.py`, Issue #60).
 
 The Cosmos batch limit is checked when a card is saved, before it can be shown
 (A1's answer in Issue #60): a card whose largest approval would not fit one batch
@@ -713,8 +714,8 @@ def _check_card_shape(
 ) -> None:
     """The three card types (v8 section 12).
 
-    The item_match card (Issue #90) has an agreed format but no confirm rules yet;
-    they are built together with the Agent issuing cards, so it is refused here.
+    The item_match card (Issue #90) has an agreed format but no confirm rules yet,
+    so it is refused here.
     """
     if presentation is ApprovalPresentation.ITEM_MATCH:
         raise ValueError("Item-match cards are not supported yet.")

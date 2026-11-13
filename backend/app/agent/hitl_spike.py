@@ -8,7 +8,8 @@ Scope of this spike:
   sentence (for example "1 箱") or an item not yet in inventory gets a follow-up
   question instead of a confirmation card, and nothing is written.
 - In-memory checkpoints; paused state is lost on restart.
-- Not wired to HTTP routes; /agent/messages and /agent/resume still return 501.
+- Not wired to HTTP routes; the routes use `app/agent/cards.py` and the approval
+  service instead.
 
 Safety rules followed (AGENTS.md "HITL rules"):
 - Pause BEFORE any persistent mutation.

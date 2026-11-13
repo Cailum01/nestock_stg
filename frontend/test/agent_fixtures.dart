@@ -7,12 +7,15 @@ class FixtureAgentClient implements AgentClient {
   final AgentReply reply;
 
   @override
-  Future<AgentReply> send(String message) async => reply;
+  Future<AgentReply> send(String message, {String? replacesApprovalId}) async =>
+      reply;
 
   @override
   Future<AgentReply> resume({
     required String approvalId,
     required bool approved,
+    String? selectedOptionId,
+    List<String>? approvedOperationIds,
   }) async => reply;
 }
 

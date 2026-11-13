@@ -15,13 +15,14 @@ from app.services.transaction_history import DemoTransactionHistory
 NOW = datetime(2026, 11, 2, tzinfo=UTC)
 
 
-def client(*, confirmed: bool = False) -> TestClient:
+def client(*, confirmed: bool = False, paused: bool = False) -> TestClient:
     # Mounted on its own app; registering in app/main.py belongs to the shared-file owners.
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_clock] = lambda: lambda: NOW
-    if confirmed:
-        # As if the owners had confirmed that created_at is the business event time.
+    if confirmed or paused:
+        # `confirmed`: created_at is used as the event time (the default). `paused`: the
+        # opt-out that never reads it.
         # Deliberate: a fixed-arithmetic fixture (the 45-day demo rice), so it builds its
         # own demo services and never reads the configured Cosmos. It writes nothing and
         # connects to nothing. The datalake design doc ("Forecast test connectivity")
@@ -32,7 +33,7 @@ def client(*, confirmed: bool = False) -> TestClient:
         app.dependency_overrides[get_forecast_service] = lambda: ForecastService(
             inventory_service,
             DemoTransactionHistory(clock=lambda: NOW),
-            ForecastSettings(time_semantics_confirmed=True),
+            ForecastSettings(time_semantics_confirmed=not paused),
         )
     return TestClient(app)
 
@@ -41,7 +42,7 @@ def inventory_items():
     return asyncio.run(get_inventory_service().list_items(settings.demo_household_id))
 
 
-def test_item_forecast_is_paused_until_created_at_semantics_are_confirmed():
+def test_item_forecast_is_insufficient_data_when_paused():
     items = inventory_items()
     if not items:
         # With NESTOCK_COSMOS_* set the configured container may hold no records for the
@@ -49,7 +50,7 @@ def test_item_forecast_is_paused_until_created_at_semantics_are_confirmed():
         pytest.skip("configured inventory has no items for the demo household")
     item = items[0]
 
-    with client() as c:
+    with client(paused=True) as c:
         response = c.get(f"/forecast/{item.item_id}")
 
     assert response.status_code == 200

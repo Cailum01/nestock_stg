@@ -1,10 +1,18 @@
 # C1 shopping plans and approval write builder
 
-This module implements purchase/removal domain planning and batch assembly. It
-performs no persistent writes itself and is not wired to routes, Agent tools or
-application composition. `POST /agent/resume` remains disabled. Plans are not
-approval. A1's `ApprovalService` authorizes selection, commits and recovers through
-B1's `CosmosWriteRepository`; the A1 stored-proposal resolver is still required.
+This module implements purchase/removal domain planning and batch assembly. The
+planner and `ShoppingWriteBuilder` do not execute or authorize writes themselves;
+they build the exact batch that A1's `ApprovalService` commits through B1's
+`CosmosWriteRepository`.
+
+The production composition now injects A1's `CardInputResolver` into
+`ShoppingWriteBuilder`. It rehydrates only the fixed, server-stored card lines and
+their ETags into C1 purchase inputs; client-provided values are never decoded as a
+write. With `NESTOCK_COSMOS_*` configured, the Agent can create a supported purchase
+card and `POST /agent/resume` confirms or cancels that stored card. Confirmation
+writes the C1 plan as one household batch; cancellation writes no domain changes.
+Without Cosmos configuration, no approval service or purchase-card tool is enabled,
+and `/agent/resume` returns 503 without saving changes. Plans are not approval.
 
 ## Domain semantics
 
@@ -92,13 +100,12 @@ Its `build(ApprovalRecord)` returns `DomainWritePlan`, without executing a write
 `purchases` and/or `RemovalInput`s. This is an internal typed handoff, not a final
 public wire schema. It supports single-action and batch-action cards only.
 
-A1's resolver must validate supported actions and bind every actual quantity,
-unit, name, location, resolved target, transaction/new-item ID and purchase time
-to the exact server-stored proposal. It must use fixed selected operation IDs,
-never resume-edited values, new retry IDs or fresh matching results. The pending
-save-time trial uses created_at temporarily for count-only planning; it authorizes
-nothing. A1's stored-card resolver is supplied by pending PR #104; production
-composition is proposed in pending PR #96. Neither is enabled by this C1 module.
+A1's `CardInputResolver` validates the supported stored card action and binds its
+actual quantity, unit, linked target, transaction ID and optional purchase time to
+the exact server-stored proposal. It accepts only the card's fixed selected
+operation IDs; it never uses resume-edited values, creates new retry IDs or performs
+fresh matching. The pending save-time trial uses created_at temporarily for
+count-only planning; it authorizes nothing.
 
 C1 additionally verifies the exact selected ID set, unique Shopping targets,
 card-bound source ETags, household, current source snapshots and absence of a new
@@ -160,11 +167,29 @@ and model-test patch to current main plus C1, retaining the newer ChangeEvent mo
 No B1 files are edited in this working tree. Coordinate review/merge with B1; keep
 #63 open until both sides land. See the linked Issues and pull requests for current integration evidence and owner work.
 
-Remaining: A1 stored-proposal resolver, Agent card/resume composition and oversized
-card splitting; production stable-ID helper composition, non-Shopping event scope
-and broader live failure/reconciliation validation; C2 actual card flows. Until these are integrated, no claim that #27 or
-#90 is complete end-to-end. Retain **provisional per D-3** in an integration PR
-while the decision index remains stale; do not change shared contracts here.
+## Current limits and Demo prerequisites
+
+The integrated route supports only existing Inventory targets linked from pending
+Shopping entries, with an explicit positive whole-number purchase quantity no larger
+than the planned quantity and the same unit. `CardInputResolver` does not yet cover
+manual removals, unlinked/new Inventory targets, purchases above the pending amount,
+different units, media attachment retention, or a historical purchase time supplied
+by the Agent/App. These remain unsupported user journeys, not fallback writes.
+
+The route is backend integration, not App E2E: C2 still needs to connect the Android
+approval-card and retry/cancel flows to the Agent API. Production evidence also still
+requires B1's resettable Demo baseline and durable Cosmos read-back, plus B2's
+Transaction/read-side validation. The isolated `c1-test-*` check below is not the
+Demo baseline and must not be presented as Android acceptance.
+
+`ShoppingWriteBuilder` still supports its wider internal planning surfaces (removal,
+new targets and optional media retention) when an owner-approved resolver and ports
+are injected. They are deliberately not exposed by the current A1 card flow. Stable
+new-item IDs, non-Shopping event scope, media detach/cleanup, oversized-card
+splitting and broader live conflict/reconciliation validation remain cross-owner
+work. Until those decisions and C2 flow are complete, do not claim #27 or #90 is
+complete end-to-end. Retain **provisional per D-3** in an integration PR while the
+decision index remains stale; do not change shared contracts here.
 
 ## Media attachment retention (#98, provisional per PR #97)
 

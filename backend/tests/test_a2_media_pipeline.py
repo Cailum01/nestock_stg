@@ -12,6 +12,7 @@
 import hashlib
 import time
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -361,45 +362,19 @@ async def test_etag_conflict_on_concurrent_transition(a2_storage, mapping_storag
 @pytest.mark.anyio
 async def test_read_agent_integration_gate(mapping_storage):
     """驗證 A1 ReadAgent 門禁與 Ingest 管線時序：
-    未上傳阻斷，上傳完成自動 COMPLETED 且 Agent 放行。
+    未上傳阻斷，上傳完成時持久化衍生工件並推進至 COMPLETED，且全新 VisionService 可直接消費該工件。
     """
     from langchain_core.messages import AIMessage
 
     from app.agent.read_agent import PHOTO_NOT_FOUND, ReadAgent, load_system_prompt
     from app.core.dependencies import get_inventory_service, get_shopping_service
     from app.models.agent import AgentRequest
-    from app.models.vision import DetectedItem, SceneType, VisionAnalysisResult
-    from app.services.vision import VisionService
+    from app.models.vision import VisionAnalysisResult
+    from app.services.vision import AzureOpenAIVisionService, VisionOpenAISettings
     from app.tools.queries import QueryTools
 
     # 使用真實執行期配置：啟用 auto_process Ingest Pipeline
     runtime_storage = LocalStagingMediaStorage(mapping_port=mapping_storage, auto_process=True)
-
-    class PipelineTrackingVisionService(VisionService):
-        def __init__(self, storage):
-            self.storage = storage
-            self.called = False
-
-        async def analyze_image(self, household_id, image_ref, scene_type=None):
-            self.called = True
-            await self.storage.begin_processing(household_id, image_ref)
-            result = VisionAnalysisResult(
-                image_ref=image_ref,
-                scene_type=SceneType.SINGLE_ITEM,
-                detected_items=[
-                    DetectedItem(
-                        raw_detected_name="雞湯",
-                        canonical_name="雞湯",
-                        quantity=1,
-                        unit="罐",
-                        confidence=0.95,
-                    )
-                ],
-            )
-            await self.storage.complete_processing(
-                household_id, image_ref, result.model_dump_json()
-            )
-            return result
 
     class DummyModel:
         def __init__(self, *replies):
@@ -413,7 +388,7 @@ async def test_read_agent_integration_gate(mapping_storage):
             self.seen.append(messages)
             if self.replies:
                 return self.replies.pop(0)
-            return AIMessage(content="看到照片內容：雞湯 1 罐。")
+            return AIMessage(content="看到照片內容：高纖無糖豆漿 1 瓶。")
 
     req = UploadAuthorizationRequest(
         household_id="home-alpha",
@@ -424,18 +399,26 @@ async def test_read_agent_integration_gate(mapping_storage):
     auth = await runtime_storage.create_upload_authorization(req)
     token = auth.upload_url.split("/")[-1]
 
-    vision_service = PipelineTrackingVisionService(runtime_storage)
+    # 建立全新 AzureOpenAIVisionService 實體 (記憶體 _results_cache 為空，且 mock_fallback=False)
+    settings = VisionOpenAISettings(
+        endpoint="https://mock-vision.openai.azure.com/",
+        api_key="mock-key",
+        deployment="gpt-4o",
+    )
+    fresh_vision_service = AzureOpenAIVisionService(
+        settings=settings, media_storage=runtime_storage, mock_fallback=False
+    )
     tools = QueryTools(get_inventory_service(), get_shopping_service())
     model = DummyModel(
         AIMessage(content="", tool_calls=[{"name": "analyze_photo", "args": {}, "id": "call-1"}]),
-        AIMessage(content="看到照片內容：雞湯 1 罐。"),
+        AIMessage(content="看到照片內容：高纖無糖豆漿 1 瓶。"),
     )
     agent = ReadAgent(
         model,
         tools,
         load_system_prompt(),
         media=runtime_storage,
-        vision=vision_service,
+        vision=fresh_vision_service,
     )
 
     # 1. ALLOCATED 階段 (尚未上傳 bytes)，Agent 呼叫直接阻斷為 PHOTO_NOT_FOUND
@@ -450,13 +433,24 @@ async def test_read_agent_integration_gate(mapping_storage):
     )
     assert res_cross.message == PHOTO_NOT_FOUND
 
-    # 3. 完成 PUT 上傳二進位檔案，Ingest 管線自動推進至 COMPLETED
+    # 3. 完成 PUT 上傳二進位檔案，Ingest 管線寫入衍生工件並推進至 COMPLETED
     await runtime_storage.receive_staged_upload(token, b"soup")
 
-    # 4. 真實使用者請求路徑：COMPLETED 階段呼叫 Agent，門禁放行且自然消費推論結果
-    res_allowed = await agent.respond(
-        AgentRequest(household_id="home-alpha", message="辨識這個", image_ref=auth.image_ref)
-    )
+    # 驗證衍生工件已實際寫入暫存區且可透過 get_derived_artifact 讀取
+    persisted_bytes = await runtime_storage.get_derived_artifact("home-alpha", auth.image_ref)
+    assert persisted_bytes is not None and len(persisted_bytes) > 0
+    persisted_result = VisionAnalysisResult.model_validate_json(persisted_bytes)
+    assert persisted_result.image_ref == auth.image_ref
+
+    # 4. 真實使用者請求路徑：全新 VisionService 實體直接消費已持久化工件，不發起任何外部 HTTP 呼叫
+    with patch(
+        "httpx.AsyncClient.post",
+        new_callable=AsyncMock,
+        side_effect=AssertionError("Must consume persisted artifact without HTTP call"),
+    ):
+        res_allowed = await agent.respond(
+            AgentRequest(household_id="home-alpha", message="辨識這個", image_ref=auth.image_ref)
+        )
     assert res_allowed.message != PHOTO_NOT_FOUND
     assert "看到照片內容" in res_allowed.message
 

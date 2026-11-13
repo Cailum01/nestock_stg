@@ -3,6 +3,7 @@ import logging
 import os
 import threading
 from collections.abc import Mapping
+from typing import Any
 
 from app.services.approvals import ApprovalService
 from app.services.cosmos_read import (
@@ -112,6 +113,10 @@ def _create_vision_service(
 logger = logging.getLogger(__name__)
 
 
+def _resolve_vision_service_for_media() -> VisionService | None:
+    return get_vision_service()
+
+
 def _create_media_storage_service(
     read_repository: CosmosReadRepository | None = None,
     write_client: TransactionalBatchClient | None = None,
@@ -147,17 +152,19 @@ def _create_media_storage_service(
     blob_endpoint = env.get("AZURE_STORAGE_BLOB_ENDPOINT")
     container_name = env.get("AZURE_STORAGE_CONTAINER_NAME", "media")
 
+    kwargs: dict[str, Any] = {
+        "container_name": container_name,
+        "base_staging_url": base_url,
+        "mapping_port": mapping_port,
+        "vision_service": _resolve_vision_service_for_media,
+    }
+
     if conn_str:
         try:
             from azure.storage.blob import BlobServiceClient
 
             blob_client = BlobServiceClient.from_connection_string(conn_str)
-            return AzureBlobMediaStorage(
-                blob_service_client=blob_client,
-                container_name=container_name,
-                base_staging_url=base_url,
-                mapping_port=mapping_port,
-            )
+            return AzureBlobMediaStorage(blob_service_client=blob_client, **kwargs)
         except Exception as exc:
             logger.warning(
                 "Failed to initialize AzureBlobMediaStorage from connection string: %s", exc
@@ -169,16 +176,15 @@ def _create_media_storage_service(
 
             credential = DefaultAzureCredential()
             blob_client = BlobServiceClient(account_url=blob_endpoint, credential=credential)
-            return AzureBlobMediaStorage(
-                blob_service_client=blob_client,
-                container_name=container_name,
-                base_staging_url=base_url,
-                mapping_port=mapping_port,
-            )
+            return AzureBlobMediaStorage(blob_service_client=blob_client, **kwargs)
         except Exception as exc:
             logger.warning("Failed to initialize AzureBlobMediaStorage from blob endpoint: %s", exc)
 
-    return LocalStagingMediaStorage(base_staging_url=base_url, mapping_port=mapping_port)
+    return LocalStagingMediaStorage(
+        base_staging_url=base_url,
+        mapping_port=mapping_port,
+        vision_service=_resolve_vision_service_for_media,
+    )
 
 
 (

@@ -59,12 +59,15 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
 ### 2.1 介面契約 (`interfaces.py`)
 - `MediaStorageService`:
   - `create_upload_authorization(request, base_staging_url)`: 分配 `input_id`、產出簽章/Token URL、Cosmos 註冊 `ALLOCATED` 狀態。
-  - `receive_staged_upload(upload_token, payload_bytes)`: 接收二進位串流、寫入儲存體、驗證 SHA256 與大小、Cosmos 推進至 `RECEIVED`，並支援 Ingest Pipeline 自動推進至 `COMPLETED`。
+  - `receive_staged_upload(upload_token, payload_bytes)`: 接收二進位串流、寫入儲存體、驗證 SHA256 與大小、Cosmos 推進至 `RECEIVED`；當 `auto_process=True` 時執行 Ingest 視覺分析並將衍生工件 `vision_v1.json` 落盤後方可推進至 `COMPLETED`。
   - `begin_processing(household_id, image_ref)`: 推進至 `PROCESSING` 狀態，具備 COMPLETED 等冪保護。
-  - `complete_processing(household_id, image_ref, artifact_data)`: 推進至 `COMPLETED` 狀態並持久化衍生分析工件。
+  - `complete_processing(household_id, image_ref, artifact_data)`: 強制要求非空 `artifact_data`，先將衍生分析工件持久化至儲存體，成功後方可推進至 `COMPLETED` 狀態。
   - `fail_processing(household_id, image_ref, failure_reason)`: 推進至 `FAILED` 狀態並記錄失敗原因。
-  - `verify_media_exists(household_id, image_ref)`: Agent 門禁守衛，調用 `find_completed_by_image_ref`，僅放行 COMPLETED，非預期資料庫異常嚴格向上傳播。
+  - `verify_media_exists(household_id, image_ref)`: Agent 門禁守衛，調用 `find_completed_by_image_ref`，僅放行 COMPLETED（`AzureBlobMediaStorage` 於缺少 `mapping_port` 時強制 Fail-Closed 回傳 `False`），非預期資料庫異常嚴格向上傳播。
   - `get_media_bytes(household_id, image_ref)`: 提供唯讀下載原始二進位位元組串流。
+  - `get_derived_artifact(household_id, image_ref)`: 提供唯讀下載已持久化之 `vision_v1.json` 衍生工件位元組，供 `VisionService` 直接消費。
+  - `retain_media(household_id, image_ref)`: 將媒體與衍生工件標記為業務附加 (`attached`)，豁免 24h 孤立清理。
+  - `cleanup_expired_blobs(now)`: 掃描並刪除逾 24h 且未被業務附加保留 (`ttl_seconds=None`) 之孤立原始媒體與衍生工件。
   - `get_media_snapshot(household_id, image_ref)`: 提供下游業務附加 (PR #105) 進行原子保留與 ETag 校驗之 Snapshot。
 
 ### 2.2 轉接器實作 (Adapters)

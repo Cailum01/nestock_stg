@@ -546,3 +546,61 @@ async def test_azure_vision_payload_includes_temperature_when_configured():
         call_kwargs = mock_post.call_args.kwargs
         payload = call_kwargs["json"]
         assert payload.get("temperature") == 0.2
+
+
+@pytest.mark.anyio
+async def test_vision_mock_fallback_does_not_mask_complete_processing_error():
+    """驗證當 mock_fallback=True 時，complete_processing 持久化錯誤向上拋出，絕不降級為 mock。"""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    settings = VisionOpenAISettings(
+        endpoint="https://fake.openai.azure.com/",
+        api_key="valid-test-key",
+        deployment="gpt-4o",
+    )
+    inventory = DummyInventoryService([])
+    media = LocalStagingMediaStorage()
+    await media.simulate_client_upload(
+        "demo-household", "blob://demo/conflict.jpg", b"fake-image-bytes"
+    )
+    media.complete_processing = AsyncMock(
+        side_effect=RuntimeError("Cosmos ETag conflict on complete_processing")
+    )
+    service = AzureOpenAIVisionService(settings, inventory, media, mock_fallback=True)
+
+    fake_content = (
+        '{"scene_type": "single_item", "raw_text": "鮮奶", '
+        '"items": [{"raw_name": "鮮奶", "quantity": 1, "unit": "瓶"}]}'
+    )
+    fake_response_json = {"choices": [{"message": {"content": fake_content}}]}
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = fake_response_json
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp):
+        with pytest.raises(RuntimeError, match="Cosmos ETag conflict on complete_processing"):
+            await service.analyze_image("demo-household", "blob://demo/conflict.jpg")
+
+
+@pytest.mark.anyio
+async def test_vision_mock_fallback_does_not_mask_begin_processing_error():
+    """驗證當 mock_fallback=True 時，begin_processing 持久化錯誤向上拋出，絕不降級為 mock。"""
+    from unittest.mock import AsyncMock
+
+    settings = VisionOpenAISettings(
+        endpoint="https://fake.openai.azure.com/",
+        api_key="valid-test-key",
+        deployment="gpt-4o",
+    )
+    inventory = DummyInventoryService([])
+    media = LocalStagingMediaStorage()
+    await media.simulate_client_upload(
+        "demo-household", "blob://demo/begin-fail.jpg", b"fake-image-bytes"
+    )
+    media.begin_processing = AsyncMock(
+        side_effect=RuntimeError("Cosmos write failure on begin_processing")
+    )
+    service = AzureOpenAIVisionService(settings, inventory, media, mock_fallback=True)
+
+    with pytest.raises(RuntimeError, match="Cosmos write failure on begin_processing"):
+        await service.analyze_image("demo-household", "blob://demo/begin-fail.jpg")

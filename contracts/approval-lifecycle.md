@@ -245,7 +245,7 @@ There is no background job or push notification (#39).
 | Meaning of Transaction `created_at` | B1 + B2 | Deferred; keep the current model |
 | Removing a wrong alias | — | Not in MVP scope |
 | v8 §12 `partial_success` | — | Not used in the MVP: one batch is all-or-nothing (#42) |
-| How a new item's `item_id` is made | B1 + A1 | Asked in Issue #90; does not change the card format (section 10) |
+| How a new item's `item_id` is made | B1 + A1 | Decided in Issue #90: B1's `resolve_inventory_item_id(operation_id)` (PR #97), made when the user confirms; see section 10 |
 | Status of an `item_match` card answered with `new_item` | A1 | Decided with the confirm rules (section 10) |
 
 ## 10. Item-match and new-item cards (Issue #90)
@@ -284,6 +284,25 @@ New item ("會新增一個庫存品項：洗碗精"):
 - The card never carries the new item's `item_id`, and the App never makes one.
   The backend creates the item in the confirmed batch.
 - The reply is `approved: true` or `approved: false`.
+
+The Agent makes a new-item line today when the user says a Shopping List entry was
+bought and the entry is not linked to an inventory item (`complete_purchase`,
+`backend/app/agent/cards.py`):
+
+- The line also carries `shopping_item_id` and `transaction_id`, and the version of
+  the shopping entry only (the new item does not exist yet). The App does not show
+  them. On a `batch_action` card it sits next to ordinary purchase lines.
+- No line is made when the household already has an item with the entry's name or
+  alias (#36 layers ①②); that would need the item-match card above, which is not
+  built yet. The Agent is also told to check for an item that is the same thing
+  under another name (layer ③) before it asks for the card.
+- `unit` is the entry's unit, or the unit the user said when the entry has none.
+  `location` is what the user said; without it no line is made, and the Agent asks
+  where the item goes.
+- On confirmation, A1's `CardInputResolver` gives C1 a `NewInventoryTarget` whose
+  `item_id` is `resolve_inventory_item_id(operation_id)`. C1's builder creates the
+  item, completes the entry, and writes the Transaction and change event in the same
+  batch, so a retry never makes a second item.
 
 ```json
 {

@@ -13,7 +13,16 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, ToolMessage
 
-from app.agent.cards import PurchaseCards, purchase_operation, resume_response
+from app.agent.cards import (
+    ALREADY_HAVE,
+    MORE_THAN_LISTED,
+    NEEDS_LOCATION,
+    NEEDS_UNIT,
+    OTHER_UNIT,
+    PurchaseCards,
+    purchase_operation,
+    resume_response,
+)
 from app.agent.read_agent import ReadAgent, get_read_agent, load_system_prompt
 from app.core import dependencies
 from app.core.dependencies import (
@@ -37,7 +46,13 @@ from app.services.cosmos_write import (
     CreateDocument,
     ReplaceDocument,
 )
-from app.services.purchase_inputs import COMPLETE_PURCHASE, CardInputResolver, UnsupportedAction
+from app.services.inventory_item_identity import resolve_inventory_item_id
+from app.services.purchase_inputs import (
+    COMPLETE_PURCHASE,
+    CREATE_ITEM,
+    CardInputResolver,
+    UnsupportedAction,
+)
 from app.services.shopping.preview import ShoppingDecisionRequired
 from app.services.shopping.workflow import ShoppingWriteBuilder
 from app.tools.queries import QueryTools
@@ -124,13 +139,14 @@ def _call(name, call_id="call-1", **args):
     return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": call_id}])
 
 
-def inventory(item_id="tissue", name="衛生紙", quantity=1.0, unit="包"):
+def inventory(item_id="tissue", name="衛生紙", quantity=1.0, unit="包", aliases=None):
     return InventoryItem(
         item_id=item_id,
         household_id=HOME,
         name=name,
         quantity=quantity,
         unit=unit,
+        aliases=aliases,
         created_at=CREATED,
         updated_at=CREATED,
     )
@@ -272,7 +288,7 @@ def test_several_items_go_on_one_card_and_unfit_ones_are_left_off_with_a_reason(
         inventory("milk", "牛奶", 0, "瓶"),
         shopping(),
         shopping("milk-1", "牛奶", "milk", 1, "瓶"),
-        shopping("dish-1", "洗碗精", None, 1, "瓶"),  # not linked to inventory (Issue #90)
+        shopping("dish-1", "洗碗精", None, 1, "瓶"),  # new to the household, no location said
     )
     model = ScriptedModel(
         purchase_reply(
@@ -281,7 +297,7 @@ def test_several_items_go_on_one_card_and_unfit_ones_are_left_off_with_a_reason(
             {"shopping_item_id": "dish-1", "quantity": 1},
             call_id="call-1",
         ),
-        AIMessage(content="衛生紙和牛奶請確認；洗碗精現在還不能記錄。"),
+        AIMessage(content="衛生紙和牛奶請確認；洗碗精要放在哪裡？"),
     )
 
     response = ask(agent(model, reader, approvals))
@@ -289,12 +305,7 @@ def test_several_items_go_on_one_card_and_unfit_ones_are_left_off_with_a_reason(
     assert response.pending_approval.presentation is ApprovalPresentation.BATCH_ACTION
     assert len(response.pending_approval.operations) == 2
     left_out = json.loads(tool_results(model)[-1])["not_on_card"]
-    assert left_out == [
-        {
-            "shopping_item_id": "dish-1",
-            "reason": "這樣東西還沒有對應到庫存裡的品項，現在還不能從對話記錄購買。",
-        }
-    ]
+    assert left_out == [{"shopping_item_id": "dish-1", "reason": NEEDS_LOCATION}]
 
 
 @pytest.mark.parametrize(
@@ -568,3 +579,187 @@ def test_reply_never_says_done_unless_written(outcome, words):
 def test_inconsistent_write_state_is_reported_not_hidden():
     with pytest.raises(RuntimeError):
         resume_response(ResumeResult(ResumeOutcome.INCONSISTENT))
+
+
+# ----- a list entry the household does not have yet (Issue #90, contract section 10) --
+
+
+def paste(unit="條", quantity=1):
+    """牙膏 on the list, not linked to an inventory item: the household has none."""
+    return shopping("paste-1", "牙膏", None, quantity, unit)
+
+
+def new_item_card(reader, approvals, **item):
+    """The model asks for 牙膏 1 條 to the bathroom cabinet; `None` leaves a word out."""
+    said = {"shopping_item_id": "paste-1", "quantity": 1, "location": "浴室櫃子", **item}
+    model = ScriptedModel(
+        purchase_reply(
+            {key: value for key, value in said.items() if value is not None}, call_id="call-1"
+        ),
+        AIMessage(content="請確認下方的卡片，按確認後才會記錄。"),
+    )
+    return ask(agent(model, reader, approvals), "牙膏買回來了，1 條，放浴室櫃子"), model
+
+
+def test_a_list_entry_the_household_lacks_gets_a_new_item_card_and_nothing_changes():
+    container, reader, approvals = setup(inventory(), paste())
+
+    response, model = new_item_card(reader, approvals)
+
+    card = response.pending_approval
+    assert card.presentation is ApprovalPresentation.SINGLE_ACTION
+    (line,) = card.operations
+    assert line.action == CREATE_ITEM
+    assert line.description == "會新增一個庫存品項：牙膏 1 條，放在浴室櫃子（從待購清單完成購買）"
+    assert {k: v for k, v in line.values.items() if k != "transaction_id"} == {
+        "name": "牙膏",
+        "quantity": 1,
+        "unit": "條",
+        "location": "浴室櫃子",
+        "shopping_item_id": "paste-1",
+    }
+    assert "item_id" not in line.values  # made only when the user confirms
+    stored = container.get(f"pending_approval:{card.approval_id}")
+    assert [t["record_id"] for t in stored["operations"][0]["targets"]] == ["shopping_item:paste-1"]
+    assert len(container.of_type("inventory_item")) == 1
+    assert container.get("shopping_item:paste-1")["status"] == "pending"
+    assert container.of_type("transaction") == []
+    assert json.loads(tool_results(model)[-1])["card"]["lines"] == [line.description]
+
+
+def test_confirming_a_new_item_card_creates_the_item_once():
+    container, reader, approvals = setup(inventory(), paste())
+    card = new_item_card(reader, approvals)[0].pending_approval
+    body = {"household_id": HOME, "approval_id": card.approval_id, "approved": True}
+
+    with TestClient(resume_app(approvals)) as client:
+        first = client.post("/agent/resume", json=body)
+        again = client.post("/agent/resume", json=body)  # a double tap writes once
+
+    assert first.status_code == 200
+    assert first.json()["message"] == "已記錄：牙膏 +1 條（現在 1 條）"
+    assert again.json()["message"] == first.json()["message"]
+    item_id = resolve_inventory_item_id(card.operations[0].operation_id)
+    created = container.get(f"inventory_item:{item_id}")
+    assert (created["name"], created["quantity"], created["unit"], created["location"]) == (
+        "牙膏",
+        1,
+        "條",
+        "浴室櫃子",
+    )
+    assert len(container.of_type("inventory_item")) == 2
+    assert container.get("shopping_item:paste-1")["status"] == "completed"
+    (transaction,) = container.of_type("transaction")
+    assert (transaction["item_id"], transaction["quantity_delta"]) == (item_id, 1)
+
+
+def test_cancelling_a_new_item_card_creates_nothing():
+    container, reader, approvals = setup(inventory(), paste())
+    card = new_item_card(reader, approvals)[0].pending_approval
+
+    with TestClient(resume_app(approvals)) as client:
+        response = client.post(
+            "/agent/resume",
+            json={"household_id": HOME, "approval_id": card.approval_id, "approved": False},
+        )
+
+    assert response.json()["message"] == "已取消，沒有記錄任何東西。"
+    assert len(container.of_type("inventory_item")) == 1
+    assert container.get("shopping_item:paste-1")["status"] == "pending"
+    assert container.of_type("transaction") == []
+
+
+@pytest.mark.skipif(
+    ShoppingItem.model_fields["unit"].is_required(),
+    reason="Shopping entries without a unit need B1's PR #64 schema",
+)
+def test_an_entry_without_a_unit_uses_the_unit_the_user_said():
+    container, reader, approvals = setup(inventory(), paste(unit=None))
+
+    card = new_item_card(reader, approvals, unit="條")[0].pending_approval
+
+    assert card.operations[0].values["unit"] == "條"
+
+
+def test_a_new_item_sits_on_one_card_with_ordinary_purchases_and_both_are_written():
+    container, reader, approvals = setup(inventory(), shopping(), paste())
+    model = ScriptedModel(
+        purchase_reply(
+            {"shopping_item_id": "tissue-1", "quantity": 2},
+            {"shopping_item_id": "paste-1", "quantity": 1, "location": "浴室櫃子"},
+            call_id="call-1",
+        ),
+        AIMessage(content="請確認"),
+    )
+    card = ask(agent(model, reader, approvals)).pending_approval
+    assert card.presentation is ApprovalPresentation.BATCH_ACTION
+    assert [line.action for line in card.operations] == [COMPLETE_PURCHASE, CREATE_ITEM]
+
+    body = {
+        "household_id": HOME,
+        "approval_id": card.approval_id,
+        "approved": True,
+        "approved_operation_ids": [line.operation_id for line in card.operations],
+    }
+    with TestClient(resume_app(approvals)) as client:
+        response = client.post("/agent/resume", json=body)
+
+    assert response.json()["message"] == (
+        "已記錄：衛生紙 +2 包（現在 3 包）、牙膏 +1 條（現在 1 條）"
+    )
+    assert container.get("inventory_item:tissue")["quantity"] == 3
+    assert len(container.of_type("inventory_item")) == 2
+    assert len(container.of_type("transaction")) == 2
+
+
+@pytest.mark.parametrize(
+    "records, item, reason",
+    [
+        ([paste()], {"location": None}, NEEDS_LOCATION),
+        ([paste()], {"unit": "支"}, OTHER_UNIT),
+        ([paste()], {"quantity": 2}, MORE_THAN_LISTED),
+        ([inventory("paste", "牙膏", 0, "條"), paste()], {}, ALREADY_HAVE.format(names="牙膏")),
+        (
+            [inventory("paste", "高露潔", 1, "條", aliases=["牙膏"]), paste()],
+            {},
+            ALREADY_HAVE.format(names="高露潔"),
+        ),
+    ],
+)
+def test_no_new_item_line_without_location_matching_unit_or_when_the_household_has_it(
+    records, item, reason
+):
+    container, reader, approvals = setup(inventory(), *records)
+
+    response, model = new_item_card(reader, approvals, **item)
+
+    assert response.pending_approval is None
+    result = json.loads(tool_results(model)[-1])
+    assert result == {
+        "card": None,
+        "not_on_card": [{"shopping_item_id": "paste-1", "reason": reason}],
+    }
+    assert container.of_type("pending_approval") == []
+
+
+@pytest.mark.skipif(
+    ShoppingItem.model_fields["unit"].is_required(),
+    reason="Shopping entries without a unit need B1's PR #64 schema",
+)
+def test_no_new_item_line_without_any_unit():
+    container, reader, approvals = setup(inventory(), paste(unit=None))
+
+    response, model = new_item_card(reader, approvals)
+
+    assert response.pending_approval is None
+    assert json.loads(tool_results(model)[-1])["not_on_card"][0]["reason"] == NEEDS_UNIT
+
+
+@pytest.mark.parametrize("words", [{"location": ""}, {"location": 3}, {"unit": " "}])
+def test_unusable_unit_or_location_make_no_card(words):
+    container, reader, approvals = setup(inventory(), paste())
+
+    response, _ = new_item_card(reader, approvals, **words)
+
+    assert response.pending_approval is None
+    assert container.of_type("pending_approval") == []

@@ -837,6 +837,55 @@ fresh user-confirmed quantity before treating a restored item as current. Keep
 soft deletion distinct from privacy-driven personal-data erasure in §7.3; an
 erasure request follows a separately approved retention/legal workflow.
 
+### 6.8 Demo dataset seed and reset
+
+The Demo baseline is supplied as one reviewed JSON manifest containing typed
+Inventory, Shopping, and Transaction records. The explicit B1 loader is an
+operator tool, not an API, startup hook, or general-purpose persistence service.
+It accepts only records scoped to the fixed `demo-household`, validates record
+IDs and Inventory references, and uses the existing domain-to-Cosmos document
+mapping.
+
+The default mode is a dry run. A normal load may create the manifest only when
+the target household partition is empty; if the stored partition already
+exactly matches the manifest, a rerun is a no-op. Any partial or differing
+partition is rejected rather than overwritten. Load writes are individual
+creates, not a transactional batch; if interrupted, the loader must fail
+closed on the next normal run rather than infer that the partial load succeeded.
+
+Reset is destructive to every document in `demo-household`, not only the
+manifest's Inventory, Shopping, and Transaction records. Before applying it,
+an operator must inspect the target environment and confirm that all records in
+that household may be discarded. The command requires an explicit
+`demo-household` confirmation, deletes only within that household partition,
+and recreates the manifest in one same-container, same-household-partition
+Cosmos transactional batch. The loader must calculate the complete delete/create
+operation count before submission and fail without writing if it exceeds
+Cosmos's 100-operation limit. It must not split an oversized reset into multiple
+batches or fall back to sequential deletes and creates. Cosmos request-size and
+execution-time limits also apply; a rejected or failed transaction must leave
+the pre-reset partition unchanged. After a successful batch, verify the
+resulting records by reading them back.
+
+If a batch call fails or times out, its outcome may be unknown to the caller.
+Inspect the partition read-only: if it exactly matches the manifest, treat the
+reset as completed; if it still matches the pre-reset state and the reset
+remains authorized, rerun the complete batch with the same reviewed manifest
+and explicit confirmation. If the partition matches neither state, stop and
+obtain owner approval before any further writes. A normal load is not recovery
+for an uncertain reset.
+
+Reset also deletes stored confirmation-card records. Any card created before
+reset will no longer be confirmable (its approval record may return 404); finish
+the reset before creating cards, and issue fresh cards afterward. Never point
+this tool at another household or an environment whose data is not approved for
+destructive Demo reset.
+
+The loader's local unit tests do not establish cloud connectivity or validate
+the live Demo baseline. Demo seed/reset is complete only after the final B2
+history manifest and C1 baseline are agreed, the existing target partition is
+reviewed, and a controlled Cosmos load/reset with read-back is verified.
+
 ## 7. Original media and derived artifacts in Blob Storage
 
 ### 7.1 Object layout
@@ -1011,7 +1060,14 @@ to the latest state, and deletes require explicit handling.
   change event go in `operations_by_id[operation_id]`. Replace operations require
   `if_match_etag`, and a batch holds at most 100 operations.
 - `Transaction.created_at` means the event time (`occurred_at`). B2 decides when
-  time-based forecasting is enabled.
+  time-based forecasting is enabled. This matches the current #113 proposal:
+  if no event date was supplied, use the first approval `decided_at` as the
+  event-time approximation; retries keep the stored timestamp and operation
+  identity. As of 2026-11-13, B1 and B2 agree with this rule, but #113 remains
+  open and PR #128 has requested changes. B1/C1 may continue using the current
+  proposal provisionally in the already agreed purchase flow and tests; update
+  it if the final resolution changes. This does not itself enable time-based
+  forecasting, which remains a B2 decision.
 - Append-only: the event is never replaced or deleted by application code.
 
 ### 9.2 Lake activation criteria
@@ -1115,6 +1171,25 @@ When an AI agent implements a task from this document:
 
 Phases are independent gates, not a commitment to deploy every Azure service.
 
+### 12.1 Current B1 work status (2026-11-13)
+
+Use this status to distinguish a documented design from completed integration
+or acceptance. OPEN issues and PR review states remain authoritative.
+
+| Work | Design status | Implementation / acceptance status | Next step |
+| --- | --- | --- | --- |
+| Approved Shopping persistence (#27, #60) | The household-batch boundary, stable operation identities, receipts, change event, stop-on-mismatch behavior, and storage-only Shopping removal marker are documented in §6.5. | PR #105 → #104 → #96 are merged. B1 live synthetic acceptance passed 36 checks in `c1-test-b1-removal-20261113-0202`, including purchase, cancellation without domain writes, approved Shopping removal/tombstone, active-list filtering, and removal retry. Earlier runs passed the purchase-failure matrix and cancellation coverage. The test resolver remains a stand-in, so this is not full Agent/App E2E. | Coordinate C2 approval UI / Agent-App E2E separately. Keep #27/#60 OPEN for the remaining cross-owner evidence, not as a design or B1 persistence gate. |
+| Cosmos pilot acceptance | Required isolation, ETag, atomicity, retry, timeout, receipt-mismatch, TTL, and error-observation checks are identified in this design and B1 follow-up work. | The B1-owned live synthetic matrix passed against Cosmos, including request metrics, fail-closed receipt mismatch, cancellation no-domain-write behavior, and Shopping removal. A read-only query found no household under the earlier `c1-test-b1-accept-20261113-*` prefix. Successful test partitions are retained for review; the bounded runner reports progress, uses 20-second per-request timeout and 300-second overall timeout by default. | Do not delete test partitions. Keep full Agent/App E2E separate; do not treat this B1/C1 builder run as production-resolver coverage. |
+| Demo seed/reset (#126) | The bounded loader, destructive-reset guard, dry-run, single-batch atomic reset, operation-limit fail-closed behavior, timeout inspection, and read-back requirements are documented in §6.8. | B1 offline tests pass, including failure injection preserving the prior partition and an over-limit plan submitting no batch. A read-only Cosmos inventory found 4 `user_input` records in `demo-household`; no load/reset was performed. The final B2 manifest and C1 baseline are not yet available. | Do not reset or load yet. First agree the manifest/baseline and determine whether all 4 existing records are disposable; reset deletes every household document, while normal load rejects a nonempty partition. |
+| Media mapping and retention (#98) | B1 mapping storage and retention boundary are documented; A2 owns upload/processing and derived-artifact details. | B1 mapping port is merged in PR #97; 9 offline mapping tests pass, and the live synthetic purchase acceptance verified media TTL and the same-household retention update. PR #109 remains OPEN with changes requested and a merge conflict; upload/processing integration and detach/replacement lifecycle are not accepted end-to-end. | Resolve the A2 artifact/schema/version and media detach/replacement policy with A2/C1; do not invent those fields or lifecycle rules in B1 storage. |
+| Transaction event time (#113) | The event-time rule is recorded in §9.1 and B1/B2 have agreed to the current proposal. | #113 remains OPEN; PR #128 has changes requested. B1 added offline integration coverage for explicit event time and missing-event-time fallback to the first `decided_at`, including a retry with stable identity/time. | B1/C1 may use the current rule provisionally for agreed purchase work and tests; B2 resolves the PR review. Update if the final decision changes. Forecast enablement remains B2's decision. |
+
+Items that lack an agreed cross-owner contract should be marked as awaiting
+design/owner decision, not filled in with a B1-only guess. Work whose design is
+already recorded but whose code or evidence is incomplete should instead be
+marked implementation or acceptance pending. OPEN issue status alone is not a
+reason to defer work within an already confirmed decision.
+
 ## 13. Decisions to revisit before production
 
 - Cosmos region, consistency, throughput mode, autoscale/serverless choice, and
@@ -1136,8 +1211,11 @@ Phases are independent gates, not a commitment to deploy every Azure service.
 - B2's forecast algorithm and read-only backtest assumptions; any future
   persisted evaluation outcome requires a new proposal. Query behavior is
   specified in §6.6 and B1 does not pre-aggregate its input.
-- B1/C1/A1's approval-state/write consistency and unexpected receipt-mismatch
-  recovery; C1's manual Shopping removal persistence representation.
+- Production acceptance and operational handling for approval/write consistency:
+  the bounded purchase batch and stop/report-without-auto-repair policy are
+  documented in §6.5 and tracked by #27/#60; full integration evidence remains
+  pending. C1's manual Shopping removal uses storage-only `deleted_at`; its
+  write workflow still needs implementation and acceptance.
 - Whether Data Lake activation criteria are met, plus event schema, lake
   retention, consumers, and access ownership.
 - Whether Azure AI Search is justified by actual search requirements.

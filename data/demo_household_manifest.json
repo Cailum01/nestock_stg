@@ -1,0 +1,290 @@
+{
+  "household_id": "demo-household",
+  "inventory": [
+    {
+      "item_id": "seed-detergent",
+      "household_id": "demo-household",
+      "name": "洗衣精",
+      "quantity": 1,
+      "unit": "瓶",
+      "created_at": "2026-11-12T04:00:00Z",
+      "updated_at": "2026-11-12T04:00:00Z",
+      "location": "陽台洗衣機旁"
+    },
+    {
+      "item_id": "seed-tissue",
+      "household_id": "demo-household",
+      "name": "衛生紙",
+      "quantity": 8,
+      "unit": "包",
+      "created_at": "2026-11-12T04:00:00Z",
+      "updated_at": "2026-11-12T04:00:00Z",
+      "location": "浴室櫃子"
+    },
+    {
+      "item_id": "seed-flour",
+      "household_id": "demo-household",
+      "name": "麵粉",
+      "quantity": 0,
+      "unit": "包",
+      "created_at": "2026-11-12T04:00:00Z",
+      "updated_at": "2026-11-12T04:00:00Z",
+      "location": "廚房食品櫃"
+    },
+    {
+      "item_id": "seed-soy-sauce",
+      "household_id": "demo-household",
+      "name": "醬油",
+      "quantity": 2,
+      "unit": "瓶",
+      "created_at": "2026-11-12T04:00:00Z",
+      "updated_at": "2026-11-12T04:00:00Z",
+      "location": "廚房調味架"
+    },
+    {
+      "item_id": "seed-salt",
+      "household_id": "demo-household",
+      "name": "鹽",
+      "quantity": 3,
+      "unit": "包",
+      "created_at": "2026-11-12T04:00:00Z",
+      "updated_at": "2026-11-12T04:00:00Z",
+      "location": "廚房調味架"
+    },
+    {
+      "item_id": "seed-battery",
+      "household_id": "demo-household",
+      "name": "電池",
+      "quantity": 4,
+      "unit": "顆",
+      "created_at": "2026-11-12T04:00:00Z",
+      "updated_at": "2026-11-12T04:00:00Z",
+      "location": "客廳抽屜"
+    },
+    {
+      "item_id": "seed-sugar",
+      "household_id": "demo-household",
+      "name": "糖",
+      "quantity": 2,
+      "unit": "包",
+      "created_at": "2026-11-12T04:00:00Z",
+      "updated_at": "2026-11-12T04:00:00Z",
+      "location": "廚房食品櫃"
+    }
+  ],
+  "shopping": [
+    {
+      "shopping_item_id": "seed-shopping-detergent",
+      "household_id": "demo-household",
+      "name": "洗衣精",
+      "quantity": 2,
+      "unit": "瓶",
+      "status": "pending",
+      "created_at": "2026-11-12T04:00:00Z",
+      "updated_at": "2026-11-12T04:00:00Z",
+      "item_id": "seed-detergent"
+    },
+    {
+      "shopping_item_id": "seed-shopping-flour",
+      "household_id": "demo-household",
+      "name": "麵粉",
+      "quantity": 1,
+      "unit": "包",
+      "status": "pending",
+      "created_at": "2026-11-12T04:00:00Z",
+      "updated_at": "2026-11-12T04:00:00Z",
+      "item_id": "seed-flour"
+    }
+  ],
+  "transactions": [
+    {
+      "transaction_id": "seed-tx-detergent-2026-10-01",
+      "household_id": "demo-household",
+      "item_id": "seed-detergent",
+      "operation_id": "seed-op-detergent-2026-10-01",
+      "quantity_delta": 2,
+      "reason": "purchase",
+      "created_at": "2026-10-01T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-detergent-2026-10-07",
+      "household_id": "demo-household",
+      "item_id": "seed-detergent",
+      "operation_id": "seed-op-detergent-2026-10-07",
+      "quantity_delta": 2,
+      "reason": "purchase",
+      "created_at": "2026-10-07T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-detergent-2026-10-13",
+      "household_id": "demo-household",
+      "item_id": "seed-detergent",
+      "operation_id": "seed-op-detergent-2026-10-13",
+      "quantity_delta": 2,
+      "reason": "purchase",
+      "created_at": "2026-10-13T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-detergent-2026-10-19",
+      "household_id": "demo-household",
+      "item_id": "seed-detergent",
+      "operation_id": "seed-op-detergent-2026-10-19",
+      "quantity_delta": 2,
+      "reason": "purchase",
+      "created_at": "2026-10-19T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-detergent-2026-10-25",
+      "household_id": "demo-household",
+      "item_id": "seed-detergent",
+      "operation_id": "seed-op-detergent-2026-10-25",
+      "quantity_delta": 2,
+      "reason": "purchase",
+      "created_at": "2026-10-25T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-detergent-2026-10-31",
+      "household_id": "demo-household",
+      "item_id": "seed-detergent",
+      "operation_id": "seed-op-detergent-2026-10-31",
+      "quantity_delta": 2,
+      "reason": "purchase",
+      "created_at": "2026-10-31T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-detergent-2026-11-06",
+      "household_id": "demo-household",
+      "item_id": "seed-detergent",
+      "operation_id": "seed-op-detergent-2026-11-06",
+      "quantity_delta": 2,
+      "reason": "purchase",
+      "created_at": "2026-11-06T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-detergent-2026-11-12",
+      "household_id": "demo-household",
+      "item_id": "seed-detergent",
+      "operation_id": "seed-op-detergent-2026-11-12",
+      "quantity_delta": 2,
+      "reason": "purchase",
+      "created_at": "2026-11-12T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-tissue-2026-08-14",
+      "household_id": "demo-household",
+      "item_id": "seed-tissue",
+      "operation_id": "seed-op-tissue-2026-08-14",
+      "quantity_delta": 6,
+      "reason": "purchase",
+      "created_at": "2026-08-14T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-tissue-2026-09-13",
+      "household_id": "demo-household",
+      "item_id": "seed-tissue",
+      "operation_id": "seed-op-tissue-2026-09-13",
+      "quantity_delta": 6,
+      "reason": "purchase",
+      "created_at": "2026-09-13T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-tissue-2026-10-13",
+      "household_id": "demo-household",
+      "item_id": "seed-tissue",
+      "operation_id": "seed-op-tissue-2026-10-13",
+      "quantity_delta": 6,
+      "reason": "purchase",
+      "created_at": "2026-10-13T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-flour-2026-09-16",
+      "household_id": "demo-household",
+      "item_id": "seed-flour",
+      "operation_id": "seed-op-flour-2026-09-16",
+      "quantity_delta": 1,
+      "reason": "purchase",
+      "created_at": "2026-09-16T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-flour-2026-09-30",
+      "household_id": "demo-household",
+      "item_id": "seed-flour",
+      "operation_id": "seed-op-flour-2026-09-30",
+      "quantity_delta": 1,
+      "reason": "purchase",
+      "created_at": "2026-09-30T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-flour-2026-10-14",
+      "household_id": "demo-household",
+      "item_id": "seed-flour",
+      "operation_id": "seed-op-flour-2026-10-14",
+      "quantity_delta": 1,
+      "reason": "purchase",
+      "created_at": "2026-10-14T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-flour-2026-10-28",
+      "household_id": "demo-household",
+      "item_id": "seed-flour",
+      "operation_id": "seed-op-flour-2026-10-28",
+      "quantity_delta": 1,
+      "reason": "purchase",
+      "created_at": "2026-10-28T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-soy-sauce-2026-08-20",
+      "household_id": "demo-household",
+      "item_id": "seed-soy-sauce",
+      "operation_id": "seed-op-soy-sauce-2026-08-20",
+      "quantity_delta": 1,
+      "reason": "purchase",
+      "created_at": "2026-08-20T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-soy-sauce-2026-09-14",
+      "household_id": "demo-household",
+      "item_id": "seed-soy-sauce",
+      "operation_id": "seed-op-soy-sauce-2026-09-14",
+      "quantity_delta": 1,
+      "reason": "purchase",
+      "created_at": "2026-09-14T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-soy-sauce-2026-10-09",
+      "household_id": "demo-household",
+      "item_id": "seed-soy-sauce",
+      "operation_id": "seed-op-soy-sauce-2026-10-09",
+      "quantity_delta": 1,
+      "reason": "purchase",
+      "created_at": "2026-10-09T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-salt-2026-10-20",
+      "household_id": "demo-household",
+      "item_id": "seed-salt",
+      "operation_id": "seed-op-salt-2026-10-20",
+      "quantity_delta": 1,
+      "reason": "purchase",
+      "created_at": "2026-10-20T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-battery-2026-10-05",
+      "household_id": "demo-household",
+      "item_id": "seed-battery",
+      "operation_id": "seed-op-battery-2026-10-05",
+      "quantity_delta": 4,
+      "reason": "purchase",
+      "created_at": "2026-10-05T04:00:00Z"
+    },
+    {
+      "transaction_id": "seed-tx-sugar-2026-10-10",
+      "household_id": "demo-household",
+      "item_id": "seed-sugar",
+      "operation_id": "seed-op-sugar-2026-10-10",
+      "quantity_delta": 1,
+      "reason": "purchase",
+      "created_at": "2026-10-10T04:00:00Z"
+    }
+  ]
+}

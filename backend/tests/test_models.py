@@ -23,7 +23,7 @@ def inventory_data():
         item_id="rice",
         household_id="demo",
         name="白米",
-        quantity=2.5,
+        quantity=2,
         unit="包",
         created_at=NOW,
         updated_at=NOW,
@@ -67,6 +67,26 @@ def test_quantity_cannot_be_reassigned_or_nonfinite():
         item.quantity = 0
     with pytest.raises(ValidationError):
         InventoryItem(**(inventory_data() | {"quantity": float("nan")}))
+    with pytest.raises(ValidationError):
+        InventoryItem(**(inventory_data() | {"quantity": 2.5}))
+
+
+def test_shopping_quantity_and_unit_are_optional_without_default_quantity():
+    item = ShoppingItem(
+        shopping_item_id="milk",
+        household_id="demo",
+        name="牛奶",
+        status="pending",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    assert item.quantity is None
+    assert item.unit is None
+
+
+def test_shopping_quantity_must_be_integer_when_provided():
+    with pytest.raises(ValidationError):
+        ShoppingItem(**(shopping_data() | {"quantity": 0.5}))
 
 
 @pytest.mark.parametrize("status", ["pending", "completed"])
@@ -85,9 +105,7 @@ def test_shopping_rejects_price_or_unagreed_status(changes):
         ShoppingItem(**(shopping_data() | changes))
 
 
-@pytest.mark.parametrize(
-    "reason,delta", [("purchase", 2), ("consumption", -1), ("adjustment", -0.5)]
-)
+@pytest.mark.parametrize("reason,delta", [("purchase", 2), ("consumption", -1), ("adjustment", -2)])
 def test_transaction_shared_semantics(reason, delta):
     transaction = Transaction(
         transaction_id="t",
@@ -100,6 +118,19 @@ def test_transaction_shared_semantics(reason, delta):
     )
     assert transaction.reason == TransactionReason(reason)
     assert transaction.quantity_delta == delta
+
+
+def test_transaction_quantity_delta_must_be_integer():
+    with pytest.raises(ValidationError):
+        Transaction(
+            transaction_id="t",
+            household_id="demo",
+            item_id="rice",
+            operation_id="stable-operation",
+            quantity_delta=0.5,
+            reason="purchase",
+            created_at=NOW,
+        )
 
 
 @pytest.mark.parametrize("presentation", list(ApprovalPresentation))

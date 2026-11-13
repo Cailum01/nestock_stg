@@ -65,6 +65,8 @@ def test_only_read_tools_are_offered():
     assert names == {
         "list_inventory",
         "list_shopping",
+        "get_reorder_candidates",
+        "get_consumption_forecast",
         "analyze_photo",
         "search_purchase_options",
     }
@@ -76,8 +78,8 @@ def test_inventory_question_looks_then_answers():
 
     assert response.message == "還有 2 包白米，在廚房櫃子。"
     assert response.pending_approval is None
-    rows = _tool_rows(model)  # the model's second turn saw the real service data
-    assert [row["name"] for row in rows] == ["白米"]
+    seen = _tool_rows(model)  # the model's second turn saw the real service data
+    assert [row["name"] for row in seen["inventory"]] == ["白米"]
     assert response.results[0].kind == ResultKind.INVENTORY
     assert response.results[0].data["items"][0]["location"] == "廚房櫃子"
 
@@ -88,6 +90,86 @@ def test_shopping_question_uses_shopping_list():
 
     assert [row["name"] for row in _tool_rows(model)] == ["牛奶"]
     assert response.results == []  # inventory card only when inventory was looked up
+
+
+# --- v8 Flow B: "I want to buy X, do we still have it?" ----------------------
+
+
+def test_flow_b_lookup_shows_shopping_list_and_writes_nothing():
+    # One inventory lookup is enough to also say "already on the shopping list".
+    model = ScriptedModel(_call("list_inventory"), AIMessage(content="庫存裡沒有找到 AA 電池。"))
+    app = create_app()
+    app.dependency_overrides[get_read_agent] = lambda: _agent(model)
+    with TestClient(app) as client:
+        before = [client.get(path).json() for path in ["/inventory", "/shopping"]]
+        response = client.post(
+            "/agent/messages",
+            json={"household_id": HOUSEHOLD, "message": "我要買 AA 電池，家裡還有嗎？"},
+        )
+        after = [client.get(path).json() for path in ["/inventory", "/shopping"]]
+
+    assert response.status_code == 200
+    seen = _tool_rows(model)
+    assert [row["name"] for row in seen["inventory"]] == ["白米"]
+    assert [row["name"] for row in seen["shopping_list"]] == ["牛奶"]
+    assert len(model.seen) == 2  # one lookup, then the answer
+    body = response.json()
+    assert body["pending_approval"] is None
+    assert [result["kind"] for result in body["results"]] == ["inventory"]
+    assert body["results"][0]["data"]["items"] == seen["inventory"]  # card: inventory only
+    assert before == after
+
+
+def test_flow_b_leaves_out_items_already_bought():
+    from app.models.domain import ShoppingStatus
+
+    class Shopping:
+        async def list_items(self, household_id: str):
+            milk = (await get_shopping_service().list_items(household_id))[0]
+            bought = milk.model_copy(
+                update={
+                    "shopping_item_id": "bought",
+                    "name": "衛生紙",
+                    "status": ShoppingStatus.COMPLETED,
+                }
+            )
+            return [milk, bought]
+
+    model = ScriptedModel(_call("list_inventory"), AIMessage(content="庫存裡沒有找到衛生紙。"))
+    tools = QueryTools(get_inventory_service(), Shopping())
+    _ask(ReadAgent(model, tools, load_system_prompt()), "我要買衛生紙，家裡還有嗎？")
+
+    assert [row["name"] for row in _tool_rows(model)["shopping_list"]] == ["牛奶"]
+
+
+class _UnreadableShopping:
+    """The shopping list cannot be read, for example because Cosmos is unreachable."""
+
+    async def list_items(self, household_id: str):
+        raise ConnectionError("Cosmos is unreachable")
+
+
+def test_flow_b_still_answers_inventory_when_the_shopping_list_cannot_be_read():
+    answer = "白米還有 2 包，在廚房櫃子；待購清單暫時查不到。"
+    model = ScriptedModel(_call("list_inventory"), AIMessage(content=answer))
+    tools = QueryTools(get_inventory_service(), _UnreadableShopping())
+
+    response = _ask(ReadAgent(model, tools, load_system_prompt()), "我要買白米，家裡還有嗎？")
+
+    seen = _tool_rows(model)
+    assert [row["name"] for row in seen["inventory"]] == ["白米"]
+    assert seen["shopping_list"] is None  # a failed read is never passed on as an empty list
+    assert seen["shopping_list_error"] == "shopping_list_unavailable"
+    assert response.message == answer
+    assert response.results[0].kind == ResultKind.INVENTORY  # the inventory card is still shown
+    assert response.results[0].data["items"] == seen["inventory"]
+
+
+def test_prompt_says_how_to_answer_when_the_shopping_list_is_unavailable():
+    prompt = load_system_prompt()
+    assert "`shopping_list_error`" in prompt
+    assert "待購清單暫時查不到" in prompt
+    assert "不要說「不在待購清單上」" in prompt
 
 
 def test_greeting_needs_no_tool():
@@ -106,7 +188,7 @@ def test_household_comes_from_request_not_model():
         AIMessage(content="庫存裡沒有找到。"),
     )
     _ask(_agent(model), "家裡有什麼？", household_id="another-household")
-    assert _tool_rows(model) == []
+    assert _tool_rows(model) == {"inventory": [], "shopping_list": []}
 
 
 def test_unknown_tool_is_refused():
@@ -638,8 +720,9 @@ def test_several_items_are_matched_with_one_inventory_read():
 
 def test_prompt_no_longer_reads_a2_match_fields():
     prompt = load_system_prompt()
+    # As field names (in backticks); v8's tool name get_reorder_candidates is fine.
     for a2_field in ("match_status", "fuzzy_candidate", "candidates"):
-        assert a2_field not in prompt
+        assert f"`{a2_field}`" not in prompt
     assert "household_items" in prompt
 
 

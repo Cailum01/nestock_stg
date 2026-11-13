@@ -30,6 +30,7 @@ Widget _card({
   List<ConfirmationItemView> items = _items,
   TextScaler? textScaler,
   VoidCallback? onCancel,
+  ValueChanged<List<ConfirmationItemView>>? onSubmitChanges,
 }) => MaterialApp(
   builder: textScaler == null
       ? null
@@ -43,6 +44,7 @@ Widget _card({
         items: items,
         onCancel: onCancel ?? _noop,
         onConfirm: _noop,
+        onSubmitChanges: onSubmitChanges,
       ),
     ),
   ),
@@ -281,33 +283,76 @@ void main() {
   });
 
   testWidgets(
-    'quantity accepts numeric drafts and restores the last valid value',
+    'quantity accepts positive integers and blocks invalid draft submission',
     (tester) async {
-      await tester.pumpWidget(_card());
+      List<ConfirmationItemView>? submittedDrafts;
+      await tester.pumpWidget(
+        _card(
+          items: const [
+            ConfirmationItemView(
+              name: '衛生紙',
+              quantity: 2,
+              unit: '包',
+              location: '儲藏櫃',
+            ),
+          ],
+          onSubmitChanges: (drafts) => submittedDrafts = drafts,
+        ),
+      );
       await tester.tap(find.byKey(const Key('confirmation-edit-0')));
       await tester.pump();
       final quantity = find.byKey(const Key('confirmation-quantity-0'));
 
       await tester.enterText(quantity, '0');
       expect(tester.widget<TextField>(quantity).controller!.text, '0');
-      await tester.enterText(quantity, '12');
-      expect(tester.widget<TextField>(quantity).controller!.text, '12');
-      await tester.enterText(quantity, '1.5');
-      expect(tester.widget<TextField>(quantity).controller!.text, '1.5');
-      expect(find.text('瓶'), findsOneWidget);
+      expect(
+        find.byKey(const Key('confirmation-submit-changes')),
+        findsNothing,
+      );
 
-      await tester.enterText(quantity, 'abc');
-      expect(tester.widget<TextField>(quantity).controller!.text, '1.5');
       await tester.enterText(quantity, '-1');
-      expect(tester.widget<TextField>(quantity).controller!.text, '1.5');
-      await tester.enterText(quantity, '1.2.3');
-      expect(tester.widget<TextField>(quantity).controller!.text, '1.5');
+      expect(tester.widget<TextField>(quantity).controller!.text, '0');
+      expect(
+        find.byKey(const Key('confirmation-submit-changes')),
+        findsNothing,
+      );
+      await tester.enterText(quantity, '1.5');
+      expect(tester.widget<TextField>(quantity).controller!.text, '0');
+      expect(
+        find.byKey(const Key('confirmation-submit-changes')),
+        findsNothing,
+      );
+      await tester.enterText(quantity, 'abc');
+      expect(tester.widget<TextField>(quantity).controller!.text, '0');
+      expect(
+        find.byKey(const Key('confirmation-submit-changes')),
+        findsNothing,
+      );
 
       await tester.enterText(quantity, '');
       expect(tester.widget<TextField>(quantity).controller!.text, isEmpty);
+      expect(
+        find.byKey(const Key('confirmation-submit-changes')),
+        findsNothing,
+      );
+
+      await tester.enterText(quantity, '1');
+      await tester.pump();
+      expect(tester.widget<TextField>(quantity).controller!.text, '1');
+      expect(
+        find.byKey(const Key('confirmation-submit-changes')),
+        findsOneWidget,
+      );
+      await tester.enterText(quantity, '3');
+      await tester.pump();
+      expect(tester.widget<TextField>(quantity).controller!.text, '3');
+      await tester.tap(find.byKey(const Key('confirmation-submit-changes')));
+      expect(submittedDrafts?.single.quantity, 3);
+
+      await tester.enterText(quantity, '-1');
       await tester.tap(find.byKey(const Key('confirmation-finish-edit-0')));
       await tester.pump();
-      expect(find.text('數量　　1.5 瓶'), findsOneWidget);
+      expect(find.text('數量　　3 包'), findsOneWidget);
     },
   );
 

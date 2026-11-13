@@ -12,7 +12,7 @@ class InventoryItem(ContractModel):
     item_id: str
     household_id: str
     name: str
-    quantity: float
+    quantity: int
     unit: str
     created_at: datetime
     updated_at: datetime
@@ -31,8 +31,8 @@ class ShoppingItem(ContractModel):
     shopping_item_id: str
     household_id: str
     name: str
-    quantity: float
-    unit: str
+    quantity: int | None = None
+    unit: str | None = None
     status: ShoppingStatus
     created_at: datetime
     updated_at: datetime
@@ -54,7 +54,7 @@ class Transaction(ContractModel):
     household_id: str
     item_id: str
     operation_id: str
-    quantity_delta: float
+    quantity_delta: int
     reason: TransactionReason
     created_at: datetime
 

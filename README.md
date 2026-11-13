@@ -78,8 +78,9 @@ By default the app calls the real backend: the Agent, Inventory, Shopping, photo
 upload and speech all use the same backend address. Inventory and Shopping show
 whatever the backend reads: Cosmos when it is configured, otherwise demo data. For
 the Agent, put the three Azure OpenAI values in `backend/.env` and start (or
-restart) the backend; otherwise the app only shows 「暫時無法完成，請重試。」 The
-Agent can only answer questions for now; it cannot save anything yet. For offline
+restart) the backend; otherwise the app only shows 「暫時無法完成，請重試。」 With
+Cosmos configured, the Agent can also return a purchase confirmation card; nothing
+is saved until the user confirms it. For offline
 UI work only, `--dart-define=AGENT_TRANSPORT=mock` switches the Agent, Inventory
 and Shopping to built-in mocks.
 
@@ -121,9 +122,10 @@ Open `http://127.0.0.1:8000/health` for `{"status":"ok"}` and
 | `GET /inventory` | read-only inventory, fixed household scope; Cosmos when all three `NESTOCK_COSMOS_*` are set, otherwise demo data |
 | `GET /shopping` | read-only shopping list, fixed household scope; Cosmos when all three `NESTOCK_COSMOS_*` are set, otherwise demo data |
 | `GET /forecast` | read-only forecast for active inventory items; uses configured Cosmos reads when set, otherwise demo data; currently `insufficient_data` pending confirmation of Transaction `created_at` semantics (B2, mounted by PR #53) |
+| `GET /forecast/reorder` | read-only list of items worth restocking soon (`consider_restock`), soonest first; empty when none qualify or while Transaction `created_at` semantics are unconfirmed; same selection the Agent reuses via `ForecastService.reorder_candidates` (B2) |
 | `GET /forecast/{item_id}` | read-only forecast for one inventory item; 404 if missing; uses configured Cosmos reads when set, otherwise demo data; currently `insufficient_data` pending confirmation of Transaction `created_at` semantics (B2, mounted by PR #53) |
-| `POST /agent/messages` | read-only Agent via Azure OpenAI when `backend/.env` is set; otherwise 501 |
-| `POST /agent/resume` | validates provisional request, then 501; no writes |
+| `POST /agent/messages` | Agent via Azure OpenAI when `backend/.env` is set; otherwise 501. With Cosmos it may return a purchase confirmation card, which writes nothing until confirmed |
+| `POST /agent/resume` | the user's answer to a confirmation card: writes what the stored card holds (v8 flow C purchases so far); 503 without Cosmos |
 | `POST /api/media/upload-authorization` | provisional photo upload authorization (A2, PR #5) |
 | `PUT /staging/upload/{upload_token}` | provisional local photo staging upload (A2, PR #5) |
 | `POST /api/speech/transcribe` | speech-to-text with Azure AI Speech when `AZURE_SPEECH_KEY` is set; otherwise 503. `NESTOCK_SPEECH_MOCK=1` returns demo text for offline UI work (A2) |
@@ -167,8 +169,8 @@ data, so run `pytest` in a window without these variables. The fixed household i
 | --- | --- | --- |
 | App access | the App only calls the backend API and holds no Azure credentials | unchanged |
 | Sign-in | the backend uses the developer's own `az login` | if the backend is deployed to Azure, it uses its own Managed Identity with least-privilege access to Cosmos and Blob, so nobody signs in locally |
-| Cosmos | optional and read-only | the backend also writes |
-| Writes | no write API yet | open only after the backend write flow and its approval and validation checks are done; granting write permission on Cosmos alone does not enable writing |
+| Cosmos | optional; read, and written only when the user confirms a card | unchanged |
+| Writes | only through confirmation cards: purchases from the Shopping List (v8 flow C, PR #96) | other writes open only after their backend write flow and its approval and validation checks are done; granting write permission on Cosmos alone does not enable writing |
 | Photos | kept in backend memory and lost on restart | tracked in Issue #98 |
 
 Azure deployment helpers are in `deploy/`.

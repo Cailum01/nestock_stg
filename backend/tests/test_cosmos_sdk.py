@@ -502,7 +502,7 @@ def test_repository_factory_shares_container_and_sdk_client_between_repositories
     monkeypatch.setattr(cosmos_sdk, "DefaultAzureCredential", lambda: credential)
     monkeypatch.setattr(cosmos_sdk, "CosmosClient", lambda endpoint, credential: sdk_client)
 
-    read_repository, write_repository, close = create_azure_cosmos_repositories(
+    read_repository, write_repository, document_reader, close = create_azure_cosmos_repositories(
         endpoint="https://example.documents.azure.com",
         database_name="nestock",
         container_name="household-data",
@@ -512,6 +512,7 @@ def test_repository_factory_shares_container_and_sdk_client_between_repositories
     assert read_repository._client._container is container
     assert write_repository._client._container is container
     assert write_repository._query_client._container is container
+    assert document_reader._container is container
     close()
     assert sdk_client.closed
     assert credential.closed
@@ -529,8 +530,8 @@ def test_cosmos_read_services_share_repository_with_composition(monkeypatch):
     repository = CosmosReadRepository(FakeContainer([]))
     monkeypatch.setattr(
         dependencies,
-        "create_azure_cosmos_read_repository",
-        lambda **kwargs: (repository, lambda: None),
+        "create_azure_cosmos_repositories",
+        lambda **kwargs: (repository, object(), object(), lambda: None),
     )
 
     inventory, shopping, shared_repository = _create_read_composition(

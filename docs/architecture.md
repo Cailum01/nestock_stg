@@ -21,9 +21,12 @@ Flutter -- Normal API ------------------+
 The frontend calls the backend over HTTP by default; its injected offline mocks are
 only used with `AGENT_TRANSPORT=mock`. Backend GET routes and query
 tools delegate to the same read service instances, replaceable through dependency
-injection. There are no write endpoints or mutation ports. `POST /agent/messages`
-runs a read-only LangGraph Agent on Azure OpenAI when `backend/.env` is configured
-and returns HTTP 501 otherwise; `POST /agent/resume` still returns 501. Cosmos DB
+injection. The only write path is a confirmation card: with Cosmos configured,
+`POST /agent/messages` may store a pending purchase card (v8 flow C) and
+`POST /agent/resume` writes it after the user confirms, through B1's Cosmos
+repository. `POST /agent/messages` runs a LangGraph Agent on Azure OpenAI when
+`backend/.env` is configured and returns HTTP 501 otherwise; `POST /agent/resume`
+returns 503 without Cosmos. Cosmos DB
 for NoSQL is provisioned on Azure. The backend can optionally use an Entra-
 authenticated, read-only Cosmos adapter for Inventory and Shopping when all
 `NESTOCK_COSMOS_*` settings are supplied; without them it continues to serve

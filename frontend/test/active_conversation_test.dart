@@ -7,12 +7,14 @@ import 'package:nestock/shared/data/demo_catalog.dart';
 
 class LocalAgent implements AgentClient {
   @override
-  Future<AgentReply> send(String message) async =>
+  Future<AgentReply> send(String message, {String? replacesApprovalId}) async =>
       AgentReply(message: '回答 $message');
   @override
   Future<AgentReply> resume({
     required String approvalId,
     required bool approved,
+    String? selectedOptionId,
+    List<String>? approvedOperationIds,
   }) async => const AgentReply(message: '完成');
 }
 

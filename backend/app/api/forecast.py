@@ -51,6 +51,21 @@ async def household_forecast(
     return await service.forecast_household(settings.demo_household_id, clock())
 
 
+# Defined before "/{item_id}" so "reorder" is never read as an item id.
+@router.get("/reorder", response_model=list[ItemForecast])
+async def reorder_candidates(
+    service: Annotated[ForecastService, Depends(get_forecast_service)],
+    clock: Annotated[Callable[[], datetime], Depends(get_clock)],
+) -> list[ItemForecast]:
+    """Items worth restocking soon, soonest first. Empty when none qualify.
+
+    Same selection the Agent should reuse (`ForecastService.reorder_candidates`).
+    Estimates only: nothing here changes confirmed inventory or the shopping list.
+    """
+    summary = await service.reorder_candidates(settings.demo_household_id, clock())
+    return summary.candidates
+
+
 @router.get(
     "/{item_id}",
     response_model=ItemForecast,

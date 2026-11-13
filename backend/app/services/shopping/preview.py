@@ -6,7 +6,6 @@ construct persisted Inventory/Transaction records. See README.md in this folder.
 
 import math
 from dataclasses import dataclass
-from decimal import Decimal
 
 from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus
 
@@ -24,12 +23,12 @@ class PurchasePreview:
     household_id: str
     shopping_item_id: str
     inventory_item_id: str
-    purchased_quantity: float
+    purchased_quantity: int
     unit: str
-    planned_quantity: float
+    planned_quantity: int | None
     next_status: ShoppingStatus
-    inventory_quantity_before: float
-    inventory_quantity_after: float
+    inventory_quantity_before: int
+    inventory_quantity_after: int
 
 
 @dataclass(frozen=True)
@@ -37,31 +36,32 @@ class RemovalPreview:
     household_id: str
     shopping_item_id: str
     name: str
-    planned_quantity: float
-    unit: str
+    planned_quantity: int | None
+    unit: str | None
 
 
-def _quantity(value: float, label: str, *, positive: bool = True) -> Decimal:
+def _quantity(value: int, label: str, *, positive: bool = True) -> int:
+    # Accept integral floats from the pre-#64 Pydantic snapshots, never truncate.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ShoppingPreviewError(f"{label} must be a finite number.")
-    try:
-        finite = math.isfinite(value)
-    except OverflowError as error:
-        raise ShoppingPreviewError(f"{label} is outside the supported quantity range.") from error
-    if not finite or (value <= 0 if positive else value < 0):
+        raise ShoppingPreviewError(f"{label} must be an integer count.")
+    if isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
+        raise ShoppingPreviewError(f"{label} must be an integer count.")
+    if (value <= 0) if positive else (value < 0):
         raise ShoppingPreviewError(f"{label} is outside the supported quantity range.")
-    # Avoid binary addition artifacts in the proposed stock (e.g. 0.1 + 0.2).
-    # This is local preview arithmetic, not a shared persistence precision policy.
-    return Decimal(str(value))
+    return int(value)
 
 
-def _pending_item(household_id: str, shopping: ShoppingItem) -> Decimal:
+def _pending_item(household_id: str, shopping: ShoppingItem) -> int | None:
     if not household_id.strip() or shopping.household_id != household_id:
         raise ShoppingPreviewError("Shopping item must belong to the requested household.")
-    if not shopping.shopping_item_id.strip() or not shopping.unit.strip():
-        raise ShoppingPreviewError("Shopping identity and unit must be resolved.")
+    if not shopping.shopping_item_id.strip():
+        raise ShoppingPreviewError("Shopping identity must be resolved.")
+    if shopping.unit is not None and not shopping.unit.strip():
+        raise ShoppingPreviewError("A provided shopping unit must not be empty.")
     if shopping.status != ShoppingStatus.PENDING:
         raise ShoppingPreviewError("Only a pending shopping item can be previewed.")
+    if shopping.quantity is None:
+        return None
     return _quantity(shopping.quantity, "Planned shopping quantity")
 
 
@@ -74,7 +74,9 @@ class ShoppingPreviewService:
         household_id: str,
         shopping: ShoppingItem,
         inventory: InventoryItem | None,
-        purchased_quantity: float,
+        purchased_quantity: int,
+        purchased_unit: str | None = None,
+        resolved_inventory_item_id: str | None = None,
     ) -> PurchasePreview:
         """Preview a current purchase already resolved to an existing inventory item.
 
@@ -84,29 +86,41 @@ class ShoppingPreviewService:
         """
         planned = _pending_item(household_id, shopping)
         purchased = _quantity(purchased_quantity, "Purchased quantity")
-        if purchased > planned:
+        if planned is not None and purchased > planned:
             raise ShoppingDecisionRequired("Purchases exceeding the list need an agreed workflow.")
-        if inventory is None or not shopping.item_id:
+        if resolved_inventory_item_id is not None and not resolved_inventory_item_id.strip():
+            raise ShoppingPreviewError("The explicit resolved target must not be empty.")
+        target_id = (
+            resolved_inventory_item_id
+            if resolved_inventory_item_id is not None
+            else shopping.item_id
+        )
+        if inventory is None or not target_id:
             raise ShoppingDecisionRequired("Unlinked purchase workflow is not resolved here.")
         if inventory.household_id != household_id:
             raise ShoppingPreviewError("Inventory must belong to the requested household.")
-        if not inventory.item_id.strip() or inventory.item_id != shopping.item_id:
+        if (
+            not inventory.item_id.strip()
+            or inventory.item_id != target_id
+            or (shopping.item_id is not None and shopping.item_id != target_id)
+        ):
             raise ShoppingPreviewError("Inventory must match the shopping item's resolved target.")
-        if inventory.unit != shopping.unit:
+        unit = purchased_unit if purchased_unit is not None else shopping.unit
+        if not unit or not unit.strip():
+            raise ShoppingDecisionRequired("Resolve the actual purchase unit before previewing.")
+        if unit != inventory.unit or (shopping.unit is not None and unit != shopping.unit):
             raise ShoppingDecisionRequired("Resolve canonical units before previewing a purchase.")
         before = _quantity(inventory.quantity, "Confirmed inventory quantity", positive=False)
-        after = float(before + purchased)
-        if not math.isfinite(after):
-            raise ShoppingPreviewError("Resulting inventory quantity must be finite.")
+        after = before + purchased
         return PurchasePreview(
             household_id=household_id,
             shopping_item_id=shopping.shopping_item_id,
             inventory_item_id=inventory.item_id,
-            purchased_quantity=float(purchased),
+            purchased_quantity=purchased,
             unit=inventory.unit,
-            planned_quantity=float(planned),
+            planned_quantity=planned,
             next_status=ShoppingStatus.COMPLETED,
-            inventory_quantity_before=float(before),
+            inventory_quantity_before=before,
             inventory_quantity_after=after,
         )
 
@@ -117,6 +131,6 @@ class ShoppingPreviewService:
             household_id=household_id,
             shopping_item_id=shopping.shopping_item_id,
             name=shopping.name,
-            planned_quantity=float(planned),
+            planned_quantity=planned,
             unit=shopping.unit,
         )

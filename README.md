@@ -99,9 +99,9 @@ Open `http://127.0.0.1:8000/health` for `{"status":"ok"}` and
 | `GET /health` | 200; process health, no cloud connectivity check |
 | `GET /inventory` | read-only demo inventory, fixed household scope |
 | `GET /shopping` | read-only demo shopping list, fixed household scope |
-| `GET /forecast` | read-only forecast for active inventory items; uses configured Cosmos reads when set, otherwise demo data; currently `insufficient_data` pending confirmation of Transaction `created_at` semantics (B2, mounted by PR #53) |
-| `GET /forecast/reorder` | read-only list of items worth restocking soon (`consider_restock`), soonest first; empty when none qualify or while Transaction `created_at` semantics are unconfirmed; same selection the Agent reuses via `ForecastService.reorder_candidates` (B2) |
-| `GET /forecast/{item_id}` | read-only forecast for one inventory item; 404 if missing; uses configured Cosmos reads when set, otherwise demo data; currently `insufficient_data` pending confirmation of Transaction `created_at` semantics (B2, mounted by PR #53) |
+| `GET /forecast` | read-only forecast for active inventory items. Reads transaction history from Cosmos when `NESTOCK_COSMOS_*` are all set, otherwise from demo history (a partial Cosmos config fails at startup). Items without enough history return `insufficient_data`. Forecasts only estimate; they never change confirmed `InventoryItem.quantity` (B2) |
+| `GET /forecast/reorder` | read-only list of items worth restocking soon (`consider_restock`), soonest first; empty when none qualify; same history source as `/forecast`; same selection the Agent reuses via `ForecastService.reorder_candidates` (B2) |
+| `GET /forecast/{item_id}` | read-only forecast for one inventory item; 404 if missing; same history source and `insufficient_data` behavior as `/forecast`; never changes confirmed quantity (B2) |
 | `POST /agent/messages` | Agent via Azure OpenAI when `backend/.env` is set; otherwise 501. With Cosmos it may return a purchase confirmation card, which writes nothing until confirmed |
 | `POST /agent/resume` | the user's answer to a confirmation card: writes what the stored card holds (v8 flow C purchases so far); 503 without Cosmos |
 | `POST /api/media/upload-authorization` | provisional photo upload authorization (A2, PR #5) |

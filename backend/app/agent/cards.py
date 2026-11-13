@@ -319,7 +319,8 @@ class PurchaseCards:
 def _requested_items(value: Any) -> list[_Requested]:
     """The model's items, each shopping entry once, quantities as whole numbers ≥ 1.
 
-    `unit` and `location` are optional words; when given they must be non-empty text.
+    `unit` and `location` are optional words. Blank text counts as not said: the real
+    model fills unused optional fields with "" (seen on Azure OpenAI, 2026-11-13).
     """
     if not isinstance(value, list):
         return []
@@ -337,11 +338,11 @@ def _requested_items(value: Any) -> list[_Requested]:
             or isinstance(quantity, bool)
             or not isinstance(quantity, int)
             or quantity < 1
-            or any(w is not None and (not isinstance(w, str) or not w.strip()) for w in words)
+            or any(w is not None and not isinstance(w, str) for w in words)
         ):
             return []
         seen.add(shopping_item_id)
-        unit, location = (w.strip() if isinstance(w, str) else None for w in words)
+        unit, location = ((w or "").strip() or None for w in words)
         requested.append(_Requested(shopping_item_id, quantity, unit, location))
     return requested
 

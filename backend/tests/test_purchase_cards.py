@@ -755,7 +755,7 @@ def test_no_new_item_line_without_any_unit():
     assert json.loads(tool_results(model)[-1])["not_on_card"][0]["reason"] == NEEDS_UNIT
 
 
-@pytest.mark.parametrize("words", [{"location": ""}, {"location": 3}, {"unit": " "}])
+@pytest.mark.parametrize("words", [{"location": 3}, {"unit": ["條"]}])
 def test_unusable_unit_or_location_make_no_card(words):
     container, reader, approvals = setup(inventory(), paste())
 
@@ -763,3 +763,21 @@ def test_unusable_unit_or_location_make_no_card(words):
 
     assert response.pending_approval is None
     assert container.of_type("pending_approval") == []
+
+
+def test_blank_unit_counts_as_not_said():
+    """What Azure OpenAI sent on 2026-11-13: `"unit": ""` next to a real location."""
+    container, reader, approvals = setup(inventory(), paste())
+
+    response, _ = new_item_card(reader, approvals, unit="")
+
+    assert response.pending_approval.operations[0].values["unit"] == "條"
+
+
+def test_blank_location_counts_as_not_said_and_the_agent_asks():
+    container, reader, approvals = setup(inventory(), paste())
+
+    response, model = new_item_card(reader, approvals, location=" ")
+
+    assert response.pending_approval is None
+    assert json.loads(tool_results(model)[-1])["not_on_card"][0]["reason"] == NEEDS_LOCATION

@@ -167,6 +167,47 @@ and model-test patch to current main plus C1, retaining the newer ChangeEvent mo
 No B1 files are edited in this working tree. Coordinate review/merge with B1; keep
 #63 open until both sides land. See the linked Issues and pull requests for current integration evidence and owner work.
 
+## Final Demo core purchase acceptance contract
+
+For the Final Demo, C1 has one core purchase journey. It is the only purchase
+journey that C1 treats as required acceptance; the additional journeys listed in
+the Demo readiness checklist must stay Deferred unless the owners explicitly mark
+them Included before the script is frozen.
+
+```text
+baseline
+→ 洗衣精買回 2 瓶
+→ approval
+→ confirm
+→ Inventory 1 → 3
+→ Shopping completed (the original planned quantity remains 2)
+→ exactly one new purchase Transaction for this operation
+→ retry the same approval: no duplicate effect
+→ cancel a separate approval: no business write
+→ reset: the complete baseline is restored
+```
+
+The baseline is one `demo-household`: `seed-detergent` is confirmed Inventory
+quantity 1, and pending `seed-shopping-detergent` is linked to that same item ID
+with planned quantity 2 and unit `瓶`. The approval must use the stored card and
+its fixed operation identity; confirmation must add exactly 2 confirmed bottles,
+complete that linked Shopping row, and preserve its planned quantity. “Exactly one
+Transaction” means exactly one new effective `purchase` Transaction associated with
+the confirmed operation, not that the baseline has no historical Transactions.
+
+Before confirmation, the Inventory quantity remains 1. A repeat of the completed
+approval returns its stored outcome and cannot increment Inventory or create a
+second Transaction. Cancellation applies to a separate stored approval and records
+no Inventory, Shopping, or Transaction business mutation. The reset is B1's
+explicit, household-scoped reset procedure followed by its read-back verification;
+it restores all 31 baseline business records before another destructive rehearsal.
+
+This contract is backend/Cosmos acceptance until C2 demonstrates the same journey
+on an Android physical device through the deployed cloud API, including refresh or
+reopen read-back. It is not evidence for new Inventory items, unlinked Shopping
+rows, over-pending quantities, different units, direct Shopping additions, price
+options, or media attachments.
+
 ## Current limits and Demo prerequisites
 
 The integrated route supports only existing Inventory targets linked from pending

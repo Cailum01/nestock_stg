@@ -166,11 +166,10 @@ async def test_speech_e2e_single_turn_with_latency_and_exact_match():
                 latency_ms = (t1 - t0) * 1000.0
 
                 # 5. Assert HTTP 200 response
-                if response.status_code == 502:
-                    pytest.skip(
-                        f"[{case_id}] Azure AI Speech API upstream error (HTTP 502): "
-                        f"{response.text}"
-                    )
+                if response.status_code == 429 or (
+                    response.status_code == 502 and "TooManyRequests" in response.text
+                ):
+                    pytest.skip(f"[{case_id}] Azure AI Speech API quota exceeded (HTTP 429)")
 
                 assert response.status_code == 200, (
                     f"[{case_id}] Expected 200 OK, got {response.status_code}: {response.text}"

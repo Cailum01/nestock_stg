@@ -162,11 +162,6 @@ async def synthesize_speech(
     if edge_tts is None:
         raise RuntimeError("edge-tts is not installed. Please run: uv sync --group speech-e2e")
 
-    if edge_tts is None:
-        raise RuntimeError(
-            "edge-tts is not installed. Please run: uv sync --group speech-e2e"
-        )
-
     communicate = edge_tts.Communicate(
         text=text.strip(),
         voice=resolved_voice,

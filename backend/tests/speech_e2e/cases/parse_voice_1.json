@@ -1,0 +1,19 @@
+[
+  {
+    "id": "TC_SPEECH_001",
+    "text": "幫我查一下衛生紙"
+  },
+  {
+    "id": "TC_SPEECH_002",
+    "text": "家裡還有鮮奶嗎"
+  },
+  {
+    "id": "TC_SPEECH_003",
+    "text": "買2瓶可口可樂"
+  },
+  {
+    "id": "TC_SPEECH_004",
+    "text": "買二罐Oatly燕麥奶",
+    "voice": "zh_mixed_female"
+  }
+]

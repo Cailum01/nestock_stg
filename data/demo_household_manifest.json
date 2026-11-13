@@ -94,6 +94,16 @@
       "created_at": "2026-11-12T04:00:00Z",
       "updated_at": "2026-11-12T04:00:00Z",
       "item_id": "seed-flour"
+    },
+    {
+      "shopping_item_id": "seed-shopping-toothpaste",
+      "household_id": "demo-household",
+      "name": "牙膏",
+      "quantity": 1,
+      "unit": "條",
+      "status": "pending",
+      "created_at": "2026-11-12T04:00:00Z",
+      "updated_at": "2026-11-12T04:00:00Z"
     }
   ],
   "transactions": [

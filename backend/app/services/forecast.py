@@ -39,14 +39,15 @@ window, ordering and interval in this module reads `created_at` as the event tim
   user confirmed. A purchase bought on 11/10 but confirmed on 11/12 without a date is
   dated 11/12: the usage period looks shorter and "running low" is predicted earlier.
   This is accepted for P0 and is not a defect of the stored value.
-- Demo data written by `data/seed_demo_household.py` puts the purchase date in
-  `created_at` (a documented seed exception), so the Demo is not affected.
+- Demo data (`data/demo_household_manifest.json`, loaded with B1's `demo_seed`) puts the
+  purchase date in `created_at`, which is the event time per #113, so the Demo is not
+  affected.
 - No separate event-time field is added: the Transaction contract is unchanged.
 - Not yet written in `contracts/` (a shared file); the agreement is in issue #113.
 - Also relies on B1's `cosmos_read.build_transaction_query` (range filter and
   ORDER BY) and its `/created_at` index.
-- To switch back to the paused behaviour set
-  `ForecastSettings.time_semantics_confirmed` to False: `estimate` then never reads
+- To fall back to the behaviour used before #113 was agreed (no time-based forecast),
+  set `ForecastSettings.time_semantics_confirmed` to False: `estimate` then never reads
   `created_at`, every item returns `insufficient_data`, and the two event counts are
   plain totals per item and reason. If the contract later adds a real event time,
   only `_events`, `_consumption_rate`, `_purchase_interval_rate` and

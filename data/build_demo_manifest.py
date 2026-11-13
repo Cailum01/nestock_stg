@@ -24,6 +24,7 @@ Usage:
 """
 
 import argparse
+import difflib
 import json
 import sys
 from dataclasses import dataclass
@@ -63,6 +64,11 @@ class Spec:
     purchases: tuple[tuple[str, int], ...]  # (day, quantity)
 
 
+# The purchase history is NOT a replay of stock. Quantities are C1's frozen baseline and
+# the purchases are chosen only to give the forecast a rate (e.g. tissue: bought 18, 8 on
+# hand; detergent: bought 16, 1 on hand; sugar: bought 1, 2 on hand). Summing
+# `quantity_delta` does not reproduce `InventoryItem.quantity`, and no check should expect
+# it to: confirmed quantity only changes with user-provided information.
 SPECS = (
     Spec(
         "detergent",
@@ -104,6 +110,10 @@ SPECS = (
         "廚房食品櫃",
         1,
         # 1 bag every 14 days, none left: out now, restock.
+        # Story beat: flour is out AND already has a pending 1-bag Shopping row (C1's
+        # baseline). The forecast does not read the Shopping List, so it still says
+        # consider_restock; the Agent/approval flow must show the existing pending row
+        # and not add a duplicate. That is not decided by B2.
         (("2026-09-16", 1), ("2026-09-30", 1), ("2026-10-14", 1), ("2026-10-28", 1)),
     ),
     Spec(
@@ -163,6 +173,22 @@ def build_records() -> tuple[list[InventoryItem], list[ShoppingItem], list[Trans
         for s in SPECS
         if s.shopping_quantity is not None
     ]
+    # A1's request (PR #133): one pending row for a first-time item, for Demo list v3
+    # section 4. Deliberately NOT linked to inventory (no item_id), so the inventory
+    # stays at 7 items and the Agent cannot match it to something the household has.
+    # provisional until C1 confirms the extra row in the frozen table (Issue #122).
+    shopping.append(
+        ShoppingItem(
+            shopping_item_id="seed-shopping-toothpaste",
+            household_id=HOUSEHOLD_ID,
+            name="牙膏",
+            quantity=1,
+            unit="條",
+            status=ShoppingStatus.PENDING,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+    )
     transactions = [
         Transaction(
             transaction_id=f"seed-tx-{s.slug}-{day}",
@@ -211,7 +237,13 @@ def expected_forecasts(now: datetime = BASELINE_NOW) -> dict[str, dict]:
 
 
 def valid_until() -> datetime:
-    """Last moment every purchase is still inside the purchase window."""
+    """Last moment every purchase is still inside the purchase window.
+
+    The estimator keeps a purchase when `now - window <= created_at`, so the earliest one
+    is still counted at exactly this moment. This is a conservative bound: the table
+    first changes later, because dropping the first purchase can leave the rate unchanged.
+    A test asserts the table is unchanged at this moment and changes once all have left.
+    """
     earliest = min(_noon(day) for s in SPECS for day, _ in s.purchases)
     return earliest + timedelta(days=PURCHASE_WINDOW_DAYS)
 
@@ -246,8 +278,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.check:
         current = MANIFEST_PATH.read_text(encoding="utf-8") if MANIFEST_PATH.exists() else ""
         if current != text:
+            diff = list(
+                difflib.unified_diff(
+                    current.splitlines(),
+                    text.splitlines(),
+                    "on disk",
+                    "generated",
+                    lineterm="",
+                    n=0,
+                )
+            )
             print(f"{MANIFEST_PATH.name} is out of date; run without --check.", file=sys.stderr)
+            print("\n".join(diff[:20]), file=sys.stderr)
+            if len(diff) > 20:
+                print(f"... {len(diff) - 20} more diff lines", file=sys.stderr)
             return 1
+        print(f"{MANIFEST_PATH.name} is up to date.")
     else:
         MANIFEST_PATH.write_text(text, encoding="utf-8")
         print(f"wrote {MANIFEST_PATH}")

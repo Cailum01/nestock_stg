@@ -1,7 +1,10 @@
-"""A1 read-only Agent (Day 5, photo reading Day 8): understand, look, answer.
+"""A1 Agent (Day 5, photo reading Day 8): understand, look, answer.
 
-- Read tools only: inventory, shopping list, photo recognition and price search.
-  No write tool exists here, so no approval/pause is needed (AGENTS.md HITL rule 1).
+- Read tools: inventory, shopping list, photo recognition and price search.
+- One card tool, `complete_purchase` (v8 flow C, `app/agent/cards.py`), offered only
+  when approval cards are configured. It stores a pending confirmation card and
+  writes nothing else; the write happens in `/agent/resume` after the user confirms
+  (AGENTS.md HITL rules 2 and 8).
 - household_id and image_ref always come from the request, never from the
   model's arguments.
 - A photo is used only after the media is verified to belong to the request's
@@ -34,7 +37,10 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
+from app.agent.cards import ONE_CARD_PER_MESSAGE, PURCHASE_TOOL_SCHEMA, PurchaseCards
 from app.core.dependencies import (
+    get_approval_service,
+    get_cosmos_read_repository,
     get_inventory_service,
     get_media_storage_service,
     get_shopping_service,
@@ -69,6 +75,9 @@ NO_PHOTO = "這次沒有附照片，無法辨識。"
 PHOTO_FAILED = json.dumps({"error": "photo_analysis_failed"})
 """Tool result when A2's recognition raises (timeout, upstream error): the Agent still
 answers and asks for another photo instead of the whole request failing (502)."""
+SHOPPING_LIST_UNAVAILABLE = "shopping_list_unavailable"
+"""Set when an inventory lookup could not read the shopping list. The inventory is still
+answered; the list is never passed on as empty (C1 review on PR #57)."""
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +97,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_inventory",
-            "description": "查詢家裡目前的庫存：品名、數量、單位、放置位置、別名。",
+            "description": (
+                "查詢家裡目前的庫存：品名、數量、單位、放置位置、別名。"
+                "會一起附上待購清單裡還沒買的東西。"
+            ),
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -192,6 +204,7 @@ class _State(TypedDict, total=False):
     inventory: list[dict[str, Any]]
     vision: dict[str, Any]
     purchase_options: list[dict[str, Any]]
+    pending_approval: dict[str, Any]
 
 
 def load_system_prompt() -> str:
@@ -243,20 +256,19 @@ def _forecast_row(item: InventoryItem, forecast: Any) -> dict[str, Any]:
 
 
 def _reorder_view(
-    items: list[InventoryItem], forecasts: list[Any]
+    items: list[InventoryItem], summary: Any
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Items B2 flags for restocking, soonest first, plus how many lack data."""
+    """B2's `reorder_candidates` result for the model and the App.
+
+    B2 picks the items and their order; A1 keeps that order and only rounds the days.
+    Items no longer in the household list (read again here) are left out.
+    """
     by_id = {item.item_id: item for item in items}
-    rows = [
-        _forecast_row(by_id[f.item_id], f)
-        for f in forecasts
-        if f.item_id in by_id and f.suggested_action.value == "consider_restock"
-    ]
-    rows.sort(key=lambda row: (row["days_left"] is None, row["days_left"] or 0))
+    rows = [_forecast_row(by_id[f.item_id], f) for f in summary.candidates if f.item_id in by_id]
     view = {
         "running_low": rows,
-        "estimated_count": sum(f.status.value == "estimated" for f in forecasts),
-        "insufficient_data_count": sum(f.status.value == "insufficient_data" for f in forecasts),
+        "estimated_count": summary.estimated_count,
+        "insufficient_data_count": summary.insufficient_data_count,
     }
     card = {"kind": "reorder_candidates", **view} if rows else None
     return view, card
@@ -343,7 +355,7 @@ def _text(message: AnyMessage) -> str:
 
 
 class ReadAgent:
-    """Implements AgentRuntime.respond for read-only questions. resume is not offered."""
+    """Implements AgentRuntime.respond. Cards it makes are answered in `/agent/resume`."""
 
     def __init__(
         self,
@@ -356,18 +368,23 @@ class ReadAgent:
         media: MediaStorageService | None = None,
         matcher: ItemMatcher | None = None,
         commerce: PurchaseOptionSearch | None = None,
+        purchases: PurchaseCards | None = None,
     ) -> None:
-        self._model = model.bind_tools(TOOL_SCHEMAS)
+        self._model = model.bind_tools(
+            [*TOOL_SCHEMAS, PURCHASE_TOOL_SCHEMA] if purchases is not None else TOOL_SCHEMAS
+        )
         self._handlers: dict[str, Callable[[str], Awaitable[list[Any]]]] = {
             "list_inventory": tools.list_inventory,
             "list_shopping": tools.list_shopping,
         }
         self._system_prompt = system_prompt
-        self._forecast = forecast  # B2's ForecastService: forecast_household(household_id, now)
+        # B2's ForecastService: reorder_candidates / forecast_household(household_id, now)
+        self._forecast = forecast
         self._clock = clock
         self._vision = vision
         self._media = media
         self._commerce = commerce
+        self._purchases = purchases
         self._matcher = matcher or ItemMatcher(tools.inventory, tools.shopping)
         self._graph = self._build_graph()
 
@@ -398,14 +415,19 @@ class ReadAgent:
                     if found is not None:
                         earlier = update.get("purchase_options", state.get("purchase_options", []))
                         update["purchase_options"] = [*earlier, found]
+                elif call["name"] == PURCHASE_TOOL_SCHEMA["function"]["name"]:
+                    content, card = await self._propose_purchase(state, update, call)
+                    if card is not None:
+                        update["pending_approval"] = card
                 elif handler is None:
                     content = f"沒有這個工具：{call['name']}"
                 else:
                     items = await handler(state["household_id"])
                     rows = [item.model_dump(mode="json") for item in items]
+                    content = json.dumps(rows, ensure_ascii=False)
                     if call["name"] == "list_inventory":
                         update["inventory"] = rows
-                    content = json.dumps(rows, ensure_ascii=False)
+                        content = await self._with_shopping_list(state["household_id"], rows)
                 update["messages"].append(ToolMessage(content, tool_call_id=call["id"]))
             return update
 
@@ -420,6 +442,29 @@ class ReadAgent:
         builder.add_edge("look", "think")
         return builder.compile()
 
+    async def _with_shopping_list(self, household_id: str, rows: list[dict[str, Any]]) -> str:
+        """v8 Flow B: an inventory lookup also shows what is already on the shopping list.
+
+        If the list cannot be read (for example Cosmos is unreachable), the inventory is
+        still answered and the model is told the list is unavailable. A failed read is
+        never passed on as an empty list.
+        """
+        try:
+            shopping = await self._handlers["list_shopping"](household_id)
+        except Exception:  # only the extra read failed; the inventory was read
+            logger.warning("Shopping list read failed during an inventory lookup", exc_info=True)
+            view: dict[str, Any] = {
+                "inventory": rows,
+                "shopping_list": None,
+                "shopping_list_error": SHOPPING_LIST_UNAVAILABLE,
+            }
+        else:
+            pending = [
+                item.model_dump(mode="json") for item in shopping if item.status == "pending"
+            ]
+            view = {"inventory": rows, "shopping_list": pending}
+        return json.dumps(view, ensure_ascii=False)
+
     async def _forecast_answer(
         self, state: _State, call: dict[str, Any]
     ) -> tuple[str, dict[str, Any] | None]:
@@ -427,14 +472,18 @@ class ReadAgent:
         if self._forecast is None:
             return FORECAST_NOT_AVAILABLE, None
         household_id = state["household_id"]
+        reorder = call["name"] == "get_reorder_candidates"
         try:
-            forecasts = await self._forecast.forecast_household(household_id, self._clock())
+            if reorder:
+                summary = await self._forecast.reorder_candidates(household_id, self._clock())
+            else:
+                forecasts = await self._forecast.forecast_household(household_id, self._clock())
             items = await self._matcher.household_items(household_id)
         except Exception:  # B2's forecast or the history read failed; nothing was written
             logger.warning("Forecast failed for %s", call["name"], exc_info=True)
             return FORECAST_FAILED, None
-        if call["name"] == "get_reorder_candidates":
-            view, card = _reorder_view(items, forecasts)
+        if reorder:
+            view, card = _reorder_view(items, summary)
             return json.dumps(view, ensure_ascii=False), card
 
         item_name = str((call.get("args") or {}).get("item_name") or "").strip()
@@ -499,6 +548,16 @@ class ReadAgent:
         model_view, data = _price_view(item_name, options[:MAX_PURCHASE_OPTIONS])
         return json.dumps(model_view, ensure_ascii=False), (data if options else None)
 
+    async def _propose_purchase(
+        self, state: _State, update: _State, call: dict[str, Any]
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Make the purchase card. One card per message; it writes nothing else."""
+        if self._purchases is None:
+            return f"沒有這個工具：{call['name']}", None
+        if "pending_approval" in update or "pending_approval" in state:
+            return ONE_CARD_PER_MESSAGE, None
+        return await self._purchases.propose(state["household_id"], call.get("args") or {})
+
     async def respond(self, request: AgentRequest) -> AgentResponse:
         messages: list[AnyMessage] = [SystemMessage(self._system_prompt)]
         start: _State = {"household_id": request.household_id}
@@ -549,7 +608,11 @@ class ReadAgent:
                     data=found,
                 )
             )
-        return AgentResponse(message=_text(final["messages"][-1]), results=results)
+        return AgentResponse(
+            message=_text(final["messages"][-1]),
+            results=results,
+            pending_approval=final.get("pending_approval"),
+        )
 
 
 @lru_cache(maxsize=1)
@@ -576,4 +639,14 @@ def get_read_agent() -> ReadAgent | None:
         media=get_media_storage_service(),
         # Built after load_azure_settings() read backend/.env, so BigGo keys there apply.
         commerce=BigGoCommerceProvider(),
+        purchases=_purchase_cards(),
     )
+
+
+def _purchase_cards() -> PurchaseCards | None:
+    """The card tool needs approval storage and versioned reads: Cosmos only."""
+    approvals = get_approval_service()
+    reader = get_cosmos_read_repository()
+    if approvals is None or reader is None:
+        return None
+    return PurchaseCards(reader, approvals)

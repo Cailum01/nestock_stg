@@ -18,13 +18,14 @@ from app.services.forecast import (
     ForecastSettings,
     ItemNotFoundError,
     estimate,
+    reorder_summary,
 )
 
 NOW = datetime(2026, 3, 1, tzinfo=UTC)
-# created_at semantics are unconfirmed, so the default pauses every time-based estimate.
-# Tests of the estimate arithmetic opt in, as if the owners had confirmed that
-# created_at is the business event time.
+# created_at is the event time (first decided_at when the user gave no date), agreed in
+# #113. This is the default; PAUSED is the opt-out that never reads it.
 CONFIRMED = ForecastSettings(time_semantics_confirmed=True)
+PAUSED = ForecastSettings(time_semantics_confirmed=False)
 # P1 extensions, off by default; tests of those paths opt in explicitly.
 P1 = ForecastSettings(
     time_semantics_confirmed=True, use_sufficiency_check=True, use_household_reference=True
@@ -419,17 +420,18 @@ def test_quantity_sign_does_not_change_the_estimate():
     assert interval_flipped.daily_consumption == pytest.approx(interval_signed.daily_consumption)
 
 
-# created_at semantics are unconfirmed (see "Time semantics" in app/services/forecast.py).
+# created_at is the event time (see "Time semantics" in app/services/forecast.py).
+# The PAUSED switch keeps the old never-read behaviour.
 
 
-def test_time_based_forecast_is_paused_by_default():
-    assert ForecastSettings().time_semantics_confirmed is False
+def test_created_at_is_used_as_event_time_by_default():
+    assert ForecastSettings().time_semantics_confirmed is True
 
 
-def test_unconfirmed_created_at_returns_insufficient_data_with_no_estimate():
+def test_paused_returns_insufficient_data_with_no_estimate():
     records = [tx(10, -2), tx(5, -3), purchase(60, 2), purchase(30, 2)]
 
-    result = estimate(item(quantity=10), records, NOW)
+    result = estimate(item(quantity=10), records, NOW, PAUSED)
 
     assert result.status == ForecastStatus.INSUFFICIENT_DATA
     assert result.suggested_action == SuggestedAction.NONE
@@ -440,7 +442,7 @@ def test_unconfirmed_created_at_returns_insufficient_data_with_no_estimate():
     assert result.confirmed_quantity == 10
 
 
-def test_unconfirmed_created_at_is_never_read():
+def test_paused_never_reads_created_at():
     def undated(reason, delta):
         # model_construct skips validation and leaves created_at unset, so any read of
         # it raises AttributeError.
@@ -460,27 +462,39 @@ def test_unconfirmed_created_at_is_never_read():
         undated(TransactionReason.PURCHASE, 2),
     ]
 
-    result = estimate(item(), records, NOW)
+    result = estimate(item(), records, NOW, PAUSED)
 
     assert result.status == ForecastStatus.INSUFFICIENT_DATA
     # Plain totals per item and reason; no time window is applied.
     assert (result.consumption_event_count, result.purchase_event_count) == (2, 2)
 
 
-def test_late_reported_transactions_do_not_change_an_unconfirmed_result():
-    # The same events, first entered on the day they happened, then entered only in the
-    # last two days. If created_at means the recording time, every date above moves.
+def test_purchase_confirmed_late_without_a_date_is_dated_by_confirmation_known_limitation():
+    # Known P0 limitation: with no event date, created_at is the first decided_at. The
+    # same events confirmed on the day they happened and confirmed only in the last two
+    # days give different results; late confirmation makes the usage period look shorter.
     on_time = [tx(10, -2), tx(5, -3), purchase(60, 2), purchase(30, 2)]
     late = [tx(2, -2), tx(1, -3), purchase(2, 2), purchase(1, 2)]
 
-    assert estimate(item(quantity=10), on_time, NOW) == estimate(item(quantity=10), late, NOW)
+    assert estimate(item(quantity=10), on_time, NOW) != estimate(item(quantity=10), late, NOW)
 
 
-def test_unconfirmed_created_at_also_pauses_the_p1_extensions():
-    # Even with both P1 switches on, no card and no answer-based bound without a meaning
-    # for created_at; the user's answers are not turned into an estimate.
+def test_paused_ignores_when_records_were_confirmed():
+    on_time = [tx(10, -2), tx(5, -3), purchase(60, 2), purchase(30, 2)]
+    late = [tx(2, -2), tx(1, -3), purchase(2, 2), purchase(1, 2)]
+
+    assert estimate(item(quantity=10), on_time, NOW, PAUSED) == estimate(
+        item(quantity=10), late, NOW, PAUSED
+    )
+
+
+def test_paused_also_pauses_the_p1_extensions():
+    # Even with both P1 switches on, no card and no answer-based bound while paused;
+    # the user's answers are not turned into an estimate.
     answers = [check(20, SufficiencyAnswer.ENOUGH), check(10, SufficiencyAnswer.NOT_ENOUGH)]
-    settings = ForecastSettings(use_sufficiency_check=True, use_household_reference=True)
+    settings = ForecastSettings(
+        time_semantics_confirmed=False, use_sufficiency_check=True, use_household_reference=True
+    )
 
     result = estimate(item(quantity=1), [purchase(40, 2)], NOW, settings, checks=answers)
 
@@ -488,3 +502,86 @@ def test_unconfirmed_created_at_also_pauses_the_p1_extensions():
     assert result.suggested_action == SuggestedAction.NONE
     assert result.method is None
     assert result.usage_days_min is None
+
+
+def _forecast(item_id, status, action, days=None):
+    return ItemForecast(
+        household_id="demo",
+        item_id=item_id,
+        status=status,
+        suggested_action=action,
+        confirmed_quantity=1.0,
+        unit="個",
+        generated_at=NOW,
+        consumption_event_count=0,
+        purchase_event_count=0,
+        days_until_empty=days,
+    )
+
+
+def test_reorder_summary_keeps_only_restock_items_soonest_first():
+    est, none_, restock = (
+        ForecastStatus.ESTIMATED,
+        SuggestedAction.NONE,
+        SuggestedAction.CONSIDER_RESTOCK,
+    )
+    summary = reorder_summary(
+        [
+            _forecast("a", est, restock, 6.0),
+            _forecast("b", est, none_, 30.0),
+            _forecast("c", est, restock, 2.0),
+            _forecast("d", ForecastStatus.INSUFFICIENT_DATA, SuggestedAction.NONE),
+        ]
+    )
+
+    assert [f.item_id for f in summary.candidates] == ["c", "a"]
+    assert summary.estimated_count == 3
+    assert summary.insufficient_data_count == 1
+
+
+def test_reorder_summary_puts_unknown_days_last_and_ties_keep_inventory_order():
+    est, restock = ForecastStatus.ESTIMATED, SuggestedAction.CONSIDER_RESTOCK
+    summary = reorder_summary(
+        [
+            _forecast("no-days", est, restock, None),
+            _forecast("first", est, restock, 3.0),
+            _forecast("second", est, restock, 3.0),
+        ]
+    )
+
+    assert [f.item_id for f in summary.candidates] == ["first", "second", "no-days"]
+
+
+def test_reorder_summary_of_nothing_is_empty():
+    summary = reorder_summary([])
+
+    assert summary.candidates == []
+    assert summary.estimated_count == 0
+    assert summary.insufficient_data_count == 0
+
+
+def test_service_reorder_candidates_uses_one_history_read_and_keeps_quantity():
+    history = FakeHistory([tx(10, -2), tx(5, -3)])
+    low = item(quantity=2)  # 4 days left at 0.5/day: within reorder_days
+    plenty = item(item_id="rice", quantity=100)
+    service = ForecastService(FakeInventory([plenty, low]), history, CONFIRMED)
+
+    summary = asyncio.run(service.reorder_candidates("demo", NOW))
+
+    assert [f.item_id for f in summary.candidates] == ["soy-sauce"]
+    assert summary.candidates[0].days_until_empty == pytest.approx(4)
+    assert summary.candidates[0].confirmed_quantity == 2
+    assert summary.estimated_count == 1
+    assert summary.insufficient_data_count == 1
+    assert history.calls == ["demo"]
+
+
+def test_service_reorder_candidates_is_empty_while_paused():
+    history = FakeHistory([tx(10, -2), tx(5, -3)])
+    service = ForecastService(FakeInventory([item(quantity=2)]), history, PAUSED)
+
+    summary = asyncio.run(service.reorder_candidates("demo", NOW))
+
+    assert summary.candidates == []
+    assert summary.estimated_count == 0
+    assert summary.insufficient_data_count == 1

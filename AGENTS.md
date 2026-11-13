@@ -26,8 +26,9 @@
    - `datalake/` Data Lake practice track (B1)
    - `deploy/` Azure deployment notes
 
-This repository is a clean Skeleton v1 for **Nestock｜窩有**. Implement only the
-confirmed P0 scope. Keep the six-owner foundation small and independently usable.
+This repository started as a clean Skeleton v1 for **Nestock｜窩有** and is now
+being built into the P0 MVP. Implement only the confirmed P0 scope. Keep the
+six-owner foundation small and independently usable.
 
 ## Architecture and authoritative contracts
 
@@ -39,11 +40,12 @@ confirmed P0 scope. Keep the six-owner foundation small and independently usable
   examples and decisions, not a second manually maintained schema.
 - Agent/HITL models, service ports and Dart view projections are PROVISIONAL.
   Coordinate changes with affected owners; do not freeze a final protocol here.
-- Cosmos DB for NoSQL, Azure OpenAI and LangGraph are planned baselines.
-  The A1 read-only Agent (`POST /agent/messages`) connects to Azure OpenAI only
-  when `backend/.env` is configured, and returns 501 otherwise. Until their owners
-  deliver them, do not connect any other cloud service or implement real writes,
-  Vision, forecast or commerce.
+- Cosmos DB for NoSQL, Azure OpenAI, Azure AI Speech and BigGo are in use, with
+  LangGraph for the Agent. Develop and test against these real services; demo data
+  is only the offline fallback and the fixture for automated tests. The A1 Agent
+  (`POST /agent/messages`) connects to Azure OpenAI only when `backend/.env` is
+  configured, and returns 501 otherwise. Agent writes go only through approval
+  cards (HITL rule 8).
 
 ## Mandatory product invariants
 
@@ -52,12 +54,14 @@ confirmed P0 scope. Keep the six-owner foundation small and independently usable
   Forecasting may estimate, flag, recommend checking, and ask for actual quantity.
 - Inventory has no category. Location is human-readable, keyword-search-compatible
   free text; no Location or Box entity. `image_ref` is opaque external metadata,
-  never binary/base64. Image provider and integration remain undecided.
+  never binary/base64. Photo recognition uses Azure OpenAI; photo storage is
+  tracked in Issue #98.
 - Shopping status starts with pending/completed. Never persist product price.
   Source/product URL may be retained. Purchase options are current recommendations;
   approval adds selected options to the Shopping List, never orders or pays.
 - Transactions have stable operation identity and purchase/consumption/adjustment
-  reasons. B1 persists, B2 reads, C1 workflows may create. Storage is not settled.
+  reasons. B1 persists, B2 reads, C1 workflows may create. Storage follows
+  `datalake/azure-data-platform-design.md`.
 - `household_id` is a scope key; development uses `demo-household`. No Household
   feature, authentication, login, registration, accounts or membership management.
 
@@ -72,10 +76,12 @@ confirmed P0 scope. Keep the six-owner foundation small and independently usable
 6. Retries of the same logical write reuse the same operation identity. UI retries,
    timeouts, lost responses and Agent resume must never duplicate logical writes.
 7. Backend validation is mandatory; frontend validation is not authorization.
-8. `POST /agent/messages` is read-only: the Agent has no write tools.
-   `POST /agent/resume` and the approval UI still write nothing and return 501
-   until write services and approval storage are agreed. Do not interpret generic
-   proposed values or a client boolean as permission to write.
+8. `POST /agent/messages` writes no domain data. Its only card tool,
+   `complete_purchase` (v8 flow C), stores a pending approval card and returns it.
+   `POST /agent/resume` writes only what that stored card holds, after the checks in
+   `contracts/approval-lifecycle.md`. Cards need Cosmos; without it the Agent offers
+   no card tool and `/agent/resume` returns 503. Do not interpret generic proposed
+   values or a client boolean as permission to write.
 
 ## Owners and intentionally open decisions
 
@@ -89,13 +95,13 @@ confirmed P0 scope. Keep the six-owner foundation small and independently usable
 | C2 | `frontend` | Scene visuals, responsive hotspots, page/overlay/sheet presentation, animation, final view-model and wire mapping |
 
 Transaction storage/partitioning, history aggregation and complete_purchase
-atomicity require cross-owner decisions. Do not infer Cosmos design from models.
+atomicity require cross-owner decisions. The Cosmos design is in
+`datalake/azure-data-platform-design.md`; do not infer it from models.
 Leave missing owner-specific decisions as interfaces/documented gaps.
-Before implementing anything listed in `contracts/open-decisions.md`, read that
-file. If the item is "已定案" (decided), follow the decision. If it is pending but
-has a proposal, follow the proposal, keep it easy to revise, and write
-"provisional per D-x" in the pull request. If it is pending with no proposal,
-stop and tell the user; do not choose an answer yourself.
+Cross-owner decisions are tracked as GitHub Issues (since 2026-11-04, Issue #29).
+`contracts/open-decisions.md` only records the earlier items and points to where
+each was decided. Follow the decision in a closed Issue. If the relevant Issue is
+still open, do not choose an answer yourself; tell the user.
 
 ## Frontend scope
 
@@ -110,7 +116,9 @@ Do not add primary three-tab navigation or spend skeleton work on final art/anim
 No speculative P1: full Box/QR, notification center, scheduler, push notifications,
 analytics, transaction-history UI, prediction/promotion dashboards, settings,
 advanced animation, external checkout or payment. Do not add common-but-unagreed
-fields or entities. Do not implement full HITL persistence/resume in this skeleton.
+fields or entities. Agent approval storage and resume follow
+`contracts/approval-lifecycle.md`; add no Agent write path outside it. The App's direct
+Shopping List add agreed in Issue #52 is a separate, C1-owned path.
 
 ## Validation and collaboration
 

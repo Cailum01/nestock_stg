@@ -5,8 +5,10 @@ change confirmed inventory. The history source sits behind `get_transaction_hist
 so the Cosmos adapter (or a later lake adapter) replaces the demo without changing
 these routes.
 
-Until the Transaction contract owners confirm what `created_at` means, every item
-returns `insufficient_data` (see "Time semantics" in services/forecast.py).
+`Transaction.created_at` is read as event time per Issue #113; when no event date
+is provided, the first confirmation time (`decided_at`) is used. Forecasting is
+enabled, while individual items without enough history still return
+`insufficient_data` (see "Time semantics" in services/forecast.py).
 """
 
 from collections.abc import Callable
@@ -49,6 +51,21 @@ async def household_forecast(
     clock: Annotated[Callable[[], datetime], Depends(get_clock)],
 ) -> list[ItemForecast]:
     return await service.forecast_household(settings.demo_household_id, clock())
+
+
+# Defined before "/{item_id}" so "reorder" is never read as an item id.
+@router.get("/reorder", response_model=list[ItemForecast])
+async def reorder_candidates(
+    service: Annotated[ForecastService, Depends(get_forecast_service)],
+    clock: Annotated[Callable[[], datetime], Depends(get_clock)],
+) -> list[ItemForecast]:
+    """Items worth restocking soon, soonest first. Empty when none qualify.
+
+    Same selection the Agent should reuse (`ForecastService.reorder_candidates`).
+    Estimates only: nothing here changes confirmed inventory or the shopping list.
+    """
+    summary = await service.reorder_candidates(settings.demo_household_id, clock())
+    return summary.candidates
 
 
 @router.get(

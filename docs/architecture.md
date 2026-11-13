@@ -15,19 +15,23 @@ tests and contributor documentation. Validate tools, tests and actual launch.
 
 ```text
 Flutter -- Normal API ------------------+
-        -- Agent API --> Agent / Tools -+--> Shared domain services --> Cosmos (optional read-only adapter)
+        -- Agent API --> Agent / Tools -+--> Shared domain services --> Cosmos DB
 ```
 
-The current frontend uses injected offline mocks. Backend GET routes and query
+The frontend calls the backend over HTTP by default; its injected offline mocks are
+only used with `AGENT_TRANSPORT=mock`. Backend GET routes and query
 tools delegate to the same read service instances, replaceable through dependency
-injection. There are no write endpoints or mutation ports. `POST /agent/messages`
-runs a read-only LangGraph Agent on Azure OpenAI when `backend/.env` is configured
-and returns HTTP 501 otherwise; `POST /agent/resume` still returns 501. Cosmos DB
+injection. The only write path is a confirmation card: with Cosmos configured,
+`POST /agent/messages` may store a pending purchase card (v8 flow C) and
+`POST /agent/resume` writes it after the user confirms, through B1's Cosmos
+repository. `POST /agent/messages` runs a LangGraph Agent on Azure OpenAI when
+`backend/.env` is configured and returns HTTP 501 otherwise; `POST /agent/resume`
+returns 503 without Cosmos. Cosmos DB
 for NoSQL is provisioned on Azure. The backend can optionally use an Entra-
 authenticated, read-only Cosmos adapter for Inventory and Shopping when all
 `NESTOCK_COSMOS_*` settings are supplied; without them it continues to serve
 read-only demo data. The adapter is not authorization, exposes no transaction
-history, and performs no writes. The frontend remains on offline mocks.
+history, and performs no writes.
 
 Pydantic models define the domain and provisional HTTP envelopes. FastAPI derives
 OpenAPI for models exposed through routes. Transaction currently has no public
@@ -52,7 +56,7 @@ No sign or unit-conversion policy has been invented for quantities.
 
 Location remains free text suitable for future keyword matching. There is no
 category, Location or Box model. `image_ref` is an opaque external reference;
-binary data does not belong in inventory. Storage provider is unselected.
+binary data does not belong in inventory. Photo storage is tracked in Issue #98.
 
 Transactions record purchase (acquired/restocked), consumption (explicit user
 report), or adjustment (confirmed actual quantity differs). B1 persists them,
@@ -88,8 +92,8 @@ selection or batch workflow implementations.
 | Owner | Left unimplemented |
 | --- | --- |
 | A1 | LangGraph graph/state, tool registry internals, checkpoint storage, interrupt/resume, final Agent/HITL wire protocol, binding/validation of approvals |
-| A2 | Vision, item normalization, image processing/storage integration, commerce provider, purchase-option retrieval |
-| B1 | Cosmos containers, partition keys, indexing, document mapping, atomic writes/idempotency, append-only transaction-to-item links, soft deletion, and system-owned canonical units |
+| A2 | Item normalization and image storage integration (Issue #98). Vision (Azure OpenAI), speech (Azure AI Speech) and purchase-option retrieval (BigGo) are implemented |
+| B1 | Indexing, document mapping, atomic writes/idempotency, append-only transaction-to-item links, soft deletion, and system-owned canonical units. Containers and partition keys are set in `datalake/azure-data-platform-design.md` (one `household-data` container, `/household_id`) |
 | B2 | Forecast/consumption algorithms, reorder thresholds, refresh strategy, raw-transaction query use, transaction-history aggregation, and forecast-evaluation records; B1 does not pre-aggregate B2 inputs |
 | C1 | ShoppingService internals, complete_purchase orchestration, cross-domain persistence |
 | C2 | Final scene design, responsive hotspots, navigation details, page vs overlay vs sheet, animation, final view-model and API mapping |
@@ -103,8 +107,8 @@ selection or batch workflow implementations.
 - Android/iOS only; native SDK default versions are inherited from Flutter.
 - Python 3.14 and Flutter 3.47.7/Dart 3.13.5 match the available local tools.
 - Minimal standard Navigator page pushes are temporary C2 presentation choices.
-- Demo fixtures are not persistent or forecasted facts; UI mocks do not integrate
-  with HTTP. Two demo GET routes expose the shared-service boundary for development.
+- Demo fixtures are not persistent or forecasted facts; they serve only the offline
+  fallback and automated tests. The App reads the backend over HTTP by default.
 - Domain numbers use finite Python floats; precision/unit policy remains undecided.
 - Mutations are deliberately uncallable until owners agree on enforceable approval
   and persistence semantics. This is not a completed HITL implementation.

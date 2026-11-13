@@ -208,6 +208,15 @@ reopen read-back. It is not evidence for new Inventory items, unlinked Shopping
 rows, over-pending quantities, different units, direct Shopping additions, price
 options, or media attachments.
 
+`tests.manual_test_shopping_cosmos` records the isolated backend/Cosmos portion of
+this contract in a fresh `c1-test-*` household. Its JSON result includes the core
+approval, operation and Transaction identities; it explicitly checks baseline
+quantity 1 / planned quantity 2, post-confirmation quantity 3 / completed Shopping
+with planned quantity still 2, one operation-bound purchase Transaction, a retry
+without duplicate effects, and a separate cancellation without a business write.
+It intentionally does not reset `demo-household`; B1's reset plus read-back is the
+separate final-Demo evidence for that last step.
+
 ## Current limits and Demo prerequisites
 
 The integrated route supports only existing Inventory targets linked from pending

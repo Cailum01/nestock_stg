@@ -512,8 +512,20 @@ async def verify(args, container):
     check("completed_approval_ttl", stored_card["ttl"] == -1)
     check("stock_now_three", (await read("inventory_item:tissue"))["quantity"] == 3)
     check("shopping_completed", (await read("shopping_item:tissue"))["status"] == "completed")
+    check(
+        "planned_shopping_quantity_preserved",
+        (await read("shopping_item:tissue"))["quantity"] == 2,
+    )
     tx = await records("transaction")
-    check("one_actual_purchase_transaction", len(tx) == 1 and tx[0]["quantity_delta"] == 2)
+    check(
+        "one_operation_bound_purchase_transaction",
+        len(tx) == 1
+        and tx[0]["quantity_delta"] == 2
+        and tx[0]["reason"] == "purchase"
+        and tx[0]["operation_id"] == card.operation_ids[0]
+        and tx[0]["transaction_id"] == "tx-tissue",
+    )
+    core_transaction = tx[0]
     check(
         "missing_event_date_uses_first_decision_time",
         datetime.fromisoformat(tx[0]["created_at"]) == result.record.decided_at,
@@ -531,6 +543,8 @@ async def verify(args, container):
     check(
         "no_repeat_purchase_effects",
         (await read("inventory_item:tissue"))["quantity"] == 3
+        and (await read("shopping_item:tissue"))["quantity"] == 2
+        and (await read("shopping_item:tissue"))["status"] == "completed"
         and len(await records("transaction")) == 1,
     )
     shopping_doc, media_doc = await read("shopping_item:soap"), await read("input:synthetic-media")
@@ -579,9 +593,12 @@ async def verify(args, container):
         and cancelled_document["ttl"] == int(timedelta(hours=24).total_seconds()),
     )
     check(
-        "cancelled_new_item_has_no_domain_effects",
+        "separate_cancel_has_no_business_write",
         await read(f"inventory_item:{cancelled_item_id}") is None
         and (await read("shopping_item:soap"))["status"] == "pending"
+        and (await read("inventory_item:tissue"))["quantity"] == 3
+        and (await read("shopping_item:tissue"))["quantity"] == 2
+        and (await read("shopping_item:tissue"))["status"] == "completed"
         and len(await records("inventory_item")) == 1
         and len(await records("transaction")) == 1
         and len(await records("change_event")) == 1
@@ -704,6 +721,26 @@ async def verify(args, container):
         "household_id": household,
         "checks_passed": len(checks),
         "checks": checks,
+        "core_purchase_evidence": {
+            "baseline": {
+                "inventory_quantity": 1,
+                "shopping_quantity": 2,
+                "shopping_status": "pending",
+            },
+            "approval_id": card.approval_id,
+            "operation_id": card.operation_ids[0],
+            "transaction_id": core_transaction["transaction_id"],
+            "after_confirmation": {
+                "inventory_quantity": 3,
+                "shopping_quantity": 2,
+                "shopping_status": "completed",
+                "purchase_transaction_count": 1,
+            },
+            "retry_outcome": ResumeOutcome.ALREADY_COMPLETED.value,
+            "cancelled_approval_id": cancelled_card.approval_id,
+            "cancel_outcome": cancelled_result.outcome.value,
+            "reset_evidence": "Run B1's demo-household reset and read-back separately.",
+        },
         "scope": (
             "B1 SDK/repository + C1 builder + production A1 resolver for existing-item "
             "purchases; test adapters for new-item/removal cases; not Agent/App E2E"

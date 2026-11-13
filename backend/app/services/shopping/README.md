@@ -214,8 +214,10 @@ approval, operation and Transaction identities; it explicitly checks baseline
 quantity 1 / planned quantity 2, post-confirmation quantity 3 / completed Shopping
 with planned quantity still 2, one operation-bound purchase Transaction, a retry
 without duplicate effects, and a separate cancellation without a business write.
-It intentionally does not reset `demo-household`; B1's reset plus read-back is the
-separate final-Demo evidence for that last step.
+The isolated fixture deliberately uses the Final Demo's detergent identifiers
+(`seed-detergent` and `seed-shopping-detergent`) and values while keeping the write
+in its fresh test household. It intentionally does not reset `demo-household`; B1's
+reset plus read-back is the separate final-Demo evidence for that last step.
 
 ## Current limits and Demo prerequisites
 

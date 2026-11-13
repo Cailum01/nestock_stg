@@ -191,6 +191,9 @@ class AcceptanceResolver:
 async def verify(args, container):
     household = args.household
     isolation_household = f"{household}-isolation"
+    core_item_id = "seed-detergent"
+    core_shopping_id = "seed-shopping-detergent"
+    core_transaction_id = "c1-demo-detergent-purchase"
     container = TimeoutAfterCommitContainer(container)
     MediaInputMapping = import_module("app.models.domain").MediaInputMapping
     CosmosMediaMappingStorage = import_module(
@@ -243,21 +246,21 @@ async def verify(args, container):
         raise ValueError("Container TTL not configured; no settings were changed")
     progress("Preflight passed; seeding synthetic fixtures.")
     stock = InventoryItem(
-        item_id="tissue",
+        item_id=core_item_id,
         household_id=household,
-        name="衛生紙",
+        name="洗衣精",
         quantity=1,
-        unit="包",
+        unit="瓶",
         created_at=now,
         updated_at=now,
     )
     shopping = ShoppingItem(
-        shopping_item_id="tissue",
+        shopping_item_id=core_shopping_id,
         household_id=household,
-        name="衛生紙",
+        name="洗衣精",
         quantity=2,
-        unit="包",
-        item_id="tissue",
+        unit="瓶",
+        item_id=core_item_id,
         status="pending",
         created_at=now,
         updated_at=now,
@@ -311,12 +314,12 @@ async def verify(args, container):
         operations=(CreateDocument(CosmosDocumentMapper.to_document(isolated_stock)),),
     )
     inventory_doc, shopping_doc = (
-        await read("inventory_item:tissue"),
-        await read("shopping_item:tissue"),
+        await read(f"inventory_item:{core_item_id}"),
+        await read(f"shopping_item:{core_shopping_id}"),
     )
     check("synthetic_seed", inventory_doc["quantity"] == 1 and shopping_doc["quantity"] == 2)
     isolated_read = await reader.read_item(
-        item_id="inventory_item:tissue", partition_key=isolation_household
+        item_id=f"inventory_item:{core_item_id}", partition_key=isolation_household
     )
     check(
         "household_partition_isolation",
@@ -361,7 +364,8 @@ async def verify(args, container):
     log_handler.close()
     check(
         "batch_all_or_none_on_etag_conflict",
-        await read(marker_id) is None and (await read("inventory_item:tissue"))["quantity"] == 1,
+        await read(marker_id) is None
+        and (await read(f"inventory_item:{core_item_id}"))["quantity"] == 1,
     )
     check(
         "cosmos_error_metrics_observed_without_document_data",
@@ -471,14 +475,14 @@ async def verify(args, container):
     )
     operation = NewOperation(
         action="complete_purchase",
-        description="合成測試：衛生紙 +2 包",
+        description="合成測試：洗衣精 +2 瓶",
         values={
-            "name": "衛生紙",
+            "name": "洗衣精",
             "purchased_quantity": 2,
-            "purchased_unit": "包",
-            "shopping_item_id": "tissue",
-            "item_id": "tissue",
-            "transaction_id": "tx-tissue",
+            "purchased_unit": "瓶",
+            "shopping_item_id": core_shopping_id,
+            "item_id": core_item_id,
+            "transaction_id": core_transaction_id,
         },
         targets=[
             TargetVersion(record_id=doc["id"], etag=doc["_etag"])
@@ -503,18 +507,21 @@ async def verify(args, container):
     )
     check(
         "stock_unchanged_before_confirmation",
-        (await read("inventory_item:tissue"))["quantity"] == 1,
+        (await read(f"inventory_item:{core_item_id}"))["quantity"] == 1,
     )
     request = ResumeRequest(household_id=household, approval_id=card.approval_id, approved=True)
     result = await service.resume(request)
     check("confirmation_completed", result.outcome == ResumeOutcome.COMPLETED)
     stored_card = await read(f"pending_approval:{card.approval_id}")
     check("completed_approval_ttl", stored_card["ttl"] == -1)
-    check("stock_now_three", (await read("inventory_item:tissue"))["quantity"] == 3)
-    check("shopping_completed", (await read("shopping_item:tissue"))["status"] == "completed")
+    check("stock_now_three", (await read(f"inventory_item:{core_item_id}"))["quantity"] == 3)
+    check(
+        "shopping_completed",
+        (await read(f"shopping_item:{core_shopping_id}"))["status"] == "completed",
+    )
     check(
         "planned_shopping_quantity_preserved",
-        (await read("shopping_item:tissue"))["quantity"] == 2,
+        (await read(f"shopping_item:{core_shopping_id}"))["quantity"] == 2,
     )
     tx = await records("transaction")
     check(
@@ -523,7 +530,7 @@ async def verify(args, container):
         and tx[0]["quantity_delta"] == 2
         and tx[0]["reason"] == "purchase"
         and tx[0]["operation_id"] == card.operation_ids[0]
-        and tx[0]["transaction_id"] == "tx-tissue",
+        and tx[0]["transaction_id"] == core_transaction_id,
     )
     core_transaction = tx[0]
     check(
@@ -534,7 +541,7 @@ async def verify(args, container):
     check(
         "stored_outcome_for_a1_response",
         result.record.outcome[card.operation_ids[0]]["inventory_quantity"] == 3
-        and result.record.outcome[card.operation_ids[0]]["unit"] == "包",
+        and result.record.outcome[card.operation_ids[0]]["unit"] == "瓶",
     )
     check(
         "repeat_already_completed",
@@ -542,9 +549,9 @@ async def verify(args, container):
     )
     check(
         "no_repeat_purchase_effects",
-        (await read("inventory_item:tissue"))["quantity"] == 3
-        and (await read("shopping_item:tissue"))["quantity"] == 2
-        and (await read("shopping_item:tissue"))["status"] == "completed"
+        (await read(f"inventory_item:{core_item_id}"))["quantity"] == 3
+        and (await read(f"shopping_item:{core_shopping_id}"))["quantity"] == 2
+        and (await read(f"shopping_item:{core_shopping_id}"))["status"] == "completed"
         and len(await records("transaction")) == 1,
     )
     shopping_doc, media_doc = await read("shopping_item:soap"), await read("input:synthetic-media")
@@ -596,9 +603,9 @@ async def verify(args, container):
         "separate_cancel_has_no_business_write",
         await read(f"inventory_item:{cancelled_item_id}") is None
         and (await read("shopping_item:soap"))["status"] == "pending"
-        and (await read("inventory_item:tissue"))["quantity"] == 3
-        and (await read("shopping_item:tissue"))["quantity"] == 2
-        and (await read("shopping_item:tissue"))["status"] == "completed"
+        and (await read(f"inventory_item:{core_item_id}"))["quantity"] == 3
+        and (await read(f"shopping_item:{core_shopping_id}"))["quantity"] == 2
+        and (await read(f"shopping_item:{core_shopping_id}"))["status"] == "completed"
         and len(await records("inventory_item")) == 1
         and len(await records("transaction")) == 1
         and len(await records("change_event")) == 1
@@ -667,7 +674,7 @@ async def verify(args, container):
     )
     check(
         "shopping_removal_does_not_change_inventory_or_transactions",
-        (await read("inventory_item:tissue"))["quantity"] == 3
+        (await read(f"inventory_item:{core_item_id}"))["quantity"] == 3
         and (await read("inventory_item:remove-me")) is None
         and len(await records("transaction")) == 1
         and len(await records("change_event")) == 1,
@@ -723,6 +730,8 @@ async def verify(args, container):
         "checks": checks,
         "core_purchase_evidence": {
             "baseline": {
+                "item_id": core_item_id,
+                "shopping_item_id": core_shopping_id,
                 "inventory_quantity": 1,
                 "shopping_quantity": 2,
                 "shopping_status": "pending",

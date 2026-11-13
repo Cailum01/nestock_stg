@@ -242,7 +242,7 @@ There is no background job or push notification (#39).
 | --- | --- | --- |
 | Format the App uses to send a changed value back to the Agent | A1 + C2 | Decided in Issue #91; see section 7 |
 | Handling of the "should not happen" row in section 6 | A1 + C1 | Proposed here; C1 to confirm (#27) |
-| Meaning of Transaction `created_at` | B1 + B2 | Proposed by A1 in Issue #60: when the purchase happened, or the card's `decided_at` when no time was given (section 11); C1's builder does this; waiting for B2 to confirm |
+| Meaning of Transaction `created_at` | B1 + B2 | Decided in Issue #113: when the event happened; when the user gave no date, the card's first `decided_at`, and a retry keeps that same time (section 11). C1's builder does this |
 | Removing a wrong alias | — | Not in MVP scope |
 | v8 §12 `partial_success` | — | Not used in the MVP: one batch is all-or-nothing (#42) |
 | How a new item's `item_id` is made | B1 + A1 | Asked in Issue #90; does not change the card format (section 10) |
@@ -308,9 +308,9 @@ New item ("會新增一個庫存品項：洗碗精"):
 The user says items on the Shopping List were bought (我買了衛生紙 2 包). The
 Agent's `complete_purchase` tool makes this card (`backend/app/agent/cards.py`) and
 stores it as `pending`; nothing else is written until the user confirms. The format
-below is what the code makes; its `values` were agreed with C1 in Issue #60. How the
-App shows and changes this card is being discussed with C2 in PR #101 and will be
-added here once agreed.
+below is what the code makes; its `values` were agreed with C1 in Issue #60. The App
+shows it as a purchase card (C2, PR #101): internal IDs are not shown, and only the
+quantity can be changed.
 
 - `presentation`: `single_action` for one item, `batch_action` for several.
 - Every operation: `action` `complete_purchase`; `description` such as
@@ -333,10 +333,13 @@ added here once agreed.
   written (Issue #42 c).
 - A changed value goes back to the Agent as in section 7; that handling is not
   built yet (Issue #91).
-- No purchase time is on the card yet, so the confirmation time (`decided_at`) is
-  used. Issue #60 says each line will carry `purchased_at` (from wording such as
-  昨天買的), shown only as a date and changed as in section 7; this is not built yet.
-  `purchase_inputs.py` already reads `purchased_at` when present.
+- Purchase time (Issue #113): the Transaction's `created_at` is when the purchase
+  happened. No purchase time is on the card yet, so the first `decided_at` is used,
+  and a retry keeps that same time. When the user says a day (昨天買的), the line
+  will carry `purchased_at`, shown only as a date and changed as in section 7; the
+  Agent does not do this yet. `backend/app/services/purchase_time.py` (PR #71) has
+  the rule for turning the day into a time, and `purchase_inputs.py` already reads
+  `purchased_at` when present.
 
 ```json
 {

@@ -256,20 +256,19 @@ def _forecast_row(item: InventoryItem, forecast: Any) -> dict[str, Any]:
 
 
 def _reorder_view(
-    items: list[InventoryItem], forecasts: list[Any]
+    items: list[InventoryItem], summary: Any
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Items B2 flags for restocking, soonest first, plus how many lack data."""
+    """B2's `reorder_candidates` result for the model and the App.
+
+    B2 picks the items and their order; A1 keeps that order and only rounds the days.
+    Items no longer in the household list (read again here) are left out.
+    """
     by_id = {item.item_id: item for item in items}
-    rows = [
-        _forecast_row(by_id[f.item_id], f)
-        for f in forecasts
-        if f.item_id in by_id and f.suggested_action.value == "consider_restock"
-    ]
-    rows.sort(key=lambda row: (row["days_left"] is None, row["days_left"] or 0))
+    rows = [_forecast_row(by_id[f.item_id], f) for f in summary.candidates if f.item_id in by_id]
     view = {
         "running_low": rows,
-        "estimated_count": sum(f.status.value == "estimated" for f in forecasts),
-        "insufficient_data_count": sum(f.status.value == "insufficient_data" for f in forecasts),
+        "estimated_count": summary.estimated_count,
+        "insufficient_data_count": summary.insufficient_data_count,
     }
     card = {"kind": "reorder_candidates", **view} if rows else None
     return view, card
@@ -379,7 +378,8 @@ class ReadAgent:
             "list_shopping": tools.list_shopping,
         }
         self._system_prompt = system_prompt
-        self._forecast = forecast  # B2's ForecastService: forecast_household(household_id, now)
+        # B2's ForecastService: reorder_candidates / forecast_household(household_id, now)
+        self._forecast = forecast
         self._clock = clock
         self._vision = vision
         self._media = media
@@ -472,14 +472,18 @@ class ReadAgent:
         if self._forecast is None:
             return FORECAST_NOT_AVAILABLE, None
         household_id = state["household_id"]
+        reorder = call["name"] == "get_reorder_candidates"
         try:
-            forecasts = await self._forecast.forecast_household(household_id, self._clock())
+            if reorder:
+                summary = await self._forecast.reorder_candidates(household_id, self._clock())
+            else:
+                forecasts = await self._forecast.forecast_household(household_id, self._clock())
             items = await self._matcher.household_items(household_id)
         except Exception:  # B2's forecast or the history read failed; nothing was written
             logger.warning("Forecast failed for %s", call["name"], exc_info=True)
             return FORECAST_FAILED, None
-        if call["name"] == "get_reorder_candidates":
-            view, card = _reorder_view(items, forecasts)
+        if reorder:
+            view, card = _reorder_view(items, summary)
             return json.dumps(view, ensure_ascii=False), card
 
         item_name = str((call.get("args") or {}).get("item_name") or "").strip()

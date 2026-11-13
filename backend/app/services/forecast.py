@@ -5,7 +5,7 @@ it, otherwise from the interval between purchases, applied to the confirmed
 quantity.
 
 Portability: `estimate` reads only Transaction columns (household_id, item_id,
-reason, quantity_delta and, once its meaning is confirmed, created_at) and one
+reason, quantity_delta and created_at, read as the event time) and one
 confirmed quantity, and uses only
 filter/sum/min/max, so the same rule can run as a grouped SQL query over a lake
 table. Storage stays behind `TransactionHistory`; a lake or warehouse source is
@@ -26,33 +26,31 @@ Data assumptions (PR #16 review):
   user's photos: the same item at the same storage place and stacking style, or
   a count compared within one photo, showing whether the amount went up or down.
   The rate is a trend, not an exact count; it never changes the confirmed quantity.
-- `created_at` is not assumed to mean anything yet; see "Time semantics" below.
+- `created_at` is read as the time of the event (accepted approximation; see
+  "Time semantics" below).
 
-Time semantics (UNCONFIRMED; time-based forecasts are paused):
-`contracts/README.md` requires `Transaction.created_at` but does not say whether it
-is when the event happened or when the system recorded it. Every window, ordering
-and interval in this module depends on that: a late-reported purchase would sit on
-the day it was entered, not the day it happened. Until the owners confirm it,
-`ForecastSettings.time_semantics_confirmed` is False and `estimate` never reads
-`created_at`: no time window, no sorting, no purchase interval and no "still
-enough?" bounds. Every item returns `insufficient_data` with no daily rate, no
-estimated empty date and no card. The two event counts are plain totals per item
-and reason, not windowed. The reason is documented here only, because
-`ItemForecast` accepts no unagreed field.
-
-Pending confirmation:
-- Question: is `created_at` the business event time, or the system recording time?
-- Who (inferred from AGENTS.md, not confirmed): B1 (persistence), C1 (workflows
-  that create Transactions) and A1 (operation identity), agreed by the team. The
-  contract is a shared file, so reviewers are jasonko13w or Cailum01.
-- Also assumes created_at, outside B2's files: B1's
-  `cosmos_read.build_transaction_query` (range filter and ORDER BY) and its
-  `/created_at` index.
-- To resume: once an approved contract entry states that `created_at` is the
-  business event time, cite it here, add a test with a late-reported Transaction,
-  and set `time_semantics_confirmed` to True. If the contract instead adds a
-  separate recording time, only `_events`, `_consumption_rate`,
-  `_purchase_interval_rate` and `_from_sufficiency` change.
+Time semantics (agreed in issue #113 by B2, B1 and C1; see #60):
+`Transaction.created_at` is the time of the EVENT (the purchase or consumption). When
+the user gives no event date it is the first confirmed `decided_at`, the system's
+confirmation time, as an approximation; a stored card with a valid historical event
+time keeps that time. Retries reuse the stored time and operation identity. Every
+window, ordering and interval in this module reads `created_at` as the event time.
+- P0 does not let users enter a past date, so records are mostly dated by the day the
+  user confirmed. A purchase bought on 11/10 but confirmed on 11/12 without a date is
+  dated 11/12: the usage period looks shorter and "running low" is predicted earlier.
+  This is accepted for P0 and is not a defect of the stored value.
+- Demo data written by `data/seed_demo_household.py` puts the purchase date in
+  `created_at` (a documented seed exception), so the Demo is not affected.
+- No separate event-time field is added: the Transaction contract is unchanged.
+- Not yet written in `contracts/` (a shared file); the agreement is in issue #113.
+- Also relies on B1's `cosmos_read.build_transaction_query` (range filter and
+  ORDER BY) and its `/created_at` index.
+- To switch back to the paused behaviour set
+  `ForecastSettings.time_semantics_confirmed` to False: `estimate` then never reads
+  `created_at`, every item returns `insufficient_data`, and the two event counts are
+  plain totals per item and reason. If the contract later adds a real event time,
+  only `_events`, `_consumption_rate`, `_purchase_interval_rate` and
+  `_from_sufficiency` change.
 
 Agent reuse (PR #86, A1): the Agent's read-only "what is running low?" and "how long
 will X last?" tools call this service, not their own copy of the rules.
@@ -62,7 +60,7 @@ will X last?" tools call this service, not their own copy of the rules.
   how many lack records. Adapters must not re-select or re-sort.
 - Days stay as floats in `ItemForecast.days_until_empty`. Rounding to whole days is
   presentation and stays with the caller; no field is added for it.
-- While `time_semantics_confirmed` is False every item is `insufficient_data`, so
+- If `time_semantics_confirmed` is turned off every item is `insufficient_data`, so
   the candidate list is empty and `insufficient_data_count` is the item count.
 
 Open gaps:
@@ -105,10 +103,10 @@ class ForecastSettings:
     # P1, off by default: v8 §3.4 returns insufficient_data without guessing.
     use_sufficiency_check: bool = False
     use_household_reference: bool = False
-    # Off until the Transaction contract owners confirm what `created_at` means (see
-    # "Time semantics" above). While off, no calculation reads it and every item
-    # returns insufficient_data.
-    time_semantics_confirmed: bool = False
+    # On: `created_at` is the event time (first `decided_at` when the user gave no date),
+    # as agreed in #113 (see "Time semantics" above). Off: no calculation reads it and
+    # every item returns insufficient_data.
+    time_semantics_confirmed: bool = True
 
 
 class SufficiencyCheckHistory(Protocol):
@@ -202,7 +200,7 @@ def estimate(
     """Prefer recorded consumption; fall back to purchase intervals, which users log
     far more often, then (P1) to "still enough?" answers; otherwise insufficient data.
 
-    While `settings.time_semantics_confirmed` is False, `created_at` is never read and
+    If `settings.time_semantics_confirmed` is False, `created_at` is never read and
     the result is always insufficient_data (see "Time semantics" in the module note)."""
     timed = settings.time_semantics_confirmed
     consumed = _events(

@@ -861,8 +861,18 @@ that household may be discarded. The command requires an explicit
 recreates the manifest, and verifies the resulting records by reading them
 back. Reset is also not atomic: an interrupted reset requires inspection before
 retry, and must not be used where unrelated household data must be retained.
-Never point this tool at another household or an environment whose data is not
-approved for destructive Demo reset.
+If a delete, create, or read-back step fails, stop and inspect the partition
+read-only; do not assume rollback. If every remaining record is disposable and
+the reset is still authorized, rerun the complete reset with the same reviewed
+manifest and explicit confirmation, then verify its read-back. If unrelated
+data is present or the state is uncertain, stop and obtain owner approval before
+any further writes. A normal load is not recovery for a partial reset.
+
+Reset also deletes stored confirmation-card records. Any card created before
+reset will no longer be confirmable (its approval record may return 404); finish
+the reset before creating cards, and issue fresh cards afterward. Never point
+this tool at another household or an environment whose data is not approved for
+destructive Demo reset.
 
 The loader's local unit tests do not establish cloud connectivity or validate
 the live Demo baseline. Demo seed/reset is complete only after the final B2

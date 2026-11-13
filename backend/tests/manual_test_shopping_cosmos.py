@@ -2,9 +2,9 @@
 
 Run only with user permission. Requires the isolated #97 dependency snapshot (or
 its merged code). Leaves the c1-test-* partition for B1 review; never touches demo.
-The resolver is a test adapter using #95's existing-purchase card values, not the
-production A1 Agent resolver. This is not Agent/App E2E. No routes, credentials or
-Azure settings are changed.
+Existing-item purchases use A1's production CardInputResolver. A test adapter
+covers new-item purchases and removals not supported by that resolver. This is not
+Agent/App E2E. No routes, credentials or Azure settings are changed.
 """
 
 import argparse
@@ -42,6 +42,7 @@ from app.services.cosmos_write import (
     ReplaceDocument,
     WriteStatus,
 )
+from app.services.purchase_inputs import CardInputResolver
 from app.services.shopping.media import B1MediaRetentionPlanner, MediaAttachment
 from app.services.shopping.planning import NewInventoryTarget, PurchaseInput
 from app.services.shopping.workflow import (
@@ -84,15 +85,36 @@ def progress(message):
 
 
 class AcceptanceResolver:
-    """Test-only stored-card decoding, with original target versions checked by C1."""
+    """Use A1's resolver for existing purchases; adapt only unsupported test cases."""
 
-    def __init__(self, reader):
+    def __init__(self, reader, purchase_resolver):
         self.reader = reader
+        self.purchase_resolver = purchase_resolver
 
     async def resolve(self, record):
         purchases, removals, attachments = [], [], []
+        approved_ids = set(record.approved_operation_ids or ())
+        production_operations = [
+            operation
+            for operation in record.operations
+            if operation.operation_id in approved_ids
+            and operation.action == "complete_purchase"
+            and "item_id" in operation.values
+        ]
+        if production_operations:
+            purchase_record = record.model_copy(
+                update={
+                    "operations": production_operations,
+                    "approved_operation_ids": [
+                        operation.operation_id for operation in production_operations
+                    ],
+                }
+            )
+            resolved = await self.purchase_resolver.resolve(purchase_record)
+            purchases.extend(resolved.purchases)
+
         for operation in record.operations:
-            if operation.operation_id not in record.approved_operation_ids:
+            if operation.operation_id not in approved_ids or operation in production_operations:
                 continue
             values = operation.values
             if operation.action == "remove_shopping":
@@ -114,7 +136,7 @@ class AcceptanceResolver:
                     )
                 )
                 continue
-            if operation.action != "complete_purchase":
+            if operation.action != "complete_purchase" or "item_id" in values:
                 raise ValueError("Unsupported synthetic test action")
             quantity = values["purchased_quantity"]
             if type(quantity) is not int or quantity <= 0:
@@ -127,33 +149,23 @@ class AcceptanceResolver:
                 ShoppingItem, shopping_doc, household_id=record.household_id
             )
             versions = {target.record_id: target.etag for target in operation.targets}
-            inventory, inventory_etag, new = None, None, None
-            if "item_id" in values:
-                inventory_doc = await self.reader.read_item(
-                    item_id=f"inventory_item:{values['item_id']}", partition_key=record.household_id
-                )
-                inventory = CosmosDocumentMapper.from_document(
-                    InventoryItem, inventory_doc, household_id=record.household_id
-                )
-                inventory_etag = versions[inventory_doc["id"]]
-            else:
-                # Only the test's explicit new-item card reaches this branch.
-                new = NewInventoryTarget(
-                    import_module("app.services.inventory_item_identity").resolve_inventory_item_id(
-                        operation.operation_id
-                    ),
-                    values["name"],
-                    values["purchased_unit"],
-                    values["location"],
-                )
+            # Only the test's explicit new-item card reaches this branch.
+            new = NewInventoryTarget(
+                import_module("app.services.inventory_item_identity").resolve_inventory_item_id(
+                    operation.operation_id
+                ),
+                values["name"],
+                values["purchased_unit"],
+                values["location"],
+            )
             purchases.append(
                 PurchaseInput(
                     operation_id=operation.operation_id,
                     transaction_id=values["transaction_id"],
                     shopping=shopping,
                     shopping_etag=versions[shopping_doc["id"]],
-                    inventory=inventory,
-                    inventory_etag=inventory_etag,
+                    inventory=None,
+                    inventory_etag=None,
                     purchased_quantity=quantity,
                     purchased_unit=values["purchased_unit"],
                     new_inventory=new,
@@ -190,11 +202,12 @@ async def verify(args, container):
     reader = AzureCosmosDocumentQueryClient(container)
     writer = AzureCosmosTransactionalBatchClient(container)
     repo = CosmosWriteRepository(writer, query_client=reader)
-    storage = CosmosMediaMappingStorage(
-        read_repository=CosmosReadRepository(reader), write_client=writer
-    )
+    read_repository = CosmosReadRepository(reader)
+    storage = CosmosMediaMappingStorage(read_repository=read_repository, write_client=writer)
     builder = ShoppingWriteBuilder(
-        reader, AcceptanceResolver(reader), media_retention=B1MediaRetentionPlanner(storage)
+        reader,
+        AcceptanceResolver(reader, CardInputResolver(read_repository)),
+        media_retention=B1MediaRetentionPlanner(storage),
     )
     service = ApprovalService(repo, builder)
     now = datetime.now(UTC)
@@ -691,7 +704,10 @@ async def verify(args, container):
         "household_id": household,
         "checks_passed": len(checks),
         "checks": checks,
-        "scope": "B1 SDK/repository + C1 builder + test A1 resolver; not Agent/App E2E",
+        "scope": (
+            "B1 SDK/repository + C1 builder + production A1 resolver for existing-item "
+            "purchases; test adapters for new-item/removal cases; not Agent/App E2E"
+        ),
         "retained_for_b1_review": True,
     }
 

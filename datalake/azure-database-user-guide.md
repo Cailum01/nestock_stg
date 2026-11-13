@@ -123,6 +123,13 @@ P01, P03, P04, P05, and P06. P02 is already a tenant user. The owner should
 confirm pending invitations have been accepted before expecting those five
 developers to connect.
 
+### Container App managed identity
+
+On 2026-11-13, the system-assigned identity for Container App `nestock-api`
+(`57ed140d-8b61-4e07-8736-f8f2777d6bb7`) was assigned **Cosmos DB Built-in
+Data Contributor** at the narrowest requested scope:
+`nestock` / `household-data`.
+
 The Cosmos account currently has public network access enabled and no IP
 firewall rules. Entra ID authentication and narrow data roles are configured,
 but the public endpoint is reachable from the internet. Use synthetic,

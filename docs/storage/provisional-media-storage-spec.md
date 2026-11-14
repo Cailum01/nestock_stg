@@ -143,7 +143,6 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
 }
 ```
 ＊**保留例外機制**：已附加業務紀錄之檔案經由 `retain_media` 打上 `retention="attached"` 元資料標籤，於生產環境可配合 Azure Blob Index Tags 或後續 Blob 搬移歸檔至永久保存路徑（`households/{household_id}/permanent/`），避免遭孤兒規則自動清除。當下游執行 `unretain_media` 時，元資料還原為 `retention="orphan"`，恢復孤立回收排程。
-
 ---
 
 ## 5. 實體雲端驗證紀錄 (Physical Verification Audit)

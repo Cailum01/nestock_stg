@@ -44,8 +44,8 @@ class AgentRequest(ContractModel):
 
     `message` then describes only the changed fields, and the old card is replaced
     by a new one (contracts/approval-lifecycle.md section 7). Ordinary chat leaves
-    it out. Accepted but not acted on yet: changing a card is built after the
-    purchase card.
+    it out. The old card must be in the same household and still pending; it is
+    cancelled only after the new card is stored.
     """
 
 

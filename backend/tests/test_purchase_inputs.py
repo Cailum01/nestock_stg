@@ -21,11 +21,14 @@ from app.services.approvals import (
 )
 from app.services.cosmos_read import CosmosDocumentMapper, CosmosReadRepository
 from app.services.cosmos_write import CosmosWriteRepository
+from app.services.inventory_item_identity import resolve_inventory_item_id
 from app.services.purchase_inputs import (
     COMPLETE_PURCHASE,
+    CREATE_ITEM,
     CardInputResolver,
     UnsupportedAction,
 )
+from app.services.shopping.planning import NewInventoryTarget
 from app.services.shopping.workflow import ShoppingWriteBuilder
 
 HOME = "home"
@@ -185,7 +188,7 @@ def test_a_deleted_record_raises_target_changed(document_id):
         run(home.resolver.resolve(home.confirmed(card)))
 
 
-@pytest.mark.parametrize("action", ["create_item", "confirm_item_match", "remove_shopping"])
+@pytest.mark.parametrize("action", ["confirm_item_match", "remove_shopping"])
 def test_lines_other_than_complete_purchase_are_refused(action):
     home = Home()
     card = home.card(home.line(action=action))
@@ -302,3 +305,133 @@ def test_a_record_changed_after_saving_needs_a_new_card_and_writes_nothing():
     assert home.container.get("shopping_item:tissue-0")["status"] == "pending"
     assert home.container.of_type("transaction") == []
     assert home.container.of_type("operation_receipt") == []
+
+
+# ----- a list entry the household does not have yet (Issue #90) -----------------------
+
+
+def new_entry(home, unit="條"):
+    """牙膏 on the list, not linked to an inventory item: the household has none."""
+    entry = ShoppingItem(
+        shopping_item_id="paste-1",
+        household_id=HOME,
+        name="牙膏",
+        quantity=1,
+        unit=unit,
+        status="pending",
+        created_at=T0,
+        updated_at=T0,
+    )
+    return entry, home._put(entry)
+
+
+def new_item_line(entry, etag, targets=None, **values):
+    """A `create_item` line in the format of A1's `new_item_operation`."""
+    line = {
+        "name": "牙膏",
+        "quantity": 1,
+        "unit": "條",
+        "location": "浴室櫃子",
+        "shopping_item_id": entry.shopping_item_id,
+        "transaction_id": "tx-paste",
+    }
+    line.update(values)
+    return NewOperation(
+        action=CREATE_ITEM,
+        description="會新增一個庫存品項：牙膏 1 條，放在浴室櫃子（從待購清單完成購買）",
+        values={key: value for key, value in line.items() if value is not None},
+        targets=targets
+        or [TargetVersion(record_id=f"shopping_item:{entry.shopping_item_id}", etag=etag)],
+    )
+
+
+def test_a_new_item_line_becomes_c1_new_inventory_target_with_b1_stable_id():
+    home = Home()
+    entry, etag = new_entry(home)
+    card = home.card(new_item_line(entry, etag))
+    (operation_id,) = card.operation_ids
+
+    (purchase,) = run(home.resolver.resolve(home.confirmed(card))).purchases
+
+    item_id = resolve_inventory_item_id(operation_id)
+    assert purchase.new_inventory == NewInventoryTarget(item_id, "牙膏", "條", "浴室櫃子")
+    assert purchase.inventory is None and purchase.inventory_etag is None
+    assert purchase.resolved_inventory_item_id == item_id
+    assert (purchase.shopping, purchase.shopping_etag) == (entry, etag)
+    assert (purchase.purchased_quantity, purchase.purchased_unit) == (1, "條")
+    assert purchase.transaction_id == "tx-paste"
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"quantity": 0},
+        {"quantity": 1.0},
+        {"unit": None},
+        {"location": None},
+        {"location": " "},
+        {"name": None},
+        {"transaction_id": None},
+    ],
+)
+def test_bad_new_item_values_are_refused(values):
+    home = Home()
+    entry, etag = new_entry(home)
+    card = home.card(new_item_line(entry, etag, **values))
+
+    with pytest.raises(ValueError):
+        run(home.resolver.resolve(home.confirmed(card)))
+
+
+def test_a_new_item_line_carries_only_its_shopping_version():
+    home = Home()
+    entry, etag = new_entry(home)
+    both = [
+        TargetVersion(record_id="shopping_item:paste-1", etag=etag),
+        TargetVersion(record_id="inventory_item:tissue", etag=home.inventory_etag),
+    ]
+    card = home.card(new_item_line(entry, etag, targets=both))
+
+    with pytest.raises(ValueError):
+        run(home.resolver.resolve(home.confirmed(card)))
+
+
+def test_an_entry_changed_after_a_new_item_card_raises_target_changed():
+    home = Home()
+    entry, etag = new_entry(home)
+    card = home.card(new_item_line(entry, etag))
+    home.change("shopping_item:paste-1", quantity=3)
+
+    with pytest.raises(TargetChanged):
+        run(home.resolver.resolve(home.confirmed(card)))
+
+
+def test_a_confirmed_new_item_card_creates_the_item_once_in_one_batch():
+    home = Home()
+    entry, etag = new_entry(home)
+    card = run(home.service.save(home.card(new_item_line(entry, etag))))
+    item_id = resolve_inventory_item_id(card.operation_ids[0])
+    assert home.container.get(f"inventory_item:{item_id}") is None
+
+    home.clock.advance(1)
+    result = resume(home, card)
+
+    assert result.outcome == ResumeOutcome.COMPLETED
+    created = home.container.get(f"inventory_item:{item_id}")
+    assert (created["name"], created["quantity"], created["unit"], created["location"]) == (
+        "牙膏",
+        1,
+        "條",
+        "浴室櫃子",
+    )
+    assert home.container.get("shopping_item:paste-1")["status"] == "completed"
+    (transaction,) = home.container.of_type("transaction")
+    assert (transaction["item_id"], transaction["quantity_delta"]) == (item_id, 1)
+    assert len(home.container.of_type("change_event")) == 1
+    assert home.container.get("inventory_item:tissue")["quantity"] == 1
+
+    batches = len(home.container.batches)
+    again = resume(home, card)
+    assert again.outcome == ResumeOutcome.ALREADY_COMPLETED
+    assert len(home.container.batches) == batches
+    assert len(home.container.of_type("inventory_item")) == 2

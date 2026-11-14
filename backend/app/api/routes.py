@@ -7,6 +7,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     Response,
     UploadFile,
@@ -18,6 +19,7 @@ from app.agent.read_agent import ReadAgent, get_read_agent
 from app.core.config import settings
 from app.core.dependencies import (
     get_approval_service,
+    get_commerce_service,
     get_inventory_service,
     get_media_storage_service,
     get_shopping_service,
@@ -25,6 +27,7 @@ from app.core.dependencies import (
 )
 from app.models.agent import AgentRequest, AgentResponse, ResumeRequest
 from app.models.base import ContractModel
+from app.models.commerce import CommerceSearchResponse, CommerceSearchStatus
 from app.models.domain import InventoryItem, ShoppingItem
 from app.models.speech import AllowedAudioContentType, SpeechTranscribeResponse
 from app.models.storage import (
@@ -32,6 +35,7 @@ from app.models.storage import (
     UploadAuthorizationResponse,
 )
 from app.services.approvals import ApprovalNotFound, ApprovalService, InvalidSelection
+from app.services.commerce.biggo import BigGoCommerceProvider
 from app.services.interfaces import InventoryService, ShoppingService
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.speech import SpeechServiceError, SpeechToTextService
@@ -61,6 +65,55 @@ async def shopping(
     service: Annotated[ShoppingService, Depends(get_shopping_service)],
 ) -> list[ShoppingItem]:
     return await service.list_items(settings.demo_household_id)
+
+
+@router.get(
+    "/api/commerce/options",
+    response_model=CommerceSearchResponse,
+    tags=["commerce"],
+    summary="[A2] 查詢外部推薦比價選項 (固定回傳3筆)",
+    responses={
+        200: {"description": "比價搜尋結果與推薦清單"},
+    },
+)
+async def commerce_options(
+    keyword: Annotated[str, Query(description="要比價的品名關鍵字")],
+    service: Annotated[BigGoCommerceProvider, Depends(get_commerce_service)],
+) -> CommerceSearchResponse:
+    clean_keyword = keyword.strip()
+    if not clean_keyword:
+        return CommerceSearchResponse(
+            status=CommerceSearchStatus.NO_MATCH,
+            code="COMMERCE_EMPTY_KEYWORD",
+            message="未提供品名關鍵字",
+            options=[],
+        )
+
+    try:
+        options = await service.search_options(clean_keyword, limit=3)
+    except Exception as exc:
+        logger.warning("[COMMERCE_ERROR] Search options failed: %s", exc)
+        return CommerceSearchResponse(
+            status=CommerceSearchStatus.UNAVAILABLE,
+            code="COMMERCE_SEARCH_FAILED",
+            message="外部比價服務暫時無法取得資料",
+            options=[],
+        )
+
+    if not options:
+        return CommerceSearchResponse(
+            status=CommerceSearchStatus.NO_MATCH,
+            code="COMMERCE_ITEM_NOT_FOUND",
+            message="查無相符之比價推薦資料",
+            options=[],
+        )
+
+    return CommerceSearchResponse(
+        status=CommerceSearchStatus.SUCCESS,
+        code="COMMERCE_OPTIONS_FOUND",
+        message="查詢成功",
+        options=options,
+    )
 
 
 @router.post(

@@ -22,8 +22,9 @@ B1's `CosmosWriteRepository`.
   location (location may be absent only when the user confirmed that absence).
   C1 accepts the stable `item_id` produced by B1's
   `resolve_inventory_item_id(operation_id)`; C1 and the App do not define its
-  encoding. Creation uses a create operation in the same approval batch, never a
-  fabricated zero-quantity snapshot or ETag.
+  encoding. `ShoppingPlanService` checks that the supplied ID matches the B1
+  resolver for that operation identity. Creation uses a create operation in the
+  same approval batch, never a fabricated zero-quantity snapshot or ETag.
 - Validation and planning are all-or-nothing. A failed member rejects the group;
   no partial plan is returned. A fresh card is required when a target, quantity,
   unit, location, or other approved value changes.
@@ -65,13 +66,32 @@ and its linked B1 decisions; this C1 document describes only the service handoff
 `ShoppingIntentService.add(AddShoppingIntent)` now implements the C1 domain write:
 it validates a named pending intent, permits optional planned quantity and unit,
 builds the authoritative `ShoppingItem` document, and calls B1's
-`execute_idempotent_batches` with the caller-resolved operation identity. Replaying
-the same command returns the repository's `already_applied` result; changed values
-under the same identity are rejected by its durable receipt fingerprint. The
-trusted caller must supply stable operation/item IDs and timestamp on retries.
-This is an internal C1 service seam; it is not yet composed into a public route or
-Agent tool. Request-ID-to-operation-ID mapping and the wire DTO remain pending the
-cross-owner agreement above.
+`execute_idempotent_batches`. This C1 proposal derives stable operation and item
+IDs from the household plus a caller-supplied request ID. Retrying the same request
+with the same payload returns `already_applied`; changing values under that request
+identity is rejected by the durable receipt fingerprint. The request-ID contract
+and item-ID format remain subject to B1/A1/C2 review. This is an internal C1
+service seam; it is not yet composed into a public route or Agent tool.
+
+For atomic provenance, C1 proposes creating a `shopping_intent_event` in the same
+operation batch as the new Shopping row and B1 operation receipt. Its proposed
+identity is the operation ID, with household, Shopping item ID and event time.
+This is separate from the purchase `ChangeEvent`, which requires Inventory and
+Transaction IDs that a direct Shopping addition does not have. The new event
+record type is provisional pending B1 review; the service must not be composed into
+a public write path until the record shape and mapper support are approved.
+
+Offline verification record (2026-11-14): C1 added stable request identity mapping
+and a same-batch `shopping_intent_event` proposal for direct Shopping additions,
+plus a plan-time check that a new
+Inventory ID equals B1's stable resolver output for the operation, with rejection
+coverage for caller-chosen IDs. Thirteen focused tests for
+`ShoppingIntentService.add()` pass, covering item creation and normalization,
+same-identity retry, changed-payload receipt rejection, and validation failures
+before writing. Full backend validation passed: Ruff check, format check, and
+pytest (751 passed, 30 deselected). The focused tests use a fake Cosmos batch
+client and do not write to live Cosmos or alter the 31-record `demo-household`
+baseline; they verify the internal service only, not the public HTTP or App flow.
 
 Per [Issue #27](https://github.com/nestock-app/nestock/issues/27), Shopping quantity
 is the original plan. Planning two bottles and actually buying one completes this
@@ -270,6 +290,15 @@ Use the isolated `c1-test-*` household for synthetic write acceptance. After an
 authorized Demo reset, read back and reconcile the complete 31-record baseline
 before continuing; the isolated acceptance script does not authorize or perform a
 Demo household reset.
+
+Read-only Demo verification record (2026-11-14): C1 compared the live
+`demo-household` with the 31-record manifest and confirmed the forecast/reorder
+results: flour and detergent are reorder candidates; four items have forecasts and
+three return `insufficient_data`. C1 also reviewed and approved the latest PR #141.
+Evidence is recorded in [Issue #126](https://github.com/nestock-app/nestock/issues/126#issuecomment-6870500061).
+No Demo records were written, reset, or deleted. Live purchase/retry/reset E2E
+remains pending explicit data-owner authorization and is not established by these
+read-only checks.
 
 `tests.manual_test_shopping_cosmos` records the isolated backend/Cosmos portion of
 this contract in a fresh `c1-test-*` household. Its JSON result includes the core

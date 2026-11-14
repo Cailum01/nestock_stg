@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.models.domain import InventoryItem, ShoppingItem, TransactionReason
+from app.services.inventory_item_identity import resolve_inventory_item_id
 from app.services.shopping.planning import PurchaseInput, ShoppingPlanService
 from app.services.shopping.preview import ShoppingDecisionRequired, ShoppingPreviewError
 
@@ -309,7 +310,10 @@ def new_purchase(key="new", **changes):
             "inventory": None,
             "inventory_etag": None,
             "new_inventory": NewInventoryTarget(
-                item_id=f"new-{key}", name="洗碗精", unit="瓶", location="廚房水槽下"
+                item_id=resolve_inventory_item_id(f"op-{key}"),
+                name="洗碗精",
+                unit="瓶",
+                location="廚房水槽下",
             ),
             **changes,
         },
@@ -321,6 +325,7 @@ def test_new_target_plans_create_actual_stock_without_placeholder_or_fake_etag()
     result = plan(purchase(), source)
     assert len(result.inventory_creates) == len(result.inventory_updates) == 1
     created = result.inventory_creates[0]
+    assert created.record.item_id == resolve_inventory_item_id(source.operation_id)
     assert created.record.item_id == source.new_inventory.item_id
     assert created.operation_id == source.operation_id
     assert created.record.name == "洗碗精"
@@ -344,6 +349,7 @@ def test_new_target_plans_create_actual_stock_without_placeholder_or_fake_etag()
         {"inventory_etag": "fake"},
         {"shopping": purchase().shopping},
         {"resolved_inventory_item_id": "other"},
+        {"new_inventory": replace(new_purchase().new_inventory, item_id="caller-chosen-item-id")},
         {"purchased_unit": "箱"},
         {"purchased_quantity": 1.5},
         {"purchased_quantity": 0},
@@ -363,6 +369,16 @@ def test_new_target_requires_resolved_nonempty_values(field):
     source = new_purchase()
     with pytest.raises(ShoppingPreviewError):
         plan(replace(source, new_inventory=replace(source.new_inventory, **{field: " "})))
+
+
+def test_new_target_rejects_an_id_not_resolved_from_its_operation_identity():
+    source = new_purchase()
+    source = replace(
+        source,
+        new_inventory=replace(source.new_inventory, item_id="caller-chosen-item-id"),
+    )
+    with pytest.raises(ShoppingPreviewError, match="stable operation resolver"):
+        plan(source)
 
 
 def test_new_target_supports_absent_planned_values_without_defaulting():

@@ -15,6 +15,7 @@ from app.models.domain import (
     Transaction,
     TransactionReason,
 )
+from app.services.inventory_item_identity import resolve_inventory_item_id
 from app.services.shopping.preview import (
     ShoppingDecisionRequired,
     ShoppingPreviewError,
@@ -166,6 +167,10 @@ class ShoppingPlanService:
                     (target.unit, "New Inventory unit"),
                 ):
                     _identity(value, label)
+                if target.item_id != resolve_inventory_item_id(purchase.operation_id):
+                    raise ShoppingPreviewError(
+                        "New Inventory ID must come from B1's stable operation resolver."
+                    )
                 if target.location is not None:
                     _identity(target.location, "New Inventory location")
                 if purchase.resolved_inventory_item_id not in (None, target.item_id):

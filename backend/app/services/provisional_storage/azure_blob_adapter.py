@@ -82,6 +82,17 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
             kwargs["metadata"] = metadata
         await self._call_client(blob_client.upload_blob, data, **kwargs)
 
+    @staticmethod
+    def _is_not_found(exc: Exception) -> bool:
+        cls_name = exc.__class__.__name__
+        status_code = getattr(exc, "status_code", None)
+        error_code = getattr(exc, "error_code", None)
+        return bool(
+            cls_name == "ResourceNotFoundError"
+            or status_code == 404
+            or error_code in {"BlobNotFound", "ResourceNotFound"}
+        )
+
     async def _download_from_blob(self, blob_path: str) -> bytes | None:
         try:
             blob_client = await self._resolve_client(blob_path)
@@ -92,16 +103,22 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
                     return await self._call_client(reader)  # type: ignore[no-any-return]
             return bytes(stream)
         except Exception as exc:
-            logger.debug("Blob download failed for path %s: %s", blob_path, exc)
-            return None
+            if self._is_not_found(exc):
+                logger.debug("Blob not found for path %s: %s", blob_path, exc)
+                return None
+            logger.error("Blob download failed for path %s: %s", blob_path, exc)
+            raise
 
     async def _blob_exists(self, blob_path: str) -> bool:
         try:
             blob_client = await self._resolve_client(blob_path)
             exists_func = getattr(blob_client, "exists", None)
             return bool(await self._call_client(exists_func)) if exists_func is not None else True
-        except Exception:
-            return False
+        except Exception as exc:
+            if self._is_not_found(exc):
+                return False
+            logger.error("Blob exists check failed for path %s: %s", blob_path, exc)
+            raise
 
     async def _delete_blob(self, blob_path: str) -> None:
         try:
@@ -110,14 +127,7 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
             if delete_func is not None:
                 await self._call_client(delete_func)
         except Exception as exc:
-            cls_name = exc.__class__.__name__
-            status_code = getattr(exc, "status_code", None)
-            error_code = getattr(exc, "error_code", None)
-            if (
-                cls_name == "ResourceNotFoundError"
-                or status_code == 404
-                or error_code in {"BlobNotFound", "ResourceNotFound"}
-            ):
+            if self._is_not_found(exc):
                 logger.debug("Blob %s already deleted or not found: %s", blob_path, exc)
                 return
             logger.error("Failed to delete blob at %s: %s", blob_path, exc)
@@ -130,7 +140,8 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
             if meta_func is not None:
                 await self._call_client(meta_func, metadata=metadata)
         except Exception as exc:
-            logger.debug("Blob metadata update skipped for %s: %s", blob_path, exc)
+            logger.error("Blob metadata update failed for %s: %s", blob_path, exc)
+            raise
 
     async def _store_raw_media(
         self, hid: str, image_ref: str, payload: bytes, content_type: str, rec: dict[str, Any]

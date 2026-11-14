@@ -217,8 +217,10 @@ class BaseMediaStorageLifecycle:
         rec = self._retention_records.get((household_id, image_ref))
         if rec is None or rec.get("purged"):
             return False
+        target_rec = dict(rec)
+        target_rec["retention"], target_rec["expires_at"] = "attached", None
+        await self._mark_storage_retained(household_id, image_ref, target_rec)
         rec["retention"], rec["expires_at"] = "attached", None
-        await self._mark_storage_retained(household_id, image_ref, rec)
         return True
 
     async def cleanup_expired_blobs(self, now: datetime | None = None) -> list[str]:

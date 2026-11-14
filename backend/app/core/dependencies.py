@@ -166,9 +166,12 @@ def _create_media_storage_service(
             blob_client = BlobServiceClient.from_connection_string(conn_str)
             return AzureBlobMediaStorage(blob_service_client=blob_client, **kwargs)
         except Exception as exc:
-            logger.warning(
+            logger.error(
                 "Failed to initialize AzureBlobMediaStorage from connection string: %s", exc
             )
+            raise RuntimeError(
+                f"Azure Blob Storage configuration failed from connection string: {exc}"
+            ) from exc
     elif blob_endpoint:
         try:
             from azure.identity import DefaultAzureCredential
@@ -178,7 +181,10 @@ def _create_media_storage_service(
             blob_client = BlobServiceClient(account_url=blob_endpoint, credential=credential)
             return AzureBlobMediaStorage(blob_service_client=blob_client, **kwargs)
         except Exception as exc:
-            logger.warning("Failed to initialize AzureBlobMediaStorage from blob endpoint: %s", exc)
+            logger.error("Failed to initialize AzureBlobMediaStorage from blob endpoint: %s", exc)
+            raise RuntimeError(
+                f"Azure Blob Storage configuration failed from blob endpoint: {exc}"
+            ) from exc
 
     return LocalStagingMediaStorage(
         base_staging_url=base_url,

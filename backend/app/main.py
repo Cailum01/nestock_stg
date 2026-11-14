@@ -1,6 +1,5 @@
 from fastapi import FastAPI
 
-import app.core.compat  # noqa: F401
 from app.api.forecast import router as forecast_router
 from app.api.routes import router
 from app.core.config import settings

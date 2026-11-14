@@ -694,3 +694,106 @@ async def test_blob_delete_failure_prevents_purged_flag_and_allows_retry(
     assert auth.image_ref in purged_retry
     assert rec["purged"] is True
     assert blob_path not in fake_blob_service.storage["media"]
+
+
+@pytest.mark.anyio
+async def test_blob_download_and_exists_reraises_non_404_errors(fake_blob_service):
+    """驗證 Blob 下載與存在檢查：僅 404 回傳 None/False，非 404 異常向上拋出。"""
+    storage = AzureBlobMediaStorage(
+        blob_service_client=fake_blob_service,
+        container_name="media",
+    )
+
+    class ResourceNotFoundError(Exception):
+        status_code = 404
+
+    original_download = FakeBlobClient.download_blob
+    original_exists = FakeBlobClient.exists
+
+    # 404 不存在：安全回傳 None 與 False
+    async def mock_404(*args, **kwargs):
+        raise ResourceNotFoundError("Blob not found")
+
+    FakeBlobClient.download_blob = mock_404
+    FakeBlobClient.exists = mock_404
+    try:
+        assert await storage._download_from_blob("missing.jpg") is None
+        assert await storage._blob_exists("missing.jpg") is False
+    finally:
+        FakeBlobClient.download_blob = original_download
+        FakeBlobClient.exists = original_exists
+
+    # 非 404 系統/網路異常：強制向上傳播
+    async def mock_500(*args, **kwargs):
+        raise RuntimeError("Azure Blob 503 Service Unavailable")
+
+    FakeBlobClient.download_blob = mock_500
+    FakeBlobClient.exists = mock_500
+    try:
+        with pytest.raises(RuntimeError, match="503 Service Unavailable"):
+            await storage._download_from_blob("network_error.jpg")
+        with pytest.raises(RuntimeError, match="503 Service Unavailable"):
+            await storage._blob_exists("network_error.jpg")
+    finally:
+        FakeBlobClient.download_blob = original_download
+        FakeBlobClient.exists = original_exists
+
+
+@pytest.mark.anyio
+async def test_retain_media_reraises_and_preserves_state_on_metadata_failure(
+    fake_blob_service, mapping_port
+):
+    """驗證當 set_blob_metadata 失敗時，retain_media 向上拋出例外，且內部狀態不變更為 attached。"""
+    storage = AzureBlobMediaStorage(
+        blob_service_client=fake_blob_service,
+        container_name="media",
+        mapping_port=mapping_port,
+        auto_process=False,
+    )
+    req = UploadAuthorizationRequest(
+        household_id="home-dev",
+        filename="meta_fail.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=6,
+    )
+    auth = await storage.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
+    await storage.receive_staged_upload(token, b"meta_bytes")
+
+    original_meta = FakeBlobClient.set_blob_metadata
+
+    async def mock_broken_meta(self, *args, **kwargs):
+        raise OSError("Failed to communicate with Azure Blob metadata endpoint")
+
+    FakeBlobClient.set_blob_metadata = mock_broken_meta
+    try:
+        with pytest.raises(OSError, match="Failed to communicate"):
+            await storage.retain_media("home-dev", auth.image_ref)
+
+        rec = storage._retention_records.get(("home-dev", auth.image_ref))
+        assert rec is not None
+        assert rec["retention"] != "attached"
+        assert rec.get("expires_at") is not None
+    finally:
+        FakeBlobClient.set_blob_metadata = original_meta
+
+
+def test_create_media_storage_service_fails_fast_on_bad_cloud_config():
+    """驗證當環境配置了 Blob 連線資訊但初始化失敗時，嚴格拋出例外，絕不靜默降級至本機記憶體。"""
+    from unittest.mock import patch
+
+    bad_env = {"AZURE_STORAGE_CONNECTION_STRING": "InvalidConnectionString"}
+    with patch(
+        "azure.storage.blob.BlobServiceClient.from_connection_string",
+        side_effect=ValueError("Invalid connection string format"),
+    ):
+        with pytest.raises(RuntimeError, match="Azure Blob Storage configuration failed"):
+            _create_media_storage_service(environment=bad_env)
+
+    bad_endpoint_env = {"AZURE_STORAGE_BLOB_ENDPOINT": "https://invalid.blob.core.windows.net/"}
+    with patch(
+        "azure.storage.blob.BlobServiceClient.__init__",
+        side_effect=ValueError("Invalid endpoint URL"),
+    ):
+        with pytest.raises(RuntimeError, match="Azure Blob Storage configuration failed"):
+            _create_media_storage_service(environment=bad_endpoint_env)

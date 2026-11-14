@@ -604,3 +604,56 @@ async def test_vision_mock_fallback_does_not_mask_begin_processing_error():
 
     with pytest.raises(RuntimeError, match="Cosmos write failure on begin_processing"):
         await service.analyze_image("demo-household", "blob://demo/begin-fail.jpg")
+
+
+@pytest.mark.anyio
+async def test_detect_image_mime_and_multiformat_vision_request():
+    """驗證 detect_image_mime 支援 JPEG, PNG, WebP，且 _request_openai_vision 使用正確 MIME。"""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.services.vision import detect_image_mime
+
+    jpeg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF"
+    png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+    webp_bytes = b"RIFF\x1a\x00\x00\x00WEBPVP8 "
+    unknown_bytes = b"\x00\x01\x02\x03\x04\x05"
+
+    assert detect_image_mime(jpeg_bytes) == "image/jpeg"
+    assert detect_image_mime(png_bytes) == "image/png"
+    assert detect_image_mime(webp_bytes) == "image/webp"
+    assert detect_image_mime(unknown_bytes) == "image/jpeg"
+
+    settings = VisionOpenAISettings(
+        endpoint="https://fake.openai.azure.com/",
+        api_key="valid-test-key",
+        deployment="gpt-4o",
+    )
+    inventory = DummyInventoryService([])
+    media = LocalStagingMediaStorage()
+    service = AzureOpenAIVisionService(settings, inventory, media)
+
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {
+        "choices": [{"message": {"content": '{"scene_type": "single_item", "items": []}'}}]
+    }
+
+    # 驗證 PNG 請求中 image_url 包含 data:image/png
+    with patch(
+        "httpx.AsyncClient.post", new_callable=AsyncMock, return_value=fake_resp
+    ) as mock_post:
+        await service._request_openai_vision(png_bytes, SceneType.SINGLE_ITEM)
+        assert mock_post.called
+        payload = mock_post.call_args.kwargs["json"]
+        image_url = payload["messages"][1]["content"][1]["image_url"]["url"]
+        assert image_url.startswith("data:image/png;base64,")
+
+    # 驗證 WebP 請求中 image_url 包含 data:image/webp
+    with patch(
+        "httpx.AsyncClient.post", new_callable=AsyncMock, return_value=fake_resp
+    ) as mock_post:
+        await service._request_openai_vision(webp_bytes, SceneType.SINGLE_ITEM)
+        assert mock_post.called
+        payload = mock_post.call_args.kwargs["json"]
+        image_url = payload["messages"][1]["content"][1]["image_url"]["url"]
+        assert image_url.startswith("data:image/webp;base64,")

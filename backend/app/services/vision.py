@@ -92,6 +92,19 @@ class MockVisionService:
         )
 
 
+def detect_image_mime(data: bytes, fallback: str = "image/jpeg") -> str:
+    """Detect image MIME type from binary headers for Azure OpenAI Vision (JPEG, PNG, WebP)."""
+    if not data or len(data) < 4:
+        return fallback
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP":
+        return "image/webp"
+    return fallback
+
+
 class AzureOpenAIVisionService:
     """Azure OpenAI GPT-4o multimodal vision adapter (Issue #44 pure perception)."""
 
@@ -114,15 +127,19 @@ class AzureOpenAIVisionService:
         self._results_cache: dict[tuple[str, str], VisionAnalysisResult] = {}
 
     async def _request_openai_vision(
-        self, media_bytes: bytes, scene_type: SceneType | None
+        self,
+        media_bytes: bytes,
+        scene_type: SceneType | None,
+        content_type: str | None = None,
     ) -> dict[str, Any]:
         import httpx
 
+        mime = content_type or detect_image_mime(media_bytes)
         b64 = base64.b64encode(media_bytes).decode("utf-8")
         hint = f"Scene hint: {scene_type.value if scene_type else 'auto'}"
         user_content = [
             {"type": "text", "text": hint},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
         ]
         messages = [
             {"role": "system", "content": VISION_PROMPT},
@@ -190,11 +207,18 @@ class AzureOpenAIVisionService:
         return None
 
     async def _execute_inference(
-        self, household_id: str, clean_ref: str, media_bytes: bytes, scene_type: SceneType | None
+        self,
+        household_id: str,
+        clean_ref: str,
+        media_bytes: bytes,
+        scene_type: SceneType | None,
+        content_type: str | None = None,
     ) -> VisionAnalysisResult:
         await self.media_storage.begin_processing(household_id, clean_ref)
         try:
-            parsed = await self._request_openai_vision(media_bytes, scene_type)
+            parsed = await self._request_openai_vision(
+                media_bytes, scene_type, content_type=content_type
+            )
             result = self._build_analysis_result(clean_ref, parsed, scene_type)
         except Exception as exc:
             logger.warning("Azure OpenAI Vision execution failed (%s)", exc)
@@ -240,6 +264,18 @@ class AzureOpenAIVisionService:
                 raise ValueError("Azure OpenAI Vision credentials not configured.")
             raise ValueError(f"Media bytes not found for image_ref: {image_ref}")
 
-        result = await self._execute_inference(household_id, clean_ref, media_bytes, scene_type)
+        content_type = None
+        get_snapshot = getattr(self.media_storage, "get_media_snapshot", None)
+        if callable(get_snapshot):
+            try:
+                snap = await get_snapshot(household_id, clean_ref)
+                if snap is not None and getattr(snap, "record", None):
+                    content_type = getattr(snap.record, "content_type", None)
+            except Exception:
+                pass
+
+        result = await self._execute_inference(
+            household_id, clean_ref, media_bytes, scene_type, content_type=content_type
+        )
         self._results_cache[cache_key] = result
         return result

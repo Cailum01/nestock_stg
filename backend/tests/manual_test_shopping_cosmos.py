@@ -513,10 +513,17 @@ async def verify(args, container):
     check("stock_now_three", (await read("inventory_item:tissue"))["quantity"] == 3)
     check("shopping_completed", (await read("shopping_item:tissue"))["status"] == "completed")
     tx = await records("transaction")
-    check("one_actual_purchase_transaction", len(tx) == 1 and tx[0]["quantity_delta"] == 2)
+    purchase_transaction = tx[0] if len(tx) == 1 else None
+    check(
+        "one_actual_purchase_transaction",
+        purchase_transaction is not None
+        and purchase_transaction["quantity_delta"] == 2
+        and purchase_transaction["item_id"] == "tissue",
+    )
     check(
         "missing_event_date_uses_first_decision_time",
-        datetime.fromisoformat(tx[0]["created_at"]) == result.record.decided_at,
+        purchase_transaction is not None
+        and datetime.fromisoformat(purchase_transaction["created_at"]) == result.record.decided_at,
     )
     check("one_change_event", len(await records("change_event")) == 1)
     check(

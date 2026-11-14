@@ -846,6 +846,14 @@ It accepts only records scoped to the fixed `demo-household`, validates record
 IDs and Inventory references, and uses the existing domain-to-Cosmos document
 mapping.
 
+The final baseline is `data/demo_household_manifest.json`, agreed by C1 and
+merged in PR #148: 7 Inventory records, 3 pending Shopping records, and 21
+purchase Transactions (31 documents total). The toothpaste Shopping record has
+`item_id = null`; it is not an Inventory item and does not change the forecast
+baseline. B2 reported loading these 31 documents and verifying the read-back
+and forecast results in PR #148. That report is not a B1-run Cosmos write or
+reset.
+
 The default mode is a dry run. A normal load may create the manifest only when
 the target household partition is empty; if the stored partition already
 exactly matches the manifest, a rerun is a no-op. Any partial or differing
@@ -875,16 +883,31 @@ and explicit confirmation. If the partition matches neither state, stop and
 obtain owner approval before any further writes. A normal load is not recovery
 for an uncertain reset.
 
-Reset also deletes stored confirmation-card records. Any card created before
-reset will no longer be confirmable (its approval record may return 404); finish
-the reset before creating cards, and issue fresh cards afterward. Never point
-this tool at another household or an environment whose data is not approved for
-destructive Demo reset.
+Reset deletes every document in the `demo-household` partition, including
+pending approval records and operation receipts. A pre-reset card can no longer
+be resumed, and its stored receipt cannot be used after the reset; finish the
+reset before creating cards or replaying operations, and issue fresh approvals
+afterward. Never point this tool at another household or an environment whose
+data is not approved for destructive Demo reset.
 
 The loader's local unit tests do not establish cloud connectivity or validate
-the live Demo baseline. Demo seed/reset is complete only after the final B2
-history manifest and C1 baseline are agreed, the existing target partition is
-reviewed, and a controlled Cosmos load/reset with read-back is verified.
+the live Demo baseline. PR #131 merged the B1 loader and atomic reset
+implementation; B1's offline tests cover reset failure atomicity, the operation
+limit, and the unlinked Shopping row. C1 independently ran the offline seed,
+reset, and approval-storage tests (24 passed) and approved the atomic reset
+path. The agreed 31-document baseline is available in PR #148, and B2 reported
+a successful load, no-op dry run, and read-back. C1's purchase walkthrough and
+reset restoration are still acceptance work.
+
+A prior read-only inventory found four `user_input` documents in
+`demo-household`; C1 explicitly did not authorize deleting them. That earlier
+count is not a statement of the current partition state. Before any destructive
+reset, re-inspect the current partition and obtain explicit data-owner approval
+for every record that would be deleted. Until then, do not reset or otherwise
+overwrite the loaded Demo baseline. C1 has confirmed the approved baseline by
+read-back; destructive reset and reset-restoration acceptance remain pending
+until the required data-owner authorization and C1's purchase walkthrough are
+complete.
 
 ## 7. Original media and derived artifacts in Blob Storage
 
@@ -1171,18 +1194,19 @@ When an AI agent implements a task from this document:
 
 Phases are independent gates, not a commitment to deploy every Azure service.
 
-### 12.1 Current B1 work status (2026-11-13)
+### 12.1 Current B1 work status (2026-11-14)
 
 Use this status to distinguish a documented design from completed integration
 or acceptance. OPEN issues and PR review states remain authoritative.
 
 | Work | Design status | Implementation / acceptance status | Next step |
 | --- | --- | --- | --- |
-| Approved Shopping persistence (#27, #60) | The household-batch boundary, stable operation identities, receipts, change event, stop-on-mismatch behavior, and storage-only Shopping removal marker are documented in §6.5. | PR #105 → #104 → #96 are merged. B1 live synthetic acceptance passed 36 checks in `c1-test-b1-removal-20261113-0202`, including purchase, cancellation without domain writes, approved Shopping removal/tombstone, active-list filtering, and removal retry. Earlier runs passed the purchase-failure matrix and cancellation coverage. The test resolver remains a stand-in, so this is not full Agent/App E2E. | Coordinate C2 approval UI / Agent-App E2E separately. Keep #27/#60 OPEN for the remaining cross-owner evidence, not as a design or B1 persistence gate. |
+| Approved Shopping persistence (#27, #60) | The household-batch boundary, stable operation identities, receipts, change event, stop-on-mismatch behavior, and storage-only Shopping removal marker are documented in §6.5. | PR #105 → #104 → #96 are merged. B1 live synthetic acceptance passed 36 checks in `c1-test-b1-removal-20261113-0202`, including purchase, cancellation without domain writes, approved Shopping removal/tombstone, active-list filtering, and removal retry. #27 and #60 are closed; A1 also reported 13/13 checks of its isolated-household Agent-to-Cosmos flow. The C1 purchase walkthrough is tracked separately in #126. | Do not reopen #27/#60 for out-of-scope App E2E; keep any remaining acceptance attached to its owning workflow. |
 | Cosmos pilot acceptance | Required isolation, ETag, atomicity, retry, timeout, receipt-mismatch, TTL, and error-observation checks are identified in this design and B1 follow-up work. | The B1-owned live synthetic matrix passed against Cosmos, including request metrics, fail-closed receipt mismatch, cancellation no-domain-write behavior, and Shopping removal. A read-only query found no household under the earlier `c1-test-b1-accept-20261113-*` prefix. Successful test partitions are retained for review; the bounded runner reports progress, uses 20-second per-request timeout and 300-second overall timeout by default. | Do not delete test partitions. Keep full Agent/App E2E separate; do not treat this B1/C1 builder run as production-resolver coverage. |
-| Demo seed/reset (#126) | The bounded loader, destructive-reset guard, dry-run, single-batch atomic reset, operation-limit fail-closed behavior, timeout inspection, and read-back requirements are documented in §6.8. | B1 offline tests pass, including failure injection preserving the prior partition and an over-limit plan submitting no batch. A read-only Cosmos inventory found 4 `user_input` records in `demo-household`; no load/reset was performed. The final B2 manifest and C1 baseline are not yet available. | Do not reset or load yet. First agree the manifest/baseline and determine whether all 4 existing records are disposable; reset deletes every household document, while normal load rejects a nonempty partition. |
-| Media mapping and retention (#98) | B1 mapping storage and retention boundary are documented; A2 owns upload/processing and derived-artifact details. | B1 mapping port is merged in PR #97; 9 offline mapping tests pass, and the live synthetic purchase acceptance verified media TTL and the same-household retention update. PR #109 remains OPEN with changes requested and a merge conflict; upload/processing integration and detach/replacement lifecycle are not accepted end-to-end. | Resolve the A2 artifact/schema/version and media detach/replacement policy with A2/C1; do not invent those fields or lifecycle rules in B1 storage. |
-| Transaction event time (#113) | The event-time rule is recorded in §9.1 and B1/B2 have agreed to the current proposal. | #113 remains OPEN; PR #128 has changes requested. B1 added offline integration coverage for explicit event time and missing-event-time fallback to the first `decided_at`, including a retry with stable identity/time. | B1/C1 may use the current rule provisionally for agreed purchase work and tests; B2 resolves the PR review. Update if the final decision changes. Forecast enablement remains B2's decision. |
+| Read-only Cosmos API (#122, PR #134, PR #93) | The opt-in backend read adapter uses Entra `DefaultAzureCredential`; the fixed household scope and shared Cosmos client are documented in §§2 and 6. | On 2026-11-14, B1 made read-only requests to the hosted Demo API: `/health` returned `ok`; `/inventory` returned 7 records and `/shopping` returned 3. Both result sets were scoped to `demo-household`, and their record IDs matched the approved manifest. No writes or reset were performed. C1's separate #126 read-back confirmed the 31-document baseline. | Hosted health and read routes are verified; App refresh after confirmed writes remains unverified. PR #134 is OPEN with `CHANGES_REQUESTED` (B1's deployment/smoke-test/documentation findings remain for B2 to address); PR #93 remains OPEN. Re-review after the owning author updates the PR. |
+| Demo seed/reset (#126, #149) | The bounded loader, destructive-reset guard, dry-run, single-batch atomic reset, operation-limit fail-closed behavior, timeout inspection, and read-back requirements are documented in §6.8. C1 agreed the 31-document baseline in PR #148. | PR #131 merged the B1 loader/atomic reset. The B1 offline suite covers failure atomicity, over-limit rejection, interrupted-seed fail-closed retry, the unlinked toothpaste row, official-manifest load/no-op retry, and deletion of approval plus operation-receipt records in the same-household reset batch. C1 independently ran offline seed/reset and approval-storage tests (24 passed) and approved the atomic reset path. B2 reported loading the manifest, a no-op dry run, and read-back/forecast results. B1 has not performed a Cosmos write or reset. A previous read-only inventory found four `user_input` records; the current full partition has not been enumerated, and C1 did not authorize deleting them. | Keep #126 open for C1's purchase walkthrough/reset restoration. Do not reset or overwrite until a fresh read-only preflight and explicit data-owner approval cover all records in the current partition. |
+| Media mapping and retention (#98) | B1 mapping storage and retention boundary are documented; A2 owns upload/processing and derived-artifact details. | B1 mapping port is merged in PR #97; 9 offline mapping tests pass, and the live synthetic purchase acceptance verified media TTL and the same-household retention update. PR #109 remains OPEN with changes requested; GitHub currently reports `CLEAN` (no merge conflict). Upload/processing integration and detach/replacement lifecycle are not accepted end-to-end. | Resolve the A2 artifact/schema/version and media detach/replacement policy with A2/C1; do not invent those fields or lifecycle rules in B1 storage. |
+| Transaction event time (#113) | The event-time rule is recorded in §9.1 and was agreed by B1/B2/C1/A1. | #113 is closed and PR #128 is merged. B1's integration coverage checks explicit event time, fallback to the first `decided_at`, and retry with stable identity/time. | No further B1 decision is pending; forecast behavior remains B2's responsibility. |
 
 Items that lack an agreed cross-owner contract should be marked as awaiting
 design/owner decision, not filled in with a B1-only guess. Work whose design is

@@ -1,6 +1,7 @@
 import json
 from copy import deepcopy
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Mapping
 
 import pytest
@@ -32,6 +33,7 @@ class FakeSeedContainer:
         self.queried_partitions: list[str] = []
         self.batch_calls: list[dict[str, object]] = []
         self.fail_batch_after: int | None = None
+        self.fail_create_after: int | None = None
 
     def query_items(
         self,
@@ -56,6 +58,8 @@ class FakeSeedContainer:
         document_id = str(document["id"])
         if document_id in self.documents:
             raise AssertionError(f"duplicate create for {document_id}")
+        if self.fail_create_after is not None and len(self.created) >= self.fail_create_after:
+            raise RuntimeError("injected item create failure")
         self.documents[document_id] = document
         self.created.append(document_id)
         return document
@@ -193,6 +197,27 @@ def test_seed_load_creates_typed_records_and_rerun_is_idempotent():
     assert container.created == created_before_retry
 
 
+def test_interrupted_seed_refuses_to_mutate_partial_partition_on_retry():
+    container = FakeSeedContainer()
+    manifest = make_manifest()
+    container.fail_create_after = 1
+
+    with pytest.raises(RuntimeError, match="injected item create failure"):
+        load_demo_seed(container, manifest, apply=True)
+
+    partial_state = deepcopy(container.documents)
+    created_before_retry = list(container.created)
+    assert len(partial_state) == 1
+
+    container.fail_create_after = None
+    with pytest.raises(DemoSeedError, match="does not exactly match"):
+        load_demo_seed(container, manifest, apply=True)
+
+    assert container.documents == partial_state
+    assert container.created == created_before_retry
+    assert container.deleted == []
+
+
 def test_seed_refuses_to_overwrite_unrecognized_or_partial_household_state():
     container = FakeSeedContainer()
     container.documents["inventory_item:legacy"] = {
@@ -232,9 +257,20 @@ def test_reset_dry_run_reports_scope_without_deleting():
 
 def test_reset_only_deletes_demo_household_then_reloads_the_manifest():
     container = FakeSeedContainer()
+    operation_receipt_id = f"operation:{'a' * 64}"
     container.documents["inventory_item:old-demo"] = {
         "id": "inventory_item:old-demo",
         "household_id": DEMO_HOUSEHOLD_ID,
+    }
+    container.documents["pending_approval:old-demo"] = {
+        "id": "pending_approval:old-demo",
+        "household_id": DEMO_HOUSEHOLD_ID,
+        "record_type": "pending_approval",
+    }
+    container.documents[operation_receipt_id] = {
+        "id": operation_receipt_id,
+        "household_id": DEMO_HOUSEHOLD_ID,
+        "record_type": "operation_receipt",
     }
     container.documents["inventory_item:other"] = {
         "id": "inventory_item:other",
@@ -252,12 +288,18 @@ def test_reset_only_deletes_demo_household_then_reloads_the_manifest():
         confirm_household_wipe=DEMO_HOUSEHOLD_ID,
     )
 
-    assert result.documents_deleted == 1
+    assert result.documents_deleted == 3
     assert result.records_created == 3
-    assert container.deleted == ["inventory_item:old-demo"]
+    assert container.deleted == [
+        "inventory_item:old-demo",
+        "pending_approval:old-demo",
+        operation_receipt_id,
+    ]
     assert len(container.batch_calls) == 1
     assert container.batch_calls[0]["partition_key"] == DEMO_HOUSEHOLD_ID
     assert [operation for operation, _ in container.batch_calls[0]["batch_operations"]] == [
+        "delete",
+        "delete",
         "delete",
         "create",
         "create",
@@ -374,3 +416,29 @@ def test_manifest_loads_unlinked_shopping_item():
     )
     assert result.records_created == 4
     assert toothpaste.get("item_id") is None
+
+
+def test_official_demo_manifest_loads_and_retries_as_noop():
+    repository_root = Path(__file__).resolve().parents[2]
+    manifest = load_manifest(repository_root / "data" / "demo_household_manifest.json")
+    container = FakeSeedContainer()
+
+    assert (len(manifest.inventory), len(manifest.shopping), len(manifest.transactions)) == (
+        7,
+        3,
+        21,
+    )
+    result = load_demo_seed(container, manifest, apply=True)
+
+    assert result.records_created == 31
+    assert len(container.documents) == 31
+    toothpaste = next(
+        document for document in container.documents.values() if document.get("name") == "牙膏"
+    )
+    assert toothpaste.get("item_id") is None
+
+    retry = load_demo_seed(container, manifest, apply=True)
+
+    assert retry.action == "already_loaded"
+    assert retry.records_created == 0
+    assert len(container.created) == 31

@@ -10,6 +10,7 @@ from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.provisional_storage.local_staging_adapter import (
     LocalStagingMediaStorage,
 )
+from app.services.vision import MockVisionService
 
 
 def sample_request() -> dict:
@@ -92,7 +93,7 @@ async def test_local_staging_creates_authorization_and_validates():
 
 @pytest.mark.anyio
 async def test_local_staging_receive_upload_lifecycle():
-    storage = LocalStagingMediaStorage()
+    storage = LocalStagingMediaStorage(vision_service=MockVisionService())
     req = UploadAuthorizationRequest(**sample_request())
     auth_resp = await storage.create_upload_authorization(req)
     token = auth_resp.upload_url.split("/")[-1]

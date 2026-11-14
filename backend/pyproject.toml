@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "azure-cosmos>=4.9,<5",
     "azure-identity>=1.19,<2",
+    "azure-storage-blob>=12.20,<13",
     "fastapi>=0.115,<1",
     "httpx>=0.28,<1",
     "langchain-openai>=1.7,<2",
@@ -23,7 +24,7 @@ speech-e2e = ["edge-tts>=6.1.0", "imageio-ffmpeg>=0.5.1"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-m 'not speech_e2e and not live_eval'"
+addopts = "-p no:langsmith_plugin -m 'not speech_e2e and not live_eval'"
 markers = [
     "speech_e2e: End-to-end speech tests requiring external network or live cloud credentials",
     "live_eval: explicitly enabled Azure OpenAI tool-selection evaluation",

@@ -67,6 +67,7 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
   - `get_media_bytes(household_id, image_ref)`: 提供唯讀下載原始二進位位元組串流。
   - `get_derived_artifact(household_id, image_ref)`: 提供唯讀下載已持久化之 `vision_v1.json` 衍生工件位元組，供 `VisionService` 直接消費。
   - `retain_media(household_id, image_ref)`: 將媒體與衍生工件標記為業務附加 (`attached`)，豁免 24h 孤立清理。
+  - `unretain_media(household_id, image_ref, ttl_seconds=86400)`: 當下游解除附件或替換既有圖片時，將標記還原為孤立狀態 (`orphan`) 並重新配置 24h 過期時間，以利底層雲端政策回收。
   - `cleanup_expired_blobs(now)`: 掃描並刪除逾 24h 且未被業務附加保留 (`ttl_seconds=None`) 之孤立原始媒體與衍生工件。
   - `get_media_snapshot(household_id, image_ref)`: 提供下游業務附加 (PR #105) 進行原子保留與 ETag 校驗之 Snapshot。
 
@@ -82,9 +83,10 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
    - 介面、狀態轉移與防禦行為 100% 保持與 Azure Blob Storage 對齊。
 
 ### 2.3 動態雙模式工廠 (`dependencies.py`)
-- 後端啟動時透過 `_create_media_storage_service()` 進行自動偵測：
+- 後端啟動時透過 `_create_media_storage_service()` 進行自動偵測（三態防禦律）：
   - 若偵測到 Azure Blob 環境變數且連線成功 -> 動態實例化 `AzureBlobMediaStorage`。
-  - 若無環境變數或連線失敗 -> 自動平滑降級為 `LocalStagingMediaStorage`，發出 Warning 日誌，不阻斷應用程式啟動。
+  - 若配置了 Azure Blob 環境變數但連線失敗或配置無效 -> 強制拋出 `RuntimeError` 阻斷啟動（Fail-Fast / Fail-Honest），嚴禁靜默降級為記憶體型 `LocalStagingMediaStorage`，徹底杜絕相片假持久化與靜默遺失風險。
+  - 僅在環境完全未配置任何雲端環境變數時 -> 合規 Fallback 至 `LocalStagingMediaStorage` 作為開發與離線測試用途。
 
 ---
 
@@ -111,6 +113,36 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
 # 或使用連線字串
 # AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"
 ```
+
+### 4.1 生產環境 Azure Blob Storage 24h 孤兒清理生命週期政策 (Lifecycle Management)
+
+依據設計文件 §8.2 與 Issue #98 驗收標準，生產端 Azure Blob 容器（`media`）需配置原生 Lifecycle Management 規則，將未附加業務紀錄的孤立檔案於 24 小時後自動 Purge：
+
+```json
+{
+  "rules": [
+    {
+      "enabled": true,
+      "name": "purge-orphan-media-after-24h",
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["households/"]
+        },
+        "actions": {
+          "baseBlob": {
+            "delete": {
+              "daysAfterCreationGreaterThan": 1
+            }
+          }
+        }
+      }
+    }
+  ]
+}
+```
+＊**保留例外機制**：已附加業務紀錄之檔案經由 `retain_media` 打上 `retention="attached"` 元資料標籤，於生產環境可配合 Azure Blob Index Tags 或後續 Blob 搬移歸檔至永久保存路徑（`households/{household_id}/permanent/`），避免遭孤兒規則自動清除。當下游執行 `unretain_media` 時，元資料還原為 `retention="orphan"`，恢復孤立回收排程。
 
 ---
 

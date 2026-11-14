@@ -223,6 +223,23 @@ class BaseMediaStorageLifecycle:
         rec["retention"], rec["expires_at"] = "attached", None
         return True
 
+    async def unretain_media(
+        self, household_id: str, image_ref: str, ttl_seconds: int = 86400
+    ) -> bool:
+        """Release attached retention status, restoring orphan expiration window."""
+        rec = self._retention_records.get((household_id, image_ref))
+        if rec is None or rec.get("purged"):
+            return False
+        now = datetime.now(UTC)
+        exp = now + timedelta(seconds=ttl_seconds)
+        target_rec = dict(rec)
+        target_rec["retention"] = "orphan"
+        target_rec["expires_at"] = exp
+        await self._mark_storage_retained(household_id, image_ref, target_rec)
+        rec["retention"] = "orphan"
+        rec["expires_at"] = exp
+        return True
+
     async def cleanup_expired_blobs(self, now: datetime | None = None) -> list[str]:
         """[TEST_HELPER / LOCAL_DEV_ONLY] Purge expired orphan media from in-memory tracking.
 

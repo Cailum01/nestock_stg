@@ -797,3 +797,58 @@ def test_create_media_storage_service_fails_fast_on_bad_cloud_config():
     ):
         with pytest.raises(RuntimeError, match="Azure Blob Storage configuration failed"):
             _create_media_storage_service(environment=bad_endpoint_env)
+
+
+@pytest.mark.anyio
+async def test_unretain_media_restores_orphan_metadata_and_expiration(
+    blob_storage, fake_blob_service
+):
+    """驗證 unretain_media 可將已保留媒體還原為孤立狀態並重新配置過期時間。"""
+    req = UploadAuthorizationRequest(
+        household_id="home-dev",
+        filename="milk.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=6,
+    )
+    auth = await blob_storage.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
+    await blob_storage.receive_staged_upload(token, b"milk12")
+
+    # 1. 標記為保留 (attached)
+    assert await blob_storage.retain_media("home-dev", auth.image_ref) is True
+    rec = blob_storage._retention_records[("home-dev", auth.image_ref)]
+    assert rec["retention"] == "attached"
+    assert rec["expires_at"] is None
+
+    # 2. 解除保留 (unretain)，設定 TTL 為 3600 秒
+    now_dt = datetime.now(UTC)
+    assert await blob_storage.unretain_media("home-dev", auth.image_ref, ttl_seconds=3600) is True
+    rec_after = blob_storage._retention_records[("home-dev", auth.image_ref)]
+    assert rec_after["retention"] == "orphan"
+    assert rec_after["expires_at"] is not None
+    assert rec_after["expires_at"] > now_dt
+
+    # 驗證 Blob 元資料已同步為 orphan
+    blob_path = auth.image_ref.removeprefix("blob://").lstrip("/")
+    client = fake_blob_service.get_container_client("media").get_blob_client(blob_path)
+    props = await client.get_blob_properties()
+    assert props.metadata["retention"] == "orphan"
+    assert props.metadata["expires_at"] != ""
+
+    # 3. 未到期時 cleanup 不應清除
+    purged_early = await blob_storage.cleanup_expired_blobs(now=now_dt + timedelta(seconds=1800))
+    assert auth.image_ref not in purged_early
+
+    # 4. 逾期後 cleanup 應安全清除
+    purged_late = await blob_storage.cleanup_expired_blobs(now=now_dt + timedelta(seconds=4000))
+    assert auth.image_ref in purged_late
+    assert rec_after["purged"] is True
+
+    # 5. 已清除之媒體再次呼叫 unretain 回傳 False
+    assert await blob_storage.unretain_media("home-dev", auth.image_ref) is False
+    assert (
+        await blob_storage.unretain_media(
+            "home-dev", "blob://households/home-dev/media/unknown.jpg"
+        )
+        is False
+    )

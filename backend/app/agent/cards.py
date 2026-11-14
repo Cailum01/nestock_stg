@@ -9,9 +9,16 @@ happens only in `POST /agent/resume` after the user confirms
 (`services/purchase_inputs.py`) reads the stored lines back and C1's
 `ShoppingWriteBuilder` plans the batch (Issue #60).
 
-Not covered yet: items that are not on the list or not linked to an inventory item
-(Issue #90), buying more than listed, a different unit, a purchase time other than
-the confirmation time, spreading more items than one batch holds over several cards,
+A list entry not linked to an inventory item is a thing the household does not have
+yet (Issue #90): its line is a `create_item` line (`new_item_operation` below,
+contract section 10) that adds a new inventory item with the confirmed name,
+quantity, unit and location. When the household already has an item with that name
+or alias, no line is made; the item-match card that would ask "is it this one?" has
+no confirm rules yet.
+
+Not covered yet: items that are not on the list, the item-match card (Issue #90),
+buying more than listed, a different unit, a purchase time other than the
+confirmation time, spreading more items than one batch holds over several cards,
 changing a card (Issue #91), and reminding the user of open cards.
 """
 
@@ -21,7 +28,8 @@ import json
 import logging
 import uuid
 from collections.abc import Sequence
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Protocol
 
 from app.models.agent import AgentResponse, AgentResult, ApprovalPresentation, ResultKind
 from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus
@@ -36,7 +44,8 @@ from app.services.approvals import (
     TargetVersion,
 )
 from app.services.cosmos_read import MappedDocument
-from app.services.purchase_inputs import COMPLETE_PURCHASE, PurchaseRecordReader
+from app.services.item_matching import match_term
+from app.services.purchase_inputs import COMPLETE_PURCHASE, CREATE_ITEM, PurchaseRecordReader
 from app.services.shopping.preview import ShoppingPreviewError, ShoppingPreviewService
 
 logger = logging.getLogger(__name__)
@@ -70,6 +79,20 @@ PURCHASE_TOOL_SCHEMA: dict[str, Any] = {
                                     "清單沒寫單位時，照使用者說的數量。"
                                 ),
                             },
+                            "unit": {
+                                "type": "string",
+                                "description": (
+                                    "只有待購清單上那一筆沒有 item_id、清單也沒寫單位時才填："
+                                    "使用者說的單位。"
+                                ),
+                            },
+                            "location": {
+                                "type": "string",
+                                "description": (
+                                    "只有待購清單上那一筆沒有 item_id（家裡還沒有這樣東西）時才填："
+                                    "使用者說要放在哪裡。"
+                                ),
+                            },
                         },
                         "required": ["shopping_item_id", "quantity"],
                     },
@@ -84,6 +107,9 @@ NOT_ON_LIST = "待購清單上找不到這一筆，可能已經買過或被刪�
 NOT_LINKED = "這樣東西還沒有對應到庫存裡的品項，現在還不能從對話記錄購買。"
 MORE_THAN_LISTED = "買的數量比待購清單上多，現在還不能記錄。"
 OTHER_UNIT = "待購清單和庫存用的單位不同，現在還不能記錄。"
+ALREADY_HAVE = "家裡已經有「{names}」，但待購清單上這一筆沒有連到它，現在還不能從對話記錄。"
+NEEDS_UNIT = "待購清單上沒寫單位，請使用者說買了幾個什麼（例如 2 瓶）。"
+NEEDS_LOCATION = "這是家裡還沒有的東西，要說放在哪裡，才能新增到庫存。"
 ONE_CARD_PER_MESSAGE = json.dumps({"error": "card_already_made"})
 """A second `complete_purchase` in the same message: the first card stands."""
 CARD_FAILED = json.dumps({"error": "card_not_made"})
@@ -139,10 +165,59 @@ def purchase_operation(
     )
 
 
+def new_item_operation(
+    *,
+    shopping: MappedDocument[ShoppingItem],
+    quantity: int,
+    unit: str,
+    location: str,
+    transaction_id: str | None = None,
+) -> NewOperation:
+    """One card line: "this list entry was bought; add it as a new inventory item".
+
+    Contract section 10 (Issue #90): `create_item` with `name`, `quantity`, `unit` and
+    `location`, all shown on the card. The card never carries the new `item_id`; it is
+    made from the line's `operation_id` when the user confirms. Only the shopping
+    entry's version is on the line, because the new item does not exist yet.
+    """
+    if shopping.etag is None:
+        raise ValueError("The shopping entry must be read with its ETag.")
+    name = shopping.record.name
+    return NewOperation(
+        action=CREATE_ITEM,
+        description=(
+            f"會新增一個庫存品項：{name} {quantity} {unit}，放在{location}（從待購清單完成購買）"
+        ),
+        values={
+            "name": name,
+            "quantity": quantity,
+            "unit": unit,
+            "location": location,
+            "shopping_item_id": shopping.record.shopping_item_id,
+            "transaction_id": transaction_id or uuid.uuid4().hex,
+        },
+        targets=[TargetVersion(record_id=shopping.document_id, etag=shopping.etag)],
+    )
+
+
+class CardRecordReader(PurchaseRecordReader, Protocol):
+    """B1's `CosmosReadRepository`: versioned reads, plus the inventory list for names."""
+
+    async def list_inventory(self, household_id: str) -> list[InventoryItem]: ...
+
+
+@dataclass(frozen=True)
+class _Requested:
+    shopping_item_id: str
+    quantity: int
+    unit: str | None = None
+    location: str | None = None
+
+
 class PurchaseCards:
     """The `complete_purchase` tool: makes and stores a pending purchase card."""
 
-    def __init__(self, reader: PurchaseRecordReader, approvals: ApprovalService) -> None:
+    def __init__(self, reader: CardRecordReader, approvals: ApprovalService) -> None:
         self._reader = reader
         self._approvals = approvals
 
@@ -155,10 +230,10 @@ class PurchaseCards:
             return json.dumps({"error": "no_items"}), None
         lines: list[NewOperation] = []
         left_out: list[dict[str, Any]] = []
-        for shopping_item_id, quantity in requested:
-            line, reason = await self._line(household_id, shopping_item_id, quantity)
+        for item in requested:
+            line, reason = await self._line(household_id, item)
             if line is None:
-                left_out.append({"shopping_item_id": shopping_item_id, "reason": reason})
+                left_out.append({"shopping_item_id": item.shopping_item_id, "reason": reason})
             else:
                 lines.append(line)
         if not lines:
@@ -191,17 +266,16 @@ class PurchaseCards:
         }
         return json.dumps(view, ensure_ascii=False), card.model_dump(mode="json")
 
-    async def _line(
-        self, household_id: str, shopping_item_id: str, quantity: int
-    ) -> tuple[NewOperation | None, str]:
+    async def _line(self, household_id: str, item: _Requested) -> tuple[NewOperation | None, str]:
+        quantity = item.quantity
         shopping = await self._reader.read_shopping_item_with_etag(
-            household_id=household_id, shopping_item_id=shopping_item_id
+            household_id=household_id, shopping_item_id=item.shopping_item_id
         )
         if shopping is None or shopping.record.status is not ShoppingStatus.PENDING:
             return None, NOT_ON_LIST
         entry = shopping.record
         if not entry.item_id:
-            return None, NOT_LINKED
+            return await self._new_item_line(household_id, shopping, item)
         if entry.quantity is not None and quantity > entry.quantity:
             return None, MORE_THAN_LISTED
         inventory = await self._reader.read_inventory_item_with_etag(
@@ -216,28 +290,60 @@ class PurchaseCards:
         except (ShoppingPreviewError, ValueError) as error:
             return None, f"這一筆現在還不能記錄：{error}"
 
+    async def _new_item_line(
+        self, household_id: str, shopping: MappedDocument[ShoppingItem], item: _Requested
+    ) -> tuple[NewOperation | None, str]:
+        """A list entry the household does not have yet becomes a `create_item` line."""
+        entry = shopping.record
+        if entry.quantity is not None and item.quantity > entry.quantity:
+            return None, MORE_THAN_LISTED
+        same = match_term(entry.name, await self._reader.list_inventory(household_id))
+        if same.items:
+            return None, ALREADY_HAVE.format(names="、".join(i.name for i in same.items))
+        if entry.unit is not None and item.unit is not None and item.unit != entry.unit:
+            return None, OTHER_UNIT
+        unit = entry.unit or item.unit
+        if unit is None:
+            return None, NEEDS_UNIT
+        if item.location is None:
+            return None, NEEDS_LOCATION
+        try:
+            line = new_item_operation(
+                shopping=shopping, quantity=item.quantity, unit=unit, location=item.location
+            )
+        except ValueError as error:
+            return None, f"這一筆現在還不能記錄：{error}"
+        return line, ""
 
-def _requested_items(value: Any) -> list[tuple[str, int]]:
-    """The model's items, each shopping entry once, quantities as whole numbers ≥ 1."""
+
+def _requested_items(value: Any) -> list[_Requested]:
+    """The model's items, each shopping entry once, quantities as whole numbers ≥ 1.
+
+    `unit` and `location` are optional words. Blank text counts as not said: the real
+    model fills unused optional fields with "" (seen on Azure OpenAI, 2026-11-13).
+    """
     if not isinstance(value, list):
         return []
     seen: set[str] = set()
-    requested: list[tuple[str, int]] = []
+    requested: list[_Requested] = []
     for item in value:
         if not isinstance(item, dict):
             return []
         shopping_item_id = str(item.get("shopping_item_id") or "").strip()
         quantity = item.get("quantity")
+        words = [item.get("unit"), item.get("location")]
         if (
             not shopping_item_id
             or shopping_item_id in seen
             or isinstance(quantity, bool)
             or not isinstance(quantity, int)
             or quantity < 1
+            or any(w is not None and not isinstance(w, str) for w in words)
         ):
             return []
         seen.add(shopping_item_id)
-        requested.append((shopping_item_id, quantity))
+        unit, location = ((w or "").strip() or None for w in words)
+        requested.append(_Requested(shopping_item_id, quantity, unit, location))
     return requested
 
 
@@ -290,7 +396,7 @@ def _written_lines(record: ApprovalRecord) -> Sequence[str]:
         written = outcome.get(operation.operation_id)
         if not isinstance(written, dict):
             continue
-        line = f"{operation.values.get('name')} +{operation.values.get('purchased_quantity')}"
+        line = f"{operation.values.get('name')} +{_number(written.get('quantity_added'))}"
         line += f" {written.get('unit')}（現在 {_number(written.get('inventory_quantity'))}"
         line += f" {written.get('unit')}）"
         lines.append(line)

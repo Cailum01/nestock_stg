@@ -172,6 +172,142 @@ def test_prompt_says_how_to_answer_when_the_shopping_list_is_unavailable():
     assert "不要說「不在待購清單上」" in prompt
 
 
+# --- One item asked about: only that item comes back (DEMO checklist v3, 3 B) -----
+
+
+def _item(item_id, name, quantity, unit, location, aliases=None):
+    return InventoryItem(
+        item_id=item_id,
+        household_id=HOUSEHOLD,
+        name=name,
+        quantity=quantity,
+        unit=unit,
+        location=location,
+        aliases=aliases,
+        created_at=datetime(2026, 11, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 11, 1, tzinfo=UTC),
+    )
+
+
+class _Household:
+    """A household with several items, like the DEMO baseline."""
+
+    def __init__(self, *items):
+        self.items = list(items) or [
+            _item("seed-tissue", "衛生紙", 8, "包", "浴室櫃子", aliases=["面紙"]),
+            _item("seed-detergent", "洗衣精", 1, "瓶", "陽台洗衣機旁"),
+            _item("seed-battery", "電池", 4, "顆", "客廳抽屜"),
+        ]
+
+    async def list_items(self, household_id: str):
+        return [item for item in self.items if item.household_id == household_id]
+
+
+def _household_agent(model, inventory=None):
+    tools = QueryTools(inventory or _Household(), get_shopping_service())
+    return ReadAgent(model, tools, load_system_prompt())
+
+
+def _tool_results(model):
+    return [json.loads(m.content) for m in model.seen[-1] if isinstance(m, ToolMessage)]
+
+
+def test_asking_about_one_item_shows_only_that_item():
+    model = ScriptedModel(
+        _call("list_inventory", item_name="衛生紙"),
+        AIMessage(content="衛生紙還有 8 包，在浴室櫃子。"),
+    )
+
+    response = _ask(_household_agent(model), "衛生紙還有幾包？放在哪裡？")
+
+    (seen,) = _tool_results(model)
+    assert seen["item_name"] == "衛生紙"
+    assert [row["name"] for row in seen["inventory"]] == ["衛生紙"]
+    assert "shopping_list" in seen  # Flow B still sees the shopping list
+    (card,) = response.results
+    assert card.kind == ResultKind.INVENTORY
+    assert [row["name"] for row in card.data["items"]] == ["衛生紙"]
+
+
+def test_an_alias_finds_the_household_item():
+    model = ScriptedModel(_call("list_inventory", item_name="面紙"), AIMessage(content="有"))
+
+    response = _ask(_household_agent(model), "面紙還有嗎？")
+
+    assert [row["name"] for row in response.results[0].data["items"]] == ["衛生紙"]
+
+
+def test_another_name_gets_the_household_names_and_the_second_lookup_shows_one_item():
+    model = ScriptedModel(
+        _call("list_inventory", item_name="AA 電池"),
+        _call("list_inventory", call_id="call-2", item_name="電池"),
+        AIMessage(content="電池還有 4 顆，在客廳抽屜。"),
+    )
+
+    response = _ask(_household_agent(model), "我要買 AA 電池，家裡還有嗎？")
+
+    first, second = _tool_results(model)
+    assert first["found"] is False and "inventory" not in first
+    assert [item["name"] for item in first["household_items"]] == ["衛生紙", "洗衣精", "電池"]
+    assert "shopping_list" in first
+    assert [row["name"] for row in second["inventory"]] == ["電池"]
+    (card,) = response.results
+    assert [row["name"] for row in card.data["items"]] == ["電池"]
+
+
+def test_nothing_found_shows_no_inventory_card():
+    model = ScriptedModel(
+        _call("list_inventory", item_name="螺絲起子"),
+        AIMessage(content="庫存裡沒有找到螺絲起子。"),
+    )
+
+    response = _ask(_household_agent(model), "螺絲起子放在哪裡？")
+
+    assert response.results == []
+
+
+def test_items_with_the_same_name_all_come_back():
+    two = _Household(
+        _item("soy-1", "醬油", 2, "瓶", "廚房調味架"),
+        _item("soy-2", "醬油", 1, "瓶", "冰箱"),
+        _item("salt", "鹽", 3, "包", "廚房調味架"),
+    )
+    model = ScriptedModel(_call("list_inventory", item_name="醬油"), AIMessage(content="有兩瓶"))
+
+    response = _ask(_household_agent(model, two), "醬油放哪？")
+
+    assert [row["item_id"] for row in response.results[0].data["items"]] == ["soy-1", "soy-2"]
+
+
+def test_no_or_blank_item_name_returns_the_whole_inventory():
+    for args in ({}, {"item_name": ""}, {"item_name": "  "}):
+        model = ScriptedModel(_call("list_inventory", **args), AIMessage(content="這些"))
+
+        response = _ask(_household_agent(model), "家裡有什麼？")
+
+        assert len(response.results[0].data["items"]) == 3
+
+
+def test_prompt_tells_the_model_when_to_name_the_item():
+    prompt = load_system_prompt()
+    assert "`item_name` 填使用者說的品名" in prompt
+    assert "`found` 是 false" in prompt and "「AA 電池」和「電池」" in prompt
+
+
+def test_markdown_symbols_never_reach_the_app():
+    """Issue #124's screenshot showed Noki's `**` printed as-is in the App (A1-89)."""
+    reply = "**衛生紙**還有 8 包。\n## 位置\n浴室櫃子，貨號 #1 那格"
+    model = ScriptedModel(AIMessage(content=reply))
+
+    response = _ask(_agent(model), "衛生紙在哪？")
+
+    assert response.message == "衛生紙還有 8 包。\n位置\n浴室櫃子，貨號 #1 那格"
+
+
+def test_prompt_asks_for_plain_text():
+    assert "不要用 Markdown 符號" in load_system_prompt()
+
+
 def test_greeting_needs_no_tool():
     model = ScriptedModel(AIMessage(content="你好！想查什麼？"))
     response = _ask(_agent(model), "你好")

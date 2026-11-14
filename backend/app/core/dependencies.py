@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from app.services.approvals import ApprovalService
+from app.services.commerce.biggo import BigGoCommerceProvider
 from app.services.cosmos_read import (
     CosmosInventoryService,
     CosmosReadRepository,
@@ -279,6 +280,33 @@ def _reset_vision_service_for_test() -> None:
     global _vision_service, _vision_service_resolved
     _vision_service = None
     _vision_service_resolved = False
+
+
+_commerce_service: BigGoCommerceProvider | None = None
+_commerce_service_resolved: bool = False
+_commerce_lock = threading.Lock()
+
+
+def get_commerce_service() -> BigGoCommerceProvider:
+    """FastAPI dependency for BigGoCommerceProvider.
+
+    Thread-safe lazy resolution of BigGoCommerceProvider.
+    """
+    global _commerce_service, _commerce_service_resolved
+    if not _commerce_service_resolved:
+        with _commerce_lock:
+            if not _commerce_service_resolved:
+                _commerce_service = BigGoCommerceProvider()
+                _commerce_service_resolved = True
+    return _commerce_service
+
+
+def _reset_commerce_service_for_test() -> None:
+    """Reset commerce singleton state for test isolation."""
+    global _commerce_service, _commerce_service_resolved
+    with _commerce_lock:
+        _commerce_service = None
+        _commerce_service_resolved = False
 
 
 _approval_service: ApprovalService | None = None

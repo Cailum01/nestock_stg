@@ -229,6 +229,9 @@ How the App sends the change (agreed with C2 in Issue #91):
   message changes one of them. With one open card it changes that card; with
   several and no clear match it asks which; otherwise it answers normally.
 
+Not built yet on main: the 送出修改 path (in PR #143) and the chat-box change
+(Issue #91).
+
 ## 8. Reminders
 
 When the user sends the next message, the Agent mentions cards that are still
@@ -338,10 +341,11 @@ quantity can be changed.
   `purchased_unit` (the inventory item's unit), `shopping_item_id`, `item_id`,
   `transaction_id`. There is no `location`: the purchase adds to an inventory item
   the household already has.
-- An item gets a line only if its Shopping List entry is still pending and linked to
-  an inventory item, the entry's unit (when it has one) is the inventory unit, and
-  the bought quantity is not more than the listed quantity (when there is one). Other
-  items are left off the card and the Agent says why.
+- An entry linked to an inventory item gets a purchase line only if it is still
+  pending, its unit (when it has one) is the inventory unit, and the bought quantity
+  is not more than the listed quantity (when there is one). A pending entry not
+  linked to an inventory item gets a new-item line instead (section 10, PR #140).
+  Other items are left off the card and the Agent says why.
 - A Shopping List entry may have no quantity or unit (Issue #52). Without a unit,
   the card uses the inventory unit and the user confirms it on the card. This is
   A1's choice, not a v8 or team rule (v8 does not cover units); A1 supplies
@@ -350,8 +354,7 @@ quantity can be changed.
   `single_action`; for `batch_action`, `approved_operation_ids` lists the items the
   user kept checked (all of them when nothing was unchecked). Unchecked items are not
   written (Issue #42 c).
-- A changed value goes back to the Agent as in section 7; that handling is not
-  built yet (Issue #91).
+- A changed value goes back to the Agent as in section 7 (Issue #91).
 - Purchase time (Issue #113): the Transaction's `created_at` is when the purchase
   happened. No purchase time is on the card yet, so the first `decided_at` is used,
   and a retry keeps that same time. When the user says a day (昨天買的), the line

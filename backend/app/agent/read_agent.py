@@ -51,6 +51,7 @@ from app.models.agent import AgentRequest, AgentResponse, AgentResult, ResultKin
 from app.models.commerce import PurchaseOption
 from app.models.domain import InventoryItem
 from app.models.vision import SceneType, VisionAnalysisResult
+from app.services.approvals import ApprovalRecord, CardNotChangeable
 from app.services.commerce.biggo import BigGoCommerceProvider
 from app.services.item_matching import ItemMatch, ItemMatcher, MatchMethod, match_term
 from app.services.provisional_storage.interfaces import MediaStorageService
@@ -71,6 +72,24 @@ PHOTO_NOT_SUPPORTED = (
 )
 PHOTO_ATTACHED = "使用者這次附了一張照片。請先呼叫 analyze_photo 看照片內容，再回答。"
 PHOTO_NOT_FOUND = "找不到這張照片，請重新拍一次或重新上傳。"
+CHANGING_CARD = (
+    "使用者在下面這張確認卡上按了「送出修改」，這則訊息只寫了改過的地方。"
+    "請照改過的內容，用原卡上的 shopping_item_id 重新呼叫 complete_purchase 出一張新卡；"
+    "原卡上沒改到的品項和值照舊放進新卡。不要再問卡上已經有的資訊。原本的卡：{card}"
+)
+"""Given to the model with a 送出修改 message (contract section 7, Issue #91)."""
+CARD_CHANGE_REFUSED = {
+    "not_found": "找不到這張確認卡，請再說一次要記錄的內容。",
+    "expired": "這張確認卡已經過期，請再說一次要記錄的內容。",
+    "confirmed": "這張確認卡已經確認了，不能再修改。",
+    "completed": "這張確認卡已經記錄好了，不能再修改。",
+    "cancelled": "這張確認卡已經取消了，請再說一次要記錄的內容。",
+}
+CARD_CHANGE_UNAVAILABLE = "現在不能修改確認卡，請再說一次要記錄的內容。"
+CARD_CHANGE_NOT_DONE = (
+    "這次修改沒有完成。請直接確認或取消原本那張卡；要改的話，取消後用說的再講一次。"
+)
+"""The old card could not be cancelled, so the new one was withdrawn (section 7)."""
 LOW_CONFIDENCE = 0.6  # below this, the Agent says it is unsure (Issue #17)
 NO_PHOTO = "這次沒有附照片，無法辨識。"
 PHOTO_FAILED = json.dumps({"error": "photo_analysis_failed"})
@@ -217,6 +236,8 @@ class _State(TypedDict, total=False):
     vision: dict[str, Any]
     purchase_options: list[dict[str, Any]]
     pending_approval: dict[str, Any]
+    replaces_approval_id: str
+    """The card a 送出修改 replaces (section 7); the new card records it."""
 
 
 def load_system_prompt() -> str:
@@ -242,6 +263,19 @@ def _match_view(match: ItemMatch) -> dict[str, Any]:
             {"item_id": choice.item_id, "item_name": choice.name} for choice in match.items
         ]
     return view
+
+
+def _card_view(record: ApprovalRecord) -> str:
+    """The card being changed, as the model needs it: lines and their shown values."""
+    lines = [
+        {
+            "action": operation.action,
+            "description": operation.description,
+            "values": {k: v for k, v in operation.values.items() if k != "transaction_id"},
+        }
+        for operation in record.operations
+    ]
+    return json.dumps(lines, ensure_ascii=False)
 
 
 def _household_item_view(item: InventoryItem) -> dict[str, Any]:
@@ -612,7 +646,11 @@ class ReadAgent:
             return f"沒有這個工具：{call['name']}", None
         if "pending_approval" in update or "pending_approval" in state:
             return ONE_CARD_PER_MESSAGE, None
-        return await self._purchases.propose(state["household_id"], call.get("args") or {})
+        return await self._purchases.propose(
+            state["household_id"],
+            call.get("args") or {},
+            replaces_approval_id=state.get("replaces_approval_id"),
+        )
 
     async def respond(self, request: AgentRequest) -> AgentResponse:
         messages: list[AnyMessage] = [SystemMessage(self._system_prompt)]
@@ -625,12 +663,37 @@ class ReadAgent:
             messages.append(SystemMessage(PHOTO_ATTACHED))
         elif request.image_ref:  # accepted, not read: no vision service configured
             messages.append(SystemMessage(PHOTO_NOT_SUPPORTED))
+        replacing = None
+        if request.replaces_approval_id:
+            if self._purchases is None:
+                return AgentResponse(message=CARD_CHANGE_UNAVAILABLE)
+            try:
+                replacing = await self._purchases.card_to_change(
+                    request.household_id, request.replaces_approval_id
+                )
+            except CardNotChangeable as refused:
+                return AgentResponse(message=CARD_CHANGE_REFUSED[refused.reason])
+            start["replaces_approval_id"] = replacing.approval_id
+            messages.append(SystemMessage(CHANGING_CARD.format(card=_card_view(replacing))))
         messages.append(HumanMessage(request.message))
         start["messages"] = messages
         try:
             final = await self._graph.ainvoke(start, {"recursion_limit": MAX_STEPS})
         except GraphRecursionError:
             return AgentResponse(message="這個問題我查了太多次還是答不出來，請換個方式問問看。")
+        if replacing is not None and final.get("pending_approval") is not None:
+            # Section 7: the old card is cancelled only after the new one is stored. Unless
+            # it ends up cancelled as replaced, the new card is withdrawn and not shown, and
+            # it never counts: never two cards that can be confirmed.
+            not_replaced = await self._purchases.retire(
+                request.household_id,
+                replacing.approval_id,
+                final["pending_approval"]["approval_id"],
+            )
+            if not_replaced is not None:
+                return AgentResponse(
+                    message=CARD_CHANGE_REFUSED.get(not_replaced, CARD_CHANGE_NOT_DONE)
+                )
 
         results = []
         if "inventory" in final:

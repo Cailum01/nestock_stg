@@ -36,6 +36,7 @@ from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus
 from app.services.approvals import (
     ApprovalRecord,
     ApprovalService,
+    ApprovalStatus,
     BatchTooLarge,
     NewOperation,
     ResumeOutcome,
@@ -115,6 +116,8 @@ ONE_CARD_PER_MESSAGE = json.dumps({"error": "card_already_made"})
 CARD_FAILED = json.dumps({"error": "card_not_made"})
 TOO_MANY_ITEMS = json.dumps({"error": "too_many_items"})
 RECORDS_CHANGED = json.dumps({"error": "records_changed"})
+STILL_OPEN = "open"
+"""`PurchaseCards.retire`: the old card is still pending, or could not be read."""
 
 
 def purchase_operation(
@@ -221,10 +224,80 @@ class PurchaseCards:
         self._reader = reader
         self._approvals = approvals
 
+    async def card_to_change(self, household_id: str, approval_id: str) -> ApprovalRecord:
+        """The pending card a 送出修改 replaces (contract section 7, Issue #91).
+
+        Raises `CardNotChangeable` when it is missing, expired, confirmed or cancelled.
+        """
+        return await self._approvals.card_to_change(
+            household_id=household_id, approval_id=approval_id
+        )
+
+    async def retire(
+        self, household_id: str, old_approval_id: str, new_approval_id: str
+    ) -> str | None:
+        """After the new card is stored, the old one becomes `cancelled` (reason replaced).
+
+        None when the old card is cancelled as `replaced`: only then does the new card
+        count (`ApprovalService.counts`), so only then is it shown. Otherwise the new
+        card is cancelled too (reason replace_failed) and the reason is returned: the
+        old card's status (`expired`, `cancelled`, `confirmed`, `completed`) or
+        `STILL_OPEN`. The reply then carries no card, so the user never holds two cards
+        that can be confirmed (section 7, PR #143 review). If cancelling the new card
+        also fails, it is logged; it does not count, so it is never listed or confirmed,
+        and it expires.
+
+        When the cancel raises, the old card is read back first: the cancel may have been
+        written even though its reply was lost (commit then timeout, PR #143 B1 review).
+        """
+        try:
+            result = await self._approvals.cancel_replaced(
+                household_id=household_id, approval_id=old_approval_id
+            )
+            reason = _not_replaced_because(result.record)
+            if reason is not None:
+                logger.warning("Replaced card %s was not cancelled (%s)", old_approval_id, reason)
+        except Exception:
+            logger.warning("Replaced card %s was not cancelled", old_approval_id, exc_info=True)
+            reason = await self._read_back(household_id, old_approval_id)
+        if reason is None:
+            return None
+        try:
+            await self._approvals.cancel_failed_replacement(
+                household_id=household_id, approval_id=new_approval_id
+            )
+        except Exception:
+            logger.error(
+                "New card %s was not cancelled after its original %s was not replaced; "
+                "it does not count, is not shown and expires on its own",
+                new_approval_id,
+                old_approval_id,
+                exc_info=True,
+            )
+        return reason
+
+    async def _read_back(self, household_id: str, approval_id: str) -> str | None:
+        """After a cancel error: None if the old card reads back as replaced after all."""
+        try:
+            record = await self._approvals.read_card(
+                household_id=household_id, approval_id=approval_id
+            )
+        except Exception:
+            logger.warning("Replaced card %s could not be read back", approval_id, exc_info=True)
+            return STILL_OPEN
+        reason = _not_replaced_because(record)
+        if reason is None:
+            logger.info("Replaced card %s was cancelled after all", approval_id)
+        return reason
+
     async def propose(
-        self, household_id: str, args: dict[str, Any]
+        self, household_id: str, args: dict[str, Any], *, replaces_approval_id: str | None = None
     ) -> tuple[str, dict[str, Any] | None]:
-        """(result for the model, card for the App). Writes nothing but the pending card."""
+        """(result for the model, card for the App). Writes nothing but the pending card.
+
+        `replaces_approval_id` is the card a 送出修改 replaces; the new card records it
+        (section 7).
+        """
         requested = _requested_items(args.get("items"))
         if not requested:
             return json.dumps({"error": "no_items"}), None
@@ -250,6 +323,7 @@ class PurchaseCards:
                     household_id=household_id,
                     presentation=presentation,
                     operations=lines,
+                    replaces_approval_id=replaces_approval_id,
                 )
             )
         except BatchTooLarge:
@@ -314,6 +388,15 @@ class PurchaseCards:
         except ValueError as error:
             return None, f"這一筆現在還不能記錄：{error}"
         return line, ""
+
+
+def _not_replaced_because(record: ApprovalRecord | None) -> str | None:
+    """None when the old card is cancelled as `replaced`; otherwise why it is not."""
+    if record is None or record.status is ApprovalStatus.PENDING:
+        return STILL_OPEN
+    if record.is_replaced:
+        return None
+    return record.status.value
 
 
 def _requested_items(value: Any) -> list[_Requested]:

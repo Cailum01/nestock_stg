@@ -16,8 +16,8 @@ during implementation, but the rules below are decided. Public models stay in
 Current status: A1's service `backend/app/services/approvals.py` implements these
 rules and runs on B1's `CosmosWriteRepository`. With Cosmos configured,
 `POST /agent/resume` calls it; without Cosmos it returns 503. The only card the
-Agent makes so far is the v8 flow C purchase card (`complete_purchase`, read back by
-A1's `backend/app/services/purchase_inputs.py` and written through C1's
+Agent makes so far is the v8 flow C purchase card (`complete_purchase`, section 11;
+read back by A1's `backend/app/services/purchase_inputs.py` and written through C1's
 `ShoppingWriteBuilder`). Not built yet:
 changing a card (section 7), reminders (section 8), and the Agent making the new
 card by itself after a record changed (section 4 point 6); for now the reply asks
@@ -229,6 +229,9 @@ How the App sends the change (agreed with C2 in Issue #91):
   message changes one of them. With one open card it changes that card; with
   several and no clear match it asks which; otherwise it answers normally.
 
+Not built yet on main: the 送出修改 path (in PR #143) and the chat-box change
+(Issue #91).
+
 ## 8. Reminders
 
 When the user sends the next message, the Agent mentions cards that are still
@@ -242,7 +245,7 @@ There is no background job or push notification (#39).
 | --- | --- | --- |
 | Format the App uses to send a changed value back to the Agent | A1 + C2 | Decided in Issue #91; see section 7 |
 | Handling of the "should not happen" row in section 6 | A1 + C1 | Proposed here; C1 to confirm (#27) |
-| Meaning of Transaction `created_at` | B1 + B2 | Deferred; keep the current model |
+| Meaning of Transaction `created_at` | B1 + B2 | Decided in Issue #113: when the event happened; when the user gave no date, the card's first `decided_at`, and a retry keeps that same time (section 11). C1's builder does this |
 | Removing a wrong alias | — | Not in MVP scope |
 | v8 §12 `partial_success` | — | Not used in the MVP: one batch is all-or-nothing (#42) |
 | How a new item's `item_id` is made | B1 + A1 | Decided in Issue #90: B1's `resolve_inventory_item_id(operation_id)` (PR #97), made when the user confirms; see section 10 |
@@ -319,5 +322,59 @@ bought and the entry is not linked to an inventory item (`complete_purchase`,
     {"option_id": "same_item", "label": "是，加到洗潔精"},
     {"option_id": "new_item", "label": "不是，這是新的東西"}
   ]
+}
+```
+
+## 11. Purchase card (v8 flow C)
+
+The user says items on the Shopping List were bought (我買了衛生紙 2 包). The
+Agent's `complete_purchase` tool makes this card (`backend/app/agent/cards.py`) and
+stores it as `pending`; nothing else is written until the user confirms. The format
+below is what the code makes; its `values` were agreed with C1 in Issue #60. The App
+shows it as a purchase card (C2, PR #101): internal IDs are not shown, and only the
+quantity can be changed.
+
+- `presentation`: `single_action` for one item, `batch_action` for several.
+- Every operation: `action` `complete_purchase`; `description` such as
+  `衛生紙 +2 包（從待購清單完成購買）`.
+- `values`: `name`, `purchased_quantity` (a whole number, at least 1),
+  `purchased_unit` (the inventory item's unit), `shopping_item_id`, `item_id`,
+  `transaction_id`. There is no `location`: the purchase adds to an inventory item
+  the household already has.
+- An entry linked to an inventory item gets a purchase line only if it is still
+  pending, its unit (when it has one) is the inventory unit, and the bought quantity
+  is not more than the listed quantity (when there is one). A pending entry not
+  linked to an inventory item gets a new-item line instead (section 10, PR #140).
+  Other items are left off the card and the Agent says why.
+- A Shopping List entry may have no quantity or unit (Issue #52). Without a unit,
+  the card uses the inventory unit and the user confirms it on the card. This is
+  A1's choice, not a v8 or team rule (v8 does not cover units); A1 supplies
+  `purchased_unit` as agreed with C1 in Issue #60.
+- The reply uses the normal `ResumeRequest`: `approved: true` or `false` for
+  `single_action`; for `batch_action`, `approved_operation_ids` lists the items the
+  user kept checked (all of them when nothing was unchecked). Unchecked items are not
+  written (Issue #42 c).
+- A changed value goes back to the Agent as in section 7 (Issue #91).
+- Purchase time (Issue #113): the Transaction's `created_at` is when the purchase
+  happened. No purchase time is on the card yet, so the first `decided_at` is used,
+  and a retry keeps that same time. When the user says a day (昨天買的), the line
+  will carry `purchased_at`, shown only as a date and changed as in section 7; the
+  Agent does not do this yet. `backend/app/services/purchase_time.py` (PR #71) has
+  the rule for turning the day into a time, and `purchase_inputs.py` already reads
+  `purchased_at` when present.
+
+```json
+{
+  "approval_id": "demo-approval-5",
+  "presentation": "single_action",
+  "operations": [{
+    "operation_id": "demo-operation-5",
+    "action": "complete_purchase",
+    "description": "衛生紙 +2 包（從待購清單完成購買）",
+    "values": {"name": "衛生紙", "purchased_quantity": 2, "purchased_unit": "包",
+               "shopping_item_id": "demo-shopping-1", "item_id": "demo-toilet-paper",
+               "transaction_id": "demo-transaction-1"}
+  }],
+  "options": []
 }
 ```

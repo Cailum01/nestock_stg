@@ -67,12 +67,19 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
             "expires_at": expires_at.isoformat() if isinstance(expires_at, datetime) else "",
         }
 
+    def _blob_tags(self, household_id: str, rec: dict[str, Any]) -> dict[str, str]:
+        return {
+            "household_id": household_id,
+            "retention": str(rec.get("retention", "orphan")),
+        }
+
     async def _upload_to_blob(
         self,
         blob_path: str,
         data: bytes | str,
         content_type: str | None = None,
         metadata: dict[str, str] | None = None,
+        tags: dict[str, str] | None = None,
     ) -> None:
         blob_client = await self._resolve_client(blob_path)
         kwargs: dict[str, Any] = {"overwrite": True}
@@ -80,6 +87,8 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
             kwargs["content_type"] = content_type
         if metadata is not None:
             kwargs["metadata"] = metadata
+        if tags is not None:
+            kwargs["tags"] = tags
         await self._call_client(blob_client.upload_blob, data, **kwargs)
 
     @staticmethod
@@ -143,6 +152,16 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
             logger.error("Blob metadata update failed for %s: %s", blob_path, exc)
             raise
 
+    async def _set_blob_tags(self, blob_path: str, tags: dict[str, str]) -> None:
+        try:
+            blob_client = await self._resolve_client(blob_path)
+            tags_func = getattr(blob_client, "set_blob_tags", None)
+            if tags_func is not None:
+                await self._call_client(tags_func, tags=tags)
+        except Exception as exc:
+            logger.error("Blob tags update failed for %s: %s", blob_path, exc)
+            raise
+
     async def _store_raw_media(
         self, hid: str, image_ref: str, payload: bytes, content_type: str, rec: dict[str, Any]
     ) -> None:
@@ -151,6 +170,7 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
             payload,
             content_type=content_type,
             metadata=self._blob_meta(hid, rec),
+            tags=self._blob_tags(hid, rec),
         )
 
     async def _store_artifact_bytes(
@@ -162,13 +182,44 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
             payload,
             content_type="application/json",
             metadata=self._blob_meta(hid, rec),
+            tags=self._blob_tags(hid, rec),
         )
 
     async def _mark_storage_retained(self, hid: str, image_ref: str, rec: dict[str, Any]) -> None:
         meta = self._blob_meta(hid, rec)
-        await self._set_blob_metadata(self._ref_to_blob_path(image_ref), meta)
-        if rec.get("artifact_ref"):
-            await self._set_blob_metadata(self._ref_to_blob_path(str(rec["artifact_ref"])), meta)
+        tags = self._blob_tags(hid, rec)
+        raw_path = self._ref_to_blob_path(image_ref)
+        is_orphan = rec.get("retention") == "orphan"
+
+        if is_orphan:
+            raw_bytes = await self._download_from_blob(raw_path)
+            if raw_bytes is not None:
+                await self._upload_to_blob(raw_path, raw_bytes, metadata=meta, tags=tags)
+            else:
+                await self._set_blob_metadata(raw_path, meta)
+                await self._set_blob_tags(raw_path, tags)
+
+            if rec.get("artifact_ref"):
+                art_path = self._ref_to_blob_path(str(rec["artifact_ref"]))
+                art_bytes = await self._download_from_blob(art_path)
+                if art_bytes is not None:
+                    await self._upload_to_blob(
+                        art_path,
+                        art_bytes,
+                        content_type="application/json",
+                        metadata=meta,
+                        tags=tags,
+                    )
+                else:
+                    await self._set_blob_metadata(art_path, meta)
+                    await self._set_blob_tags(art_path, tags)
+        else:
+            await self._set_blob_metadata(raw_path, meta)
+            await self._set_blob_tags(raw_path, tags)
+            if rec.get("artifact_ref"):
+                art_path = self._ref_to_blob_path(str(rec["artifact_ref"]))
+                await self._set_blob_metadata(art_path, meta)
+                await self._set_blob_tags(art_path, tags)
 
     async def _delete_media_and_artifact(
         self, hid: str, image_ref: str, rec: dict[str, Any]

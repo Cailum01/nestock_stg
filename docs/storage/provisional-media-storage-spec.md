@@ -116,7 +116,9 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
 
 ### 4.1 生產環境 Azure Blob Storage 24h 孤兒清理生命週期政策 (Lifecycle Management)
 
-依據設計文件 §8.2 與 Issue #98 驗收標準，生產端 Azure Blob 容器（`media`）需配置原生 Lifecycle Management 規則，將未附加業務紀錄的孤立檔案於 24 小時後自動 Purge：
+依據設計文件 §8.2 與 Issue #98 驗收標準，生產端 Azure Blob 容器（`media`）需配置原生 Lifecycle Management 規則，將未附加業務紀錄的孤立檔案於 24 小時後自動 Purge。
+
+本政策強制透過 **Azure Blob Index Tags**（`blobIndexMatch`）精確匹配 `retention == "orphan"`，確保已附加於業務紀錄之檔案（`retention == "attached"`）天然免疫清理規則：
 
 ```json
 {
@@ -128,7 +130,14 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
       "definition": {
         "filters": {
           "blobTypes": ["blockBlob"],
-          "prefixMatch": ["households/"]
+          "prefixMatch": ["households/"],
+          "blobIndexMatch": [
+            {
+              "name": "retention",
+              "op": "==",
+              "value": "orphan"
+            }
+          ]
         },
         "actions": {
           "baseBlob": {
@@ -142,7 +151,11 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
   ]
 }
 ```
-＊**保留例外機制**：已附加業務紀錄之檔案經由 `retain_media` 打上 `retention="attached"` 元資料標籤，於生產環境可配合 Azure Blob Index Tags 或後續 Blob 搬移歸檔至永久保存路徑（`households/{household_id}/permanent/`），避免遭孤兒規則自動清除。當下游執行 `unretain_media` 時，元資料還原為 `retention="orphan"`，恢復孤立回收排程。
+
+＊**保留與解除保留語義契約**：
+1. **上傳預設孤立**：上傳時原始圖檔與衍生工件預設寫入 Index Tags `{"retention": "orphan", "household_id": "<id>"}`。
+2. **附著保留 (`retain_media`)**：當下游業務（如購物完成或庫存確認）持久化時，將原始圖與衍生工件原子更新為 `{"retention": "attached", "household_id": "<id>"}`，由於不符合 `blobIndexMatch` 條件，永久排除於 Lifecycle 自動清理之外。
+3. **解除保留與寬限期 (`unretain_media`)**：當商品刪除或換圖解除附件時，除將 Index Tags 還原為 `retention="orphan"` 外，適配器對 Blob 執行時間戳刷新（重設 `CreationTime`），使 Azure 原生排程之 `daysAfterCreationGreaterThan: 1` 重新自該時刻起算，保證享有完整的 24 小時寬限期。
 ---
 
 ## 5. 實體雲端驗證紀錄 (Physical Verification Audit)

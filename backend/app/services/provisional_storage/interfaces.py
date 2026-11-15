@@ -74,6 +74,7 @@ class MediaStorageService(Protocol):
     ) -> bool:
         """Release attached retention status, restoring orphan expiration window."""
         ...
+
     async def cleanup_expired_blobs(self, now: datetime | None = None) -> list[str]:
         """Purge expired orphan media and derived artifacts not attached to domain records."""
         ...

@@ -42,9 +42,17 @@ from app.services.vision import MockVisionService
 
 
 class FakeBlobProperties:
-    def __init__(self, name: str, metadata: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        metadata: dict[str, str] | None = None,
+        tags: dict[str, str] | None = None,
+        creation_time: datetime | None = None,
+    ) -> None:
         self.name = name
         self.metadata = dict(metadata or {})
+        self.tags = dict(tags or {})
+        self.creation_time = creation_time or datetime.now(UTC)
 
 
 class FakeBlobClient:
@@ -52,10 +60,14 @@ class FakeBlobClient:
         self,
         container_dict: dict[str, bytes],
         metadata_dict: dict[str, dict[str, str]],
+        tags_dict: dict[str, dict[str, str]],
+        creation_time_dict: dict[str, datetime],
         blob_name: str,
     ) -> None:
         self._container_dict = container_dict
         self._metadata_dict = metadata_dict
+        self._tags_dict = tags_dict
+        self._creation_time_dict = creation_time_dict
         self._blob_name = blob_name
 
     async def upload_blob(self, data: bytes | str, overwrite: bool = True, **kwargs) -> None:
@@ -66,11 +78,27 @@ class FakeBlobClient:
             self._metadata_dict[self._blob_name] = {str(k): str(v) for k, v in meta.items()}
         elif self._blob_name not in self._metadata_dict:
             self._metadata_dict[self._blob_name] = {}
+        tags = kwargs.get("tags")
+        if isinstance(tags, dict):
+            self._tags_dict[self._blob_name] = {str(k): str(v) for k, v in tags.items()}
+        elif self._blob_name not in self._tags_dict:
+            self._tags_dict[self._blob_name] = {}
+        self._creation_time_dict[self._blob_name] = datetime.now(UTC)
 
     async def set_blob_metadata(self, metadata: dict[str, str] | None = None, **kwargs) -> None:
         if self._blob_name not in self._container_dict:
             raise KeyError(f"Blob {self._blob_name} does not exist.")
         self._metadata_dict[self._blob_name] = {str(k): str(v) for k, v in (metadata or {}).items()}
+
+    async def set_blob_tags(self, tags: dict[str, str] | None = None, **kwargs) -> None:
+        if self._blob_name not in self._container_dict:
+            raise KeyError(f"Blob {self._blob_name} does not exist.")
+        self._tags_dict[self._blob_name] = {str(k): str(v) for k, v in (tags or {}).items()}
+
+    async def get_blob_tags(self, **kwargs) -> dict[str, str]:
+        if self._blob_name not in self._container_dict:
+            raise KeyError(f"Blob {self._blob_name} does not exist.")
+        return dict(self._tags_dict.get(self._blob_name, {}))
 
     async def get_blob_properties(self, **kwargs) -> FakeBlobProperties:
         if self._blob_name not in self._container_dict:
@@ -78,11 +106,15 @@ class FakeBlobClient:
         return FakeBlobProperties(
             name=self._blob_name,
             metadata=self._metadata_dict.get(self._blob_name, {}),
+            tags=self._tags_dict.get(self._blob_name, {}),
+            creation_time=self._creation_time_dict.get(self._blob_name),
         )
 
     async def delete_blob(self, **kwargs) -> None:
         self._container_dict.pop(self._blob_name, None)
         self._metadata_dict.pop(self._blob_name, None)
+        self._tags_dict.pop(self._blob_name, None)
+        self._creation_time_dict.pop(self._blob_name, None)
 
     async def download_blob(self):
         if self._blob_name not in self._container_dict:
@@ -107,6 +139,8 @@ class FakeContainerClient:
         self,
         storage_dict: dict[str, dict[str, bytes]],
         metadata_store: dict[str, dict[str, dict[str, str]]],
+        tags_store: dict[str, dict[str, dict[str, str]]],
+        creation_time_store: dict[str, dict[str, datetime]],
         container_name: str,
     ) -> None:
         self._container_name = container_name
@@ -114,16 +148,29 @@ class FakeContainerClient:
             storage_dict[container_name] = {}
         if container_name not in metadata_store:
             metadata_store[container_name] = {}
+        if container_name not in tags_store:
+            tags_store[container_name] = {}
+        if container_name not in creation_time_store:
+            creation_time_store[container_name] = {}
         self._blobs = storage_dict[container_name]
         self._metadata = metadata_store[container_name]
+        self._tags = tags_store[container_name]
+        self._creation_times = creation_time_store[container_name]
 
     def get_blob_client(self, blob_name: str) -> FakeBlobClient:
-        return FakeBlobClient(self._blobs, self._metadata, blob_name)
+        return FakeBlobClient(
+            self._blobs, self._metadata, self._tags, self._creation_times, blob_name
+        )
 
     def list_blobs(self, name_starts_with: str | None = None, **kwargs):
         prefix = name_starts_with or ""
         items = [
-            FakeBlobProperties(name=name, metadata=self._metadata.get(name, {}))
+            FakeBlobProperties(
+                name=name,
+                metadata=self._metadata.get(name, {}),
+                tags=self._tags.get(name, {}),
+                creation_time=self._creation_times.get(name),
+            )
             for name in list(self._blobs.keys())
             if name.startswith(prefix)
         ]
@@ -152,9 +199,13 @@ class FakeBlobServiceClient:
     def __init__(self) -> None:
         self.storage: dict[str, dict[str, bytes]] = {}
         self.metadata: dict[str, dict[str, dict[str, str]]] = {}
+        self.tags: dict[str, dict[str, dict[str, str]]] = {}
+        self.creation_times: dict[str, dict[str, datetime]] = {}
 
     def get_container_client(self, container_name: str) -> FakeContainerClient:
-        return FakeContainerClient(self.storage, self.metadata, container_name)
+        return FakeContainerClient(
+            self.storage, self.metadata, self.tags, self.creation_times, container_name
+        )
 
 
 class FakeCosmosBatchClient:
@@ -828,12 +879,15 @@ async def test_unretain_media_restores_orphan_metadata_and_expiration(
     assert rec_after["expires_at"] is not None
     assert rec_after["expires_at"] > now_dt
 
-    # 驗證 Blob 元資料已同步為 orphan
+    # 驗證 Blob 元資料與 Tags 已同步為 orphan
     blob_path = auth.image_ref.removeprefix("blob://").lstrip("/")
     client = fake_blob_service.get_container_client("media").get_blob_client(blob_path)
     props = await client.get_blob_properties()
     assert props.metadata["retention"] == "orphan"
     assert props.metadata["expires_at"] != ""
+    assert props.tags["retention"] == "orphan"
+    assert props.tags["household_id"] == "home-dev"
+    assert props.creation_time >= now_dt
 
     # 3. 未到期時 cleanup 不應清除
     purged_early = await blob_storage.cleanup_expired_blobs(now=now_dt + timedelta(seconds=1800))
@@ -852,3 +906,161 @@ async def test_unretain_media_restores_orphan_metadata_and_expiration(
         )
         is False
     )
+
+
+@pytest.mark.anyio
+async def test_retain_media_reraises_on_tags_failure(fake_blob_service, mapping_port):
+    """驗證當 set_blob_tags 失敗時，retain_media 向上拋出例外。"""
+    storage = AzureBlobMediaStorage(
+        blob_service_client=fake_blob_service,
+        container_name="media",
+        mapping_port=mapping_port,
+        auto_process=False,
+    )
+    req = UploadAuthorizationRequest(
+        household_id="home-dev",
+        filename="tag_fail.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=6,
+    )
+    auth = await storage.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
+    await storage.receive_staged_upload(token, b"tag_bytes")
+
+    original_tags = FakeBlobClient.set_blob_tags
+
+    async def mock_broken_tags(self, *args, **kwargs):
+        raise OSError("Failed to communicate with Azure Blob tags endpoint")
+
+    FakeBlobClient.set_blob_tags = mock_broken_tags
+    try:
+        with pytest.raises(OSError, match="Failed to communicate with Azure Blob tags endpoint"):
+            await storage.retain_media("home-dev", auth.image_ref)
+    finally:
+        FakeBlobClient.set_blob_tags = original_tags
+
+
+@pytest.mark.anyio
+async def test_azure_lifecycle_policy_preserves_attached_and_respects_unretain_grace_period(
+    blob_storage, fake_blob_service
+):
+    """驗證 Azure Lifecycle 政策（blobIndexMatch: retention == orphan）：
+
+    1. 已保留媒體（retention == attached）永遠不會被 Lifecycle 政策選中刪除。
+    2. 新上傳孤立媒體在 24 小時後符合刪除條件。
+    3. 舊媒體解除保留（unretain）後物理刷新 CreationTime，保證 24 小時寬限期。
+    """
+    container = fake_blob_service.get_container_client("media")
+
+    def simulate_azure_lifecycle_policy_purge(current_time: datetime) -> list[str]:
+        """模擬 Azure 原生 Lifecycle Management 執行引擎：
+
+        Filters: prefixMatch: 'households/', blobIndexMatch: retention == 'orphan'
+        Action: delete if daysAfterCreationGreaterThan: 1 (creation_time + 86400s < current_time)
+        """
+        deleted = []
+        for blob_name in list(container._blobs.keys()):
+            if not blob_name.startswith("households/"):
+                continue
+            tags = container._tags.get(blob_name, {})
+            # 關鍵門禁：只有 tag retention == orphan 的 Blob 才會被政策鎖定
+            if tags.get("retention") != "orphan":
+                continue
+            c_time = container._creation_times.get(blob_name)
+            if c_time is None:
+                continue
+            # daysAfterCreationGreaterThan: 1 相當於建立時間超過 86400 秒
+            if (current_time - c_time).total_seconds() > 86400:
+                container._blobs.pop(blob_name, None)
+                container._metadata.pop(blob_name, None)
+                container._tags.pop(blob_name, None)
+                container._creation_times.pop(blob_name, None)
+                deleted.append(blob_name)
+        return deleted
+
+    # 1. 建立「持久保留媒體 A」(attached)
+    req_a = UploadAuthorizationRequest(
+        household_id="home-dev",
+        filename="attached_item.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=10,
+    )
+    auth_a = await blob_storage.create_upload_authorization(req_a)
+    token_a = auth_a.upload_url.split("/")[-1]
+    await blob_storage.receive_staged_upload(token_a, b"attached_bytes")
+    await blob_storage.retain_media("home-dev", auth_a.image_ref)
+
+    # 2. 建立「未確認孤兒媒體 B」(orphan)
+    req_b = UploadAuthorizationRequest(
+        household_id="home-dev",
+        filename="orphan_item.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=10,
+    )
+    auth_b = await blob_storage.create_upload_authorization(req_b)
+    token_b = auth_b.upload_url.split("/")[-1]
+    await blob_storage.receive_staged_upload(token_b, b"orphan_bytes")
+
+    # 3. 建立「曾於 30 天前建立並保留的舊媒體 C」
+    req_c = UploadAuthorizationRequest(
+        household_id="home-dev",
+        filename="old_retained_item.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=10,
+    )
+    auth_c = await blob_storage.create_upload_authorization(req_c)
+    token_c = auth_c.upload_url.split("/")[-1]
+    await blob_storage.receive_staged_upload(token_c, b"old_bytes")
+    await blob_storage.retain_media("home-dev", auth_c.image_ref)
+
+    path_a = auth_a.image_ref.removeprefix("blob://").lstrip("/")
+    path_b = auth_b.image_ref.removeprefix("blob://").lstrip("/")
+    path_c = auth_c.image_ref.removeprefix("blob://").lstrip("/")
+
+    # 人工將舊媒體 C 的初始建立時間倒退回 30 天前
+    now_dt = datetime.now(UTC)
+    container._creation_times[path_c] = now_dt - timedelta(days=30)
+
+    # 驗證初始 Tags
+    assert (await container.get_blob_client(path_a).get_blob_properties()).tags[
+        "retention"
+    ] == "attached"
+    assert (await container.get_blob_client(path_b).get_blob_properties()).tags[
+        "retention"
+    ] == "orphan"
+    assert (await container.get_blob_client(path_c).get_blob_properties()).tags[
+        "retention"
+    ] == "attached"
+
+    # 在 30 天後的當下，使用者決定換圖，對舊媒體 C 執行 unretain_media
+    unretained = await blob_storage.unretain_media("home-dev", auth_c.image_ref, ttl_seconds=86400)
+    assert unretained is True
+
+    # 驗證 unretain_media 後：
+    # (a) C 的 tag 成功還原為 orphan
+    props_c = await container.get_blob_client(path_c).get_blob_properties()
+    assert props_c.tags["retention"] == "orphan"
+    # (b) C 的 CreationTime 成功被重設為當前時間（不小於 now_dt）
+    assert props_c.creation_time >= now_dt
+
+    # 測試生命週期場景 1：時間推進 12 小時 (未滿 24 小時)
+    purged_12h = simulate_azure_lifecycle_policy_purge(current_time=now_dt + timedelta(hours=12))
+    assert purged_12h == []  # 無任何檔案被刪除
+    assert await container.get_blob_client(path_a).exists() is True
+    assert await container.get_blob_client(path_b).exists() is True
+    assert await container.get_blob_client(path_c).exists() is True
+
+    # 測試生命週期場景 2：時間推進 25 小時 (滿 24 小時)
+    purged_25h = simulate_azure_lifecycle_policy_purge(current_time=now_dt + timedelta(hours=25))
+    # 孤立媒體 B 與解除保留後過期的 C 均被正常刪除
+    assert path_b in purged_25h
+    assert path_c in purged_25h
+    # 關鍵斷言：attached 的媒體 A 即使經過 25 小時，依然安在，絕對不會被刪除！
+    assert path_a not in purged_25h
+    assert await container.get_blob_client(path_a).exists() is True
+
+    # 測試生命週期場景 3：時間推進 30 天
+    purged_30d = simulate_azure_lifecycle_policy_purge(current_time=now_dt + timedelta(days=30))
+    # 關鍵斷言：attached 的媒體 A 即使經過 30 天，依然永遠不會被刪除！
+    assert path_a not in purged_30d
+    assert await container.get_blob_client(path_a).exists() is True

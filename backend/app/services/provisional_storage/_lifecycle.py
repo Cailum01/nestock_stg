@@ -239,6 +239,7 @@ class BaseMediaStorageLifecycle:
         rec["retention"] = "orphan"
         rec["expires_at"] = exp
         return True
+
     async def cleanup_expired_blobs(self, now: datetime | None = None) -> list[str]:
         """[TEST_HELPER / LOCAL_DEV_ONLY] Purge expired orphan media from in-memory tracking.
 

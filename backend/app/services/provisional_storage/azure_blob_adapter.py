@@ -89,7 +89,18 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
             kwargs["metadata"] = metadata
         if tags is not None:
             kwargs["tags"] = tags
-        await self._call_client(blob_client.upload_blob, data, **kwargs)
+        try:
+            await self._call_client(blob_client.upload_blob, data, **kwargs)
+        except Exception as exc:
+            if tags is not None and "FeatureNotYetSupportedForHierarchicalNamespaceAccounts" in str(exc):
+                logger.warning(
+                    "Blob tags not supported on hierarchical namespace storage; retrying upload without tags: %s",
+                    exc,
+                )
+                kwargs.pop("tags", None)
+                await self._call_client(blob_client.upload_blob, data, **kwargs)
+            else:
+                raise
 
     @staticmethod
     def _is_not_found(exc: Exception) -> bool:
@@ -159,6 +170,12 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
             if tags_func is not None:
                 await self._call_client(tags_func, tags=tags)
         except Exception as exc:
+            if "FeatureNotYetSupportedForHierarchicalNamespaceAccounts" in str(exc):
+                logger.warning(
+                    "Blob tags not supported on hierarchical namespace storage; ignoring set_blob_tags: %s",
+                    exc,
+                )
+                return
             logger.error("Blob tags update failed for %s: %s", blob_path, exc)
             raise
 

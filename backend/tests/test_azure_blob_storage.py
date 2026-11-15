@@ -1064,3 +1064,52 @@ async def test_azure_lifecycle_policy_preserves_attached_and_respects_unretain_g
     # 關鍵斷言：attached 的媒體 A 即使經過 30 天，依然永遠不會被刪除！
     assert path_a not in purged_30d
     assert await container.get_blob_client(path_a).exists() is True
+
+
+@pytest.mark.anyio
+async def test_azure_blob_upload_graceful_fallback_on_hierarchical_namespace(
+    blob_storage, fake_blob_service
+):
+    """驗證當 Azure Storage Account 開啟階層命名空間 (ADLS Gen2) 不支援 Tags 時：
+
+    1. upload_blob 捕獲 FeatureNotYetSupportedForHierarchicalNamespaceAccounts 錯誤。
+    2. 自動移除 tags 進行重試並成功存入二進位檔案。
+    3. set_blob_tags 遇到該錯誤時優雅忽略，不拋出中斷異常。
+    """
+    container = fake_blob_service.get_container_client("media")
+    original_upload = FakeBlobClient.upload_blob
+    call_log = []
+
+    async def mock_upload_with_tag_failure(self, *args, **kwargs):
+        call_log.append(kwargs.copy())
+        if "tags" in kwargs and kwargs["tags"]:
+            raise RuntimeError(
+                "Specified feature is not yet supported for hierarchical namespace accounts. "
+                "ErrorCode: FeatureNotYetSupportedForHierarchicalNamespaceAccounts featurename: Blob Tags"
+            )
+        return await original_upload(self, *args, **kwargs)
+
+    FakeBlobClient.upload_blob = mock_upload_with_tag_failure
+    try:
+        req = UploadAuthorizationRequest(
+            household_id="home-dev",
+            filename="adls_test.jpg",
+            content_type=AllowedMediaContentType.IMAGE_JPEG,
+            file_size_bytes=16,
+        )
+        auth = await blob_storage.create_upload_authorization(req)
+        token = auth.upload_url.split("/")[-1]
+
+        # 上傳應順利成功（自動重試不拋出異常）
+        await blob_storage.receive_staged_upload(token, b"0123456789abcdef")
+
+        # 驗證兩次調用：第一次帶 tags 失敗，第二次移除 tags 成功
+        assert len(call_log) >= 2
+        assert "tags" in call_log[0]
+        assert "tags" not in call_log[1]
+
+        # 驗證檔案確實寫入
+        blob_bytes = await blob_storage.get_media_bytes("home-dev", auth.image_ref)
+        assert blob_bytes == b"0123456789abcdef"
+    finally:
+        FakeBlobClient.upload_blob = original_upload

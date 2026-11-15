@@ -109,6 +109,26 @@ def test_add_normalizes_optional_values_and_retries_the_same_operation_id():
     assert len(client.documents) == 3  # Shopping row, event, and operation receipt.
 
 
+def test_add_normalizes_household_consistently_for_identity_documents_and_partition():
+    client = FakeTransactionalBatchClient()
+    service = ShoppingIntentService(CosmosWriteRepository(client))
+
+    first = asyncio.run(service.add(make_command(household_id=" demo-household ")))
+    retry = asyncio.run(service.add(make_command(household_id="demo-household")))
+
+    assert first.status is WriteStatus.APPLIED
+    assert retry.status is WriteStatus.ALREADY_APPLIED
+    assert first.item.household_id == retry.item.household_id == "demo-household"
+    operation_id, shopping_item_id = resolve_shopping_intent_identity(
+        household_id="demo-household", request_id="request-1"
+    )
+    assert [call[0] for call in client.batch_calls] == ["demo-household", "demo-household"]
+    shopping = client.documents[("demo-household", f"shopping_item:{shopping_item_id}")]
+    event = client.documents[("demo-household", f"shopping_intent_event:{operation_id}")]
+    assert shopping["household_id"] == event["household_id"] == "demo-household"
+    assert len(client.documents) == 3  # Shopping row, event, and one operation receipt.
+
+
 def test_add_rejects_changed_payload_under_the_same_operation_identity():
     client = FakeTransactionalBatchClient()
     service = ShoppingIntentService(CosmosWriteRepository(client))

@@ -97,10 +97,12 @@ class ShoppingIntentService:
         self._writer = writer
 
     async def add(self, command: AddShoppingIntent) -> ShoppingIntentWriteResult:
-        household_id = command.household_id
         name = command.name.strip()
-        if not household_id or not household_id.strip():
+        if not command.household_id or not command.household_id.strip():
             raise ShoppingIntentError("household_id must not be empty.")
+        # The identity resolver trims the scope. Use that same canonical scope
+        # for the domain record, provenance event, receipt lookup, and batch.
+        household_id = command.household_id.strip()
         if not command.request_id or not command.request_id.strip():
             raise ShoppingIntentError("request_id must not be empty.")
         if not name:

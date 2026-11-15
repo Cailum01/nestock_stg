@@ -15,9 +15,14 @@ asked A1 to do that part (Issue #60, Issue #27). This module is only that step:
 - Both records are read again through B1's repository. If either changed or was
   deleted since the card was made, `TargetChanged` is raised, so the approval
   service cancels the card and the Agent makes a new one. Nothing is re-matched.
+- A `create_item` line (Issue #90, contract section 10) is a purchase of a Shopping
+  List entry the household does not have yet: `name`, `quantity`, `unit`,
+  `location`, `shopping_item_id`, `transaction_id`, and the version of the shopping
+  entry only. It becomes C1's `NewInventoryTarget`; the new item's `item_id` comes
+  from B1's `resolve_inventory_item_id(operation_id)`, so a retry gets the same item.
 
-Not covered yet: removals (A1 has no removal card), new items (Issue #90), buying
-more than listed, and a different unit. C1's plan refuses the last two.
+Not covered yet: removals (A1 has no removal card), the item-match card (Issue #90),
+buying more than listed, and a different unit. C1's plan refuses the last two.
 
 Reads only; never writes.
 """
@@ -31,11 +36,14 @@ from typing import Protocol
 from app.models.domain import InventoryItem, ShoppingItem
 from app.services.approvals import ApprovalRecord, StoredOperation, TargetChanged
 from app.services.cosmos_read import MappedDocument
-from app.services.shopping.planning import PurchaseInput
+from app.services.inventory_item_identity import resolve_inventory_item_id
+from app.services.shopping.planning import NewInventoryTarget, PurchaseInput
 from app.services.shopping.workflow import ResolvedShoppingChanges
 
 COMPLETE_PURCHASE = "complete_purchase"
 """`action` of a purchase card line (v8 tool `complete_purchase`)."""
+CREATE_ITEM = "create_item"
+"""`action` of a line that buys a Shopping List entry the household does not have yet."""
 
 
 class UnsupportedAction(ValueError):
@@ -72,6 +80,8 @@ class CardInputResolver:
     async def _purchase_input(
         self, record: ApprovalRecord, operation: StoredOperation
     ) -> PurchaseInput:
+        if operation.action == CREATE_ITEM:
+            return await self._new_item_input(record, operation)
         if operation.action != COMPLETE_PURCHASE:
             raise UnsupportedAction(f"No purchase input for action {operation.action!r}.")
         values = operation.values
@@ -109,6 +119,44 @@ class CardInputResolver:
             purchased_unit=_text(values, "purchased_unit"),
             resolved_inventory_item_id=item_id,
             purchased_at=_optional_time(values, "purchased_at"),
+        )
+
+    async def _new_item_input(
+        self, record: ApprovalRecord, operation: StoredOperation
+    ) -> PurchaseInput:
+        values = operation.values
+        shopping_item_id = _text(values, "shopping_item_id")
+        shopping, shopping_etag = _unchanged(
+            operation,
+            await self._reader.read_shopping_item_with_etag(
+                household_id=record.household_id, shopping_item_id=shopping_item_id
+            ),
+        )
+        if [target.record_id for target in operation.targets] != [
+            f"shopping_item:{shopping_item_id}"
+        ]:
+            raise ValueError(
+                f"{operation.operation_id} must carry exactly its shopping entry's version."
+            )
+        item_id = resolve_inventory_item_id(operation.operation_id)
+        unit = _text(values, "unit")
+        return PurchaseInput(
+            operation_id=operation.operation_id,
+            transaction_id=_text(values, "transaction_id"),
+            shopping=shopping,
+            shopping_etag=shopping_etag,
+            inventory=None,
+            inventory_etag=None,
+            purchased_quantity=_count(values, "quantity"),
+            purchased_unit=unit,
+            resolved_inventory_item_id=item_id,
+            purchased_at=_optional_time(values, "purchased_at"),
+            new_inventory=NewInventoryTarget(
+                item_id=item_id,
+                name=_text(values, "name"),
+                unit=unit,
+                location=_text(values, "location"),
+            ),
         )
 
 

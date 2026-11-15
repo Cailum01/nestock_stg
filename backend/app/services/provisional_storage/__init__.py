@@ -4,9 +4,12 @@
 提供本機測試、合約對齊與影像上傳授權生命週期模擬。
 """
 
+from app.services.provisional_storage.azure_blob_adapter import (
+    AzureBlobMediaStorage,
+)
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.provisional_storage.local_staging_adapter import (
     LocalStagingMediaStorage,
 )
 
-__all__ = ["MediaStorageService", "LocalStagingMediaStorage"]
+__all__ = ["MediaStorageService", "AzureBlobMediaStorage", "LocalStagingMediaStorage"]

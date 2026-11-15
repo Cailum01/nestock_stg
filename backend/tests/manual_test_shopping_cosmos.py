@@ -524,18 +524,26 @@ async def verify(args, container):
         (await read(f"shopping_item:{core_shopping_id}"))["quantity"] == 2,
     )
     tx = await records("transaction")
+    purchase_transaction = tx[0] if len(tx) == 1 else None
     check(
         "one_operation_bound_purchase_transaction",
-        len(tx) == 1
-        and tx[0]["quantity_delta"] == 2
-        and tx[0]["reason"] == "purchase"
-        and tx[0]["operation_id"] == card.operation_ids[0]
-        and tx[0]["transaction_id"] == core_transaction_id,
+        purchase_transaction is not None
+        and purchase_transaction["quantity_delta"] == 2
+        and purchase_transaction["reason"] == "purchase"
+        and purchase_transaction["operation_id"] == card.operation_ids[0]
+        and purchase_transaction["transaction_id"] == core_transaction_id,
     )
-    core_transaction = tx[0]
+    core_transaction = purchase_transaction if purchase_transaction is not None else tx[0]
+    check(
+        "one_actual_purchase_transaction",
+        purchase_transaction is not None
+        and purchase_transaction["quantity_delta"] == 2
+        and purchase_transaction["item_id"] == core_item_id,
+    )
     check(
         "missing_event_date_uses_first_decision_time",
-        datetime.fromisoformat(tx[0]["created_at"]) == result.record.decided_at,
+        purchase_transaction is not None
+        and datetime.fromisoformat(purchase_transaction["created_at"]) == result.record.decided_at,
     )
     check("one_change_event", len(await records("change_event")) == 1)
     check(

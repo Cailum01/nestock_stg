@@ -16,11 +16,12 @@ during implementation, but the rules below are decided. Public models stay in
 Current status: A1's service `backend/app/services/approvals.py` implements these
 rules and runs on B1's `CosmosWriteRepository`. With Cosmos configured,
 `POST /agent/resume` calls it; without Cosmos it returns 503. The only card the
-Agent makes so far is the v8 flow C purchase card (`complete_purchase`, read back by
-A1's `backend/app/services/purchase_inputs.py` and written through C1's
-`ShoppingWriteBuilder`). Not built yet:
-changing a card (section 7), reminders (section 8), and the Agent making the new
-card by itself after a record changed (section 4 point 6); for now the reply asks
+Agent makes so far is the v8 flow C purchase card (`complete_purchase`, section 11;
+read back by A1's `backend/app/services/purchase_inputs.py` and written through C1's
+`ShoppingWriteBuilder`), including new-item lines for entries not yet in inventory
+(section 10). Changing a card with 送出修改 is built (section 7). Not built yet:
+the chat-box change (section 7), reminders (section 8), and the Agent making the new
+card by itself after a record changed (section 4 point 7); for now the reply asks
 the user to say it again.
 
 ## 1. Sources
@@ -58,6 +59,8 @@ Stored:
 - `selection`: `approved_operation_ids` or `selected_option_id`, fixed at the
   first confirmation (stored by the `pending → confirmed` update, #48)
 - `outcome` for each written operation, after completion
+- `replaces_approval_id`: only on a card made by 送出修改, the card it replaces
+  (section 7)
 
 Not stored: prompts, model reasoning, raw media, or the full conversation
 (B1 design doc §8.2, #28).
@@ -87,8 +90,9 @@ confirmed ──past expires_at, purchase_options only, recorded later─▶ exp
   `expires_at`. The Agent asks the user again and makes a new card; nothing else
   is written.
 - `cancelled`: the user pressed "cancel", or the Agent replaced the card with a
-  new one (sections 6 and 7). Collapsing or switching screens is not a cancel
-  (#39). Nothing is written.
+  new one (sections 6 and 7), or the card was a replacement whose original could
+  not be cancelled (section 7, reason `replace_failed`). Collapsing or switching
+  screens is not a cancel (#39). Nothing is written.
 - `confirmed`: the user approved. A conditional update on the approval's ETag
   changes only the approval record: it sets `confirmed`, the fixed selection and
   `decided_at` (#48). No inventory, shopping or transaction data is written in
@@ -140,10 +144,13 @@ A1's domain service checks, in this order, before any write:
 4. `expires_at` has not passed. This applies to the first confirmation, and
    also to every retry of a `purchase_options` card (section 3). If it has
    passed, nothing is written except recording `expired`.
-5. The selection is valid: every `approved_operation_ids` entry, or the
+5. A card made by 送出修改 counts: its original is `cancelled` with reason
+   `replaced` (section 7). If not, nothing is written and the card becomes
+   `cancelled` (reason `replace_failed`).
+6. The selection is valid: every `approved_operation_ids` entry, or the
    `selected_option_id`, is on this card (#42 c). Unlisted items are not written.
    On a retry, the stored selection is used; a different selection is rejected.
-6. The target records have not changed since the card was created (their ETags
+7. The target records have not changed since the card was created (their ETags
    still match). If they changed, nothing is written and the Agent makes a new
    card (#39, #27).
 
@@ -224,16 +231,39 @@ How the App sends the change (agreed with C2 in Issue #91):
   makes no new card (an error, or it asks the user something), the old card stays
   `pending`. An expired, confirmed or cancelled original gets no new card; the
   reply says why.
+- If cancelling the old card raises an error, the old card is read back first. If
+  it reads back `cancelled` with reason `replaced`, the cancel was written but its
+  reply was lost, and the new card stands. Any other status counts as not replaced.
+- If the old card does not end up `cancelled` with reason `replaced` after the new
+  card is stored, the reply is not a success: the new card is cancelled too (reason
+  `replace_failed`) and the reply carries no card. It tells the user to confirm or
+  cancel the original card, or cancel it and say the change again; if the original
+  was meanwhile confirmed, cancelled by the user or recorded as `expired`, it says
+  that instead, in the same words as for such an original before the change.
+- The new card records the card it replaces (`replaces_approval_id`, section 2) and
+  counts only once that card is `cancelled` with reason `replaced`. A card that does
+  not count is never mentioned (section 8) and cannot be confirmed (section 4). So
+  even if cancelling the old card and withdrawing the new card both fail, the user
+  never holds two cards that can be confirmed; the new card is logged and expires.
 - A change typed in the chat box (no `replaces_approval_id`): the Agent is given
   the household's open cards (the same lookup as section 8) and decides whether the
   message changes one of them. With one open card it changes that card; with
   several and no clear match it asks which; otherwise it answers normally.
+
+Built so far (A1): 送出修改 with `replaces_approval_id`. The Agent is given the old
+card's lines (without `transaction_id`) and makes the new card with
+`complete_purchase`; a missing, expired, confirmed or cancelled original gets a reply
+with the reason and no card, and the model is not called; an original that does not end
+up replaced withdraws the new card, and a new card counts only once its original is
+replaced, as described above. Not built yet: the
+chat-box change without `replaces_approval_id`, and the reminders in section 8.
 
 ## 8. Reminders
 
 When the user sends the next message, the Agent mentions cards that are still
 `pending`, and `confirmed` cards that can still be retried (section 3). Expired
 cards are not mentioned; this check is also when they are recorded as `expired`.
+A 送出修改 card that does not count (section 7) is not mentioned either.
 There is no background job or push notification (#39).
 
 ## 9. Open items
@@ -242,10 +272,10 @@ There is no background job or push notification (#39).
 | --- | --- | --- |
 | Format the App uses to send a changed value back to the Agent | A1 + C2 | Decided in Issue #91; see section 7 |
 | Handling of the "should not happen" row in section 6 | A1 + C1 | Proposed here; C1 to confirm (#27) |
-| Meaning of Transaction `created_at` | B1 + B2 | Deferred; keep the current model |
+| Meaning of Transaction `created_at` | B1 + B2 | Decided in Issue #113: when the event happened; when the user gave no date, the card's first `decided_at`, and a retry keeps that same time (section 11). C1's builder does this |
 | Removing a wrong alias | — | Not in MVP scope |
 | v8 §12 `partial_success` | — | Not used in the MVP: one batch is all-or-nothing (#42) |
-| How a new item's `item_id` is made | B1 + A1 | Asked in Issue #90; does not change the card format (section 10) |
+| How a new item's `item_id` is made | B1 + A1 | Decided in Issue #90: B1's `resolve_inventory_item_id(operation_id)` (PR #97), made when the user confirms; see section 10 |
 | Status of an `item_match` card answered with `new_item` | A1 | Decided with the confirm rules (section 10) |
 
 ## 10. Item-match and new-item cards (Issue #90)
@@ -285,6 +315,25 @@ New item ("會新增一個庫存品項：洗碗精"):
   The backend creates the item in the confirmed batch.
 - The reply is `approved: true` or `approved: false`.
 
+The Agent makes a new-item line today when the user says a Shopping List entry was
+bought and the entry is not linked to an inventory item (`complete_purchase`,
+`backend/app/agent/cards.py`):
+
+- The line also carries `shopping_item_id` and `transaction_id`, and the version of
+  the shopping entry only (the new item does not exist yet). The App does not show
+  them. On a `batch_action` card it sits next to ordinary purchase lines.
+- No line is made when the household already has an item with the entry's name or
+  alias (#36 layers ①②); that would need the item-match card above, which is not
+  built yet. The Agent is also told to check for an item that is the same thing
+  under another name (layer ③) before it asks for the card.
+- `unit` is the entry's unit, or the unit the user said when the entry has none.
+  `location` is what the user said; without it no line is made, and the Agent asks
+  where the item goes.
+- On confirmation, A1's `CardInputResolver` gives C1 a `NewInventoryTarget` whose
+  `item_id` is `resolve_inventory_item_id(operation_id)`. C1's builder creates the
+  item, completes the entry, and writes the Transaction and change event in the same
+  batch, so a retry never makes a second item.
+
 ```json
 {
   "approval_id": "demo-approval-4",
@@ -300,5 +349,59 @@ New item ("會新增一個庫存品項：洗碗精"):
     {"option_id": "same_item", "label": "是，加到洗潔精"},
     {"option_id": "new_item", "label": "不是，這是新的東西"}
   ]
+}
+```
+
+## 11. Purchase card (v8 flow C)
+
+The user says items on the Shopping List were bought (我買了衛生紙 2 包). The
+Agent's `complete_purchase` tool makes this card (`backend/app/agent/cards.py`) and
+stores it as `pending`; nothing else is written until the user confirms. The format
+below is what the code makes; its `values` were agreed with C1 in Issue #60. The App
+shows it as a purchase card (C2, PR #101): internal IDs are not shown, and only the
+quantity can be changed.
+
+- `presentation`: `single_action` for one item, `batch_action` for several.
+- Every operation: `action` `complete_purchase`; `description` such as
+  `衛生紙 +2 包（從待購清單完成購買）`.
+- `values`: `name`, `purchased_quantity` (a whole number, at least 1),
+  `purchased_unit` (the inventory item's unit), `shopping_item_id`, `item_id`,
+  `transaction_id`. There is no `location`: the purchase adds to an inventory item
+  the household already has.
+- An entry linked to an inventory item gets a purchase line only if it is still
+  pending, its unit (when it has one) is the inventory unit, and the bought quantity
+  is not more than the listed quantity (when there is one). A pending entry not
+  linked to an inventory item gets a new-item line instead (section 10, PR #140).
+  Other items are left off the card and the Agent says why.
+- A Shopping List entry may have no quantity or unit (Issue #52). Without a unit,
+  the card uses the inventory unit and the user confirms it on the card. This is
+  A1's choice, not a v8 or team rule (v8 does not cover units); A1 supplies
+  `purchased_unit` as agreed with C1 in Issue #60.
+- The reply uses the normal `ResumeRequest`: `approved: true` or `false` for
+  `single_action`; for `batch_action`, `approved_operation_ids` lists the items the
+  user kept checked (all of them when nothing was unchecked). Unchecked items are not
+  written (Issue #42 c).
+- A changed value goes back to the Agent as in section 7 (Issue #91).
+- Purchase time (Issue #113): the Transaction's `created_at` is when the purchase
+  happened. No purchase time is on the card yet, so the first `decided_at` is used,
+  and a retry keeps that same time. When the user says a day (昨天買的), the line
+  will carry `purchased_at`, shown only as a date and changed as in section 7; the
+  Agent does not do this yet. `backend/app/services/purchase_time.py` (PR #71) has
+  the rule for turning the day into a time, and `purchase_inputs.py` already reads
+  `purchased_at` when present.
+
+```json
+{
+  "approval_id": "demo-approval-5",
+  "presentation": "single_action",
+  "operations": [{
+    "operation_id": "demo-operation-5",
+    "action": "complete_purchase",
+    "description": "衛生紙 +2 包（從待購清單完成購買）",
+    "values": {"name": "衛生紙", "purchased_quantity": 2, "purchased_unit": "包",
+               "shopping_item_id": "demo-shopping-1", "item_id": "demo-toilet-paper",
+               "transaction_id": "demo-transaction-1"}
+  }],
+  "options": []
 }
 ```

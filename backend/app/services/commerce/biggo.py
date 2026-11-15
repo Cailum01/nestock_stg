@@ -112,7 +112,8 @@ class BigGoCommerceProvider:
                 if token:
                     headers["Authorization"] = f"Bearer {token}"
 
-                response = await client.get(search_url, headers=headers)
+                params = {"sort": "price_asc"}
+                response = await client.get(search_url, headers=headers, params=params)
 
                 # Token expiration defense: on 401, invalidate cached token and retry once
                 if response.status_code == 401 and token:
@@ -125,7 +126,7 @@ class BigGoCommerceProvider:
                         headers["Authorization"] = f"Bearer {token}"
                     else:
                         headers.pop("Authorization", None)
-                    response = await client.get(search_url, headers=headers)
+                    response = await client.get(search_url, headers=headers, params=params)
 
                 response.raise_for_status()
                 data = response.json()
@@ -150,14 +151,12 @@ class BigGoCommerceProvider:
         raw_items: list[dict[str, Any]],
         limit: int,
     ) -> list[PurchaseOption]:
-        """Apply ItemNormalizer to raw provider items to build PurchaseOption DTOs."""
+        """Apply ItemNormalizer to raw provider items to build PurchaseOption DTOs,
+        and sort options by estimated_price ascending (cheapest first)."""
         options: list[PurchaseOption] = []
         now_iso = datetime.now(timezone.utc).isoformat()
 
         for idx, item in enumerate(raw_items, 1):
-            if len(options) >= limit:
-                break
-
             raw_title = str(item.get("title", "")).strip()
             if not raw_title:
                 continue
@@ -216,7 +215,15 @@ class BigGoCommerceProvider:
                 )
             )
 
-        return options
+        # 比價核心邏輯：依價格由低到高排序 (Price Ascending)，無標價者排在最後
+        priced_options = sorted(
+            [opt for opt in options if opt.estimated_price is not None],
+            key=lambda opt: opt.estimated_price,  # type: ignore[arg-type, return-value]
+        )
+        unpriced_options = [opt for opt in options if opt.estimated_price is None]
+        sorted_options = priced_options + unpriced_options
+
+        return sorted_options[:limit]
 
     def _get_demo_fallback_options(
         self,
@@ -257,6 +264,20 @@ class BigGoCommerceProvider:
                     updated_at=now_iso,
                 )
             )
+            url_5 = f"https://biggo.com.tw/s/?q={quote('蒲公英 環保抽取式衛生紙', safe='')}"
+            options.append(
+                PurchaseOption(
+                    option_id="demo-opt-3",
+                    title="蒲公英 環保抽取式衛生紙",
+                    raw_title="蒲公英 環保抽取式衛生紙 100抽x24包",
+                    store="蝦皮商城",
+                    source="demo",
+                    estimated_price=299.0,
+                    product_url=url_5,
+                    unit_spec="100抽x24包",
+                    updated_at=now_iso,
+                )
+            )
         elif "牛奶" in keyword or "鮮奶" in keyword or "乳" in keyword:
             url_3 = f"https://biggo.com.tw/s/?q={quote('光泉 全脂鮮乳', safe='')}"
             options.append(
@@ -286,19 +307,45 @@ class BigGoCommerceProvider:
                     updated_at=now_iso,
                 )
             )
-        else:
+            url_6 = f"https://biggo.com.tw/s/?q={quote('瑞穗 全脂鮮乳', safe='')}"
             options.append(
                 PurchaseOption(
-                    option_id="demo-opt-1",
-                    title=f"精選推薦 {keyword}",
-                    raw_title=f"精選特惠 {keyword} 1件裝",
-                    store="momo購物網",
+                    option_id="demo-opt-3",
+                    title="瑞穗 全脂鮮乳",
+                    raw_title="瑞穗 全脂鮮乳 930ml",
+                    store="全聯線上購",
                     source="demo",
-                    estimated_price=199.0,
-                    product_url=f"https://biggo.com.tw/s/?q={quote(keyword, safe='')}",
-                    unit_spec="1件",
+                    estimated_price=92.0,
+                    product_url=url_6,
+                    unit_spec="930ml",
                     updated_at=now_iso,
                 )
             )
+        elif "醬油" in keyword:
+            url_7 = f"https://biggo.com.tw/s/?q={quote('金蘭 純釀造醬油', safe='')}"
+            options.append(
+                PurchaseOption(
+                    option_id="demo-opt-1",
+                    title="金蘭 純釀造醬油",
+                    raw_title="金蘭 純釀造醬油 590ml",
+                    store="全聯線上購",
+                    source="demo",
+                    estimated_price=65.0,
+                    product_url=url_7,
+                    unit_spec="590ml",
+                    updated_at=now_iso,
+                )
+            )
+        else:
+            # 若非預置之 demo 關鍵字，誠實回傳空清單，不捏造假資料
+            return []
 
-        return options[:limit]
+        # Demo 資料集亦保持依價格由低到高排序
+        priced_options = sorted(
+            [opt for opt in options if opt.estimated_price is not None],
+            key=lambda opt: opt.estimated_price,  # type: ignore[arg-type, return-value]
+        )
+        unpriced_options = [opt for opt in options if opt.estimated_price is None]
+        sorted_options = priced_options + unpriced_options
+
+        return sorted_options[:limit]

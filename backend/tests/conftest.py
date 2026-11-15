@@ -1,5 +1,6 @@
 """Global test configuration and AppLocker defensive compatibility layer."""
 
+import os
 import sys
 import types
 import uuid
@@ -38,3 +39,6 @@ except ImportError:
     mod._uuid7_int = lambda *args, **kwargs: getattr(uuid, "uuid7", uuid.uuid4)().int
     mod.reseed = lambda *args, **kwargs: None
     sys.modules["uuid_utils._uuid_utils"] = mod
+
+# Keep tests offline: never load a developer's local backend/.env at import time.
+os.environ.setdefault("NESTOCK_SKIP_DOTENV", "1")

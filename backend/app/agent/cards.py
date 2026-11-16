@@ -273,6 +273,85 @@ def new_item_operation(
     )
 
 
+PHOTO_CARD_MADE = (
+    "已出一張新增庫存品項的確認卡（家裡沒有同名或同別名的品項）。請使用者確認或取消；"
+    "如果你判斷其中有家裡已經有的東西（只是名字不同），請提醒使用者可以按取消。"
+)
+"""Told to the model with the photo result when a new-item card was made (Issue #124)."""
+
+
+def photo_item_operation(
+    *, name: str, quantity: int, unit: str, transaction_id: str | None = None
+) -> NewOperation:
+    """One card line from a photo: "add this as a new inventory item" (Issue #124).
+
+    Contract section 10: `create_item` with `name`, `quantity`, `unit` and `location`.
+    A photo gives no location, so `location` is None and the App shows 未填; confirming
+    accepts no location. There is no Shopping List entry, so no `shopping_item_id` and
+    no target versions; `transaction_id` is for the write that confirms it.
+    """
+    return NewOperation(
+        action=CREATE_ITEM,
+        description=f"會新增一個庫存品項：{name} {quantity} {unit}（照片辨識）",
+        values={
+            "name": name,
+            "quantity": quantity,
+            "unit": unit,
+            "location": None,
+            "transaction_id": transaction_id or uuid.uuid4().hex,
+        },
+    )
+
+
+@dataclass(frozen=True)
+class PhotoItem:
+    """A photo item with no household item of the same name or alias (Issue #124)."""
+
+    name: str
+    quantity: int
+    unit: str
+
+
+class PhotoCards:
+    """New-item cards from a photo (Issue #124, contract section 10).
+
+    Off in the running app (`get_read_agent` passes none) until confirming one can be
+    written: B1's write for a new item without a Shopping List entry, and A1 handing
+    the card to it. Until then the Agent only reports what the photo shows.
+    """
+
+    def __init__(self, approvals: ApprovalService) -> None:
+        self._approvals = approvals
+
+    async def propose(self, household_id: str, items: Sequence[PhotoItem]) -> dict[str, Any] | None:
+        """Store one pending card for the items and return it for the App, or None.
+
+        One item is a `single_action` card, several a `batch_action` card. Nothing but
+        the pending card is written; a card that cannot be stored is not shown.
+        """
+        if not items:
+            return None
+        lines = [
+            photo_item_operation(name=item.name, quantity=item.quantity, unit=item.unit)
+            for item in items
+        ]
+        presentation = (
+            ApprovalPresentation.SINGLE_ACTION
+            if len(lines) == 1
+            else ApprovalPresentation.BATCH_ACTION
+        )
+        try:
+            record = await self._approvals.save(
+                self._approvals.prepare(
+                    household_id=household_id, presentation=presentation, operations=lines
+                )
+            )
+        except Exception:  # storage or planning failed; no card was stored
+            logger.warning("Photo new-item card was not stored", exc_info=True)
+            return None
+        return ApprovalService.to_pending_approval(record).model_dump(mode="json")
+
+
 def _bought(purchased_at: datetime | None) -> str:
     """「11/15 買的，」 on a dated line; nothing when the confirmation time is used."""
     if purchased_at is None:

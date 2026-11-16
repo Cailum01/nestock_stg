@@ -405,6 +405,24 @@ bought and the entry is not linked to an inventory item (`complete_purchase`,
   item, completes the entry, and writes the Transaction and change event in the same
   batch, so a retry never makes a second item.
 
+New-item cards from a photo (Issue #124; built, but off in the running app):
+
+- After A2's recognition and A1's matching (#44), photo items with no household item
+  of the same name or alias (#36 layers ①②), seen with confidence (not
+  `low_confidence`) and with a confirmed unit get one card: `single_action` for one
+  item, `batch_action` for several, every line `create_item`
+  (`backend/app/agent/cards.py`, `PhotoCards`).
+- `values`: `name`, `quantity` and `unit` from the photo, `location` null (the App
+  shows 未填; confirming accepts no location, Issue #124), and `transaction_id`. There
+  is no `shopping_item_id` and no target version.
+- Items the household has, unsure items and items without a confirmed unit are only
+  reported, as before. A photo item-match card (Issue #124 point 2) is not built.
+- As in section 8, a photo makes no card in a message that brings an open card back,
+  or when the open cards cannot be listed; the photo is only reported.
+- Off in `get_read_agent` until confirming can be written: B1's write for a new item
+  without a Shopping List entry (Issue #124 point 1), and A1 handing the card to it.
+  Until then a photo is only reported, so the App never gets a card it cannot write.
+
 ```json
 {
   "approval_id": "demo-approval-4",

@@ -1076,8 +1076,13 @@ to the latest state, and deletes require explicit handling.
   document id is `change_event:{operation_id}`, so a retry maps to the same
   document and the operation receipt de-duplicates it.
 - Fields: `household_id`, `operation_id`, `approval_id`, `transaction_id`,
-  `shopping_item_id`, `item_id`, `occurred_at` (purchase time) and `recorded_at`
-  (approval decision time). Timestamps are stored as UTC.
+  nullable `shopping_item_id`, `item_id`, `occurred_at` (domain event time) and
+  `recorded_at` (approval decision time). Timestamps are stored as UTC.
+- Per #124 (2026-11-16), a confirmed photo-created Inventory item has no
+  Shopping row, so its `ChangeEvent.shopping_item_id` is `null`, not a synthetic
+  ID. Inventory create, its `adjustment` Transaction, ChangeEvent and operation
+  receipt belong to the same household batch; the separate C1 adjustment plan
+  must not reuse the purchase builder.
 - Batch placement for a purchase: the merged inventory update goes in
   `shared_operations`; each purchased item's shopping-item update, Transaction and
   change event go in `operations_by_id[operation_id]`. Replace operations require

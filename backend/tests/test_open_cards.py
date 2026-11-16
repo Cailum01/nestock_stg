@@ -28,7 +28,7 @@ from test_purchase_cards import (
 
 from app.agent.cards import OPEN_CARD_FIRST, PURCHASE_TOOL_SCHEMA, PurchaseCards
 from app.agent.llm import build_chat_model, load_azure_settings
-from app.agent.read_agent import OPEN_CARD, TOOL_SCHEMAS, load_system_prompt
+from app.agent.read_agent import OPEN_CARD, TOOL_SCHEMAS, _text, load_system_prompt
 from app.models.agent import ResumeRequest
 from app.services.approvals import ApprovalService
 from app.services.cosmos_read import CosmosReadRepository
@@ -248,4 +248,5 @@ def test_live_model_answers_reminds_and_makes_no_card(live_model, utterance, exp
     assert expect <= called, (utterance, called)
     assert "complete_purchase" not in called, (utterance, called)
     assert not reply.tool_calls, (utterance, "still calling tools")
-    assert "確認" in reply.content, (utterance, reply.content)
+    text = _text(reply)  # the reply as the Agent reads it (content may be a list of blocks)
+    assert "確認" in text, (utterance, text)

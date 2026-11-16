@@ -16,22 +16,34 @@ quantity, unit and location. When the household already has an item with that na
 or alias, no line is made; the item-match card that would ask "is it this one?" has
 no confirm rules yet.
 
+A purchase day the user says (「昨天買的」, A1-50) is built but off
+(`dated_purchases`; `NESTOCK_DATED_PURCHASES=1` turns it on for local testing): the
+App does not show it on the card yet, and a card may only hold values the user sees
+(HITL rule 4).
+
 Not covered yet: items that are not on the list, the item-match card (Issue #90),
-buying more than listed, a different unit, a purchase time other than the
-confirmation time, spreading more items than one batch holds over several cards,
-changing a card (Issue #91), and reminding the user of open cards.
+buying more than listed, a different unit, spreading more items than one batch holds
+over several cards, changing a card (Issue #91), and reminding the user of open cards.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from typing import Any, Protocol
 
-from app.models.agent import AgentResponse, AgentResult, ApprovalPresentation, ResultKind
+from app.models.agent import (
+    AgentResponse,
+    AgentResult,
+    ApprovalPresentation,
+    CardChange,
+    ResultKind,
+)
 from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus
 from app.services.approvals import (
     ApprovalRecord,
@@ -47,6 +59,12 @@ from app.services.approvals import (
 from app.services.cosmos_read import MappedDocument
 from app.services.item_matching import match_term
 from app.services.purchase_inputs import COMPLETE_PURCHASE, CREATE_ITEM, PurchaseRecordReader
+from app.services.purchase_time import (
+    TAIPEI,
+    FuturePurchaseDate,
+    resolve_purchased_at,
+    taipei_today,
+)
 from app.services.shopping.preview import ShoppingPreviewError, ShoppingPreviewService
 
 logger = logging.getLogger(__name__)
@@ -104,6 +122,30 @@ PURCHASE_TOOL_SCHEMA: dict[str, Any] = {
     },
 }
 
+PURCHASED_ON_FIELD: dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "只有使用者說了哪天買的（例如「昨天買的」「11/3 買的」）才填："
+        "那一天的日期，格式 YYYY-MM-DD。沒說就不要填。"
+    ),
+}
+"""Offered to the model only with dated purchases on (A1-50); off in the running app."""
+
+
+def _with_purchase_day(schema: dict[str, Any]) -> dict[str, Any]:
+    dated = copy.deepcopy(schema)
+    item = dated["function"]["parameters"]["properties"]["items"]["items"]
+    item["properties"]["purchased_on"] = PURCHASED_ON_FIELD
+    return dated
+
+
+DATED_PURCHASE_TOOL_SCHEMA = _with_purchase_day(PURCHASE_TOOL_SCHEMA)
+TODAY_NOTE = (
+    "今天是 {today}（台北時間）。使用者說了哪天買的（例如昨天、11/3），"
+    "呼叫 complete_purchase 時把那一天換成日期填進 purchased_on；沒說就不要填。"
+)
+"""Given to the model with dated purchases on, so it can turn a spoken day into a date."""
+
 NOT_ON_LIST = "待購清單上找不到這一筆，可能已經買過或被刪掉。"
 NOT_LINKED = "這樣東西還沒有對應到庫存裡的品項，現在還不能從對話記錄購買。"
 MORE_THAN_LISTED = "買的數量比待購清單上多，現在還不能記錄。"
@@ -111,8 +153,29 @@ OTHER_UNIT = "待購清單和庫存用的單位不同，現在還不能記錄。
 ALREADY_HAVE = "家裡已經有「{names}」，但待購清單上這一筆沒有連到它，現在還不能從對話記錄。"
 NEEDS_UNIT = "待購清單上沒寫單位，請使用者說買了幾個什麼（例如 2 瓶）。"
 NEEDS_LOCATION = "這是家裡還沒有的東西，要說放在哪裡，才能新增到庫存。"
+UNREADABLE_DAY = "看不懂是哪一天買的，請使用者說日期（例如 11/15）。"
+FUTURE_DAY = "購買日期在今天之後，不能記錄；請使用者再說一次是哪天買的。"
+
+# 送出修改 sent as data (Issue #162): the reply when no new card is made.
+CARD_CHANGED = "已照修改重新出卡，請再確認一次。"
+CHANGE_UNKNOWN_LINE = "這一項不在原本的卡上，沒有出新卡。"
+CHANGE_DUPLICATE_LINE = "同一項改了兩次，沒有出新卡。"
+CHANGE_NOTHING = "卡上的值都沒有改，沒有出新卡。"
+CHANGE_DAY_OFF = "現在還不能改購買日期，沒有出新卡。"
+CHANGE_FUTURE_DAY = "購買日期不能在今天之後，沒有出新卡。"
+CHANGE_NOT_THIS_CARD = "這張卡不能在卡上修改，沒有出新卡。"
+CHANGE_LINE_REFUSED = "沒有出新卡："
+CHANGE_RECORDS_MOVED = "庫存或待購清單剛剛被改過，請再改一次。"
 ONE_CARD_PER_MESSAGE = json.dumps({"error": "card_already_made"})
 """A second `complete_purchase` in the same message: the first card stands."""
+OPEN_CARD_FIRST = json.dumps({"error": "open_card_not_answered"})
+"""`complete_purchase` while an earlier open card is shown again (section 8): no new card."""
+OPEN_CARDS_UNKNOWN = json.dumps({"error": "open_cards_unknown"})
+"""`complete_purchase` when the open cards could not be listed (section 8): no new card.
+
+Unknown is not "none": a card could still be open, and a new one would be a second
+card for the same purchase (PR #160 C2 review). The user says it again later.
+"""
 CARD_FAILED = json.dumps({"error": "card_not_made"})
 TOO_MANY_ITEMS = json.dumps({"error": "too_many_items"})
 RECORDS_CHANGED = json.dumps({"error": "records_changed"})
@@ -126,6 +189,7 @@ def purchase_operation(
     inventory: MappedDocument[InventoryItem] | None,
     quantity: int,
     transaction_id: str | None = None,
+    purchased_at: datetime | None = None,
 ) -> NewOperation:
     """One card line: "this shopping entry was bought, add it to this inventory item".
 
@@ -152,7 +216,9 @@ def purchase_operation(
     name = shopping.record.name
     return NewOperation(
         action=COMPLETE_PURCHASE,
-        description=f"{name} +{quantity} {preview.unit}（從待購清單完成購買）",
+        description=(
+            f"{name} +{quantity} {preview.unit}（{_bought(purchased_at)}從待購清單完成購買）"
+        ),
         values={
             "name": name,
             "purchased_quantity": quantity,
@@ -160,6 +226,7 @@ def purchase_operation(
             "shopping_item_id": shopping.record.shopping_item_id,
             "item_id": inventory.record.item_id,
             "transaction_id": transaction_id or uuid.uuid4().hex,
+            **_purchased_at_value(purchased_at),
         },
         targets=[
             TargetVersion(record_id=shopping.document_id, etag=shopping.etag),
@@ -175,6 +242,7 @@ def new_item_operation(
     unit: str,
     location: str,
     transaction_id: str | None = None,
+    purchased_at: datetime | None = None,
 ) -> NewOperation:
     """One card line: "this list entry was bought; add it as a new inventory item".
 
@@ -189,7 +257,8 @@ def new_item_operation(
     return NewOperation(
         action=CREATE_ITEM,
         description=(
-            f"會新增一個庫存品項：{name} {quantity} {unit}，放在{location}（從待購清單完成購買）"
+            f"會新增一個庫存品項：{name} {quantity} {unit}，放在{location}"
+            f"（{_bought(purchased_at)}從待購清單完成購買）"
         ),
         values={
             "name": name,
@@ -198,9 +267,106 @@ def new_item_operation(
             "location": location,
             "shopping_item_id": shopping.record.shopping_item_id,
             "transaction_id": transaction_id or uuid.uuid4().hex,
+            **_purchased_at_value(purchased_at),
         },
         targets=[TargetVersion(record_id=shopping.document_id, etag=shopping.etag)],
     )
+
+
+PHOTO_CARD_MADE = (
+    "已出一張新增庫存品項的確認卡（家裡沒有同名或同別名的品項）。請使用者確認或取消；"
+    "如果你判斷其中有家裡已經有的東西（只是名字不同），請提醒使用者可以按取消。"
+)
+"""Told to the model with the photo result when a new-item card was made (Issue #124)."""
+
+
+def photo_item_operation(
+    *, name: str, quantity: int, unit: str, transaction_id: str | None = None
+) -> NewOperation:
+    """One card line from a photo: "add this as a new inventory item" (Issue #124).
+
+    Contract section 10: `create_item` with `name`, `quantity`, `unit` and `location`.
+    A photo gives no location, so `location` is None and the App shows 未填; confirming
+    accepts no location. There is no Shopping List entry, so no `shopping_item_id` and
+    no target versions; `transaction_id` is for the write that confirms it.
+    """
+    return NewOperation(
+        action=CREATE_ITEM,
+        description=f"會新增一個庫存品項：{name} {quantity} {unit}（照片辨識）",
+        values={
+            "name": name,
+            "quantity": quantity,
+            "unit": unit,
+            "location": None,
+            "transaction_id": transaction_id or uuid.uuid4().hex,
+        },
+    )
+
+
+@dataclass(frozen=True)
+class PhotoItem:
+    """A photo item with no household item of the same name or alias (Issue #124)."""
+
+    name: str
+    quantity: int
+    unit: str
+
+
+class PhotoCards:
+    """New-item cards from a photo (Issue #124, contract section 10).
+
+    Off in the running app (`get_read_agent` passes none) until confirming one can be
+    written: B1's write for a new item without a Shopping List entry, and A1 handing
+    the card to it. Until then the Agent only reports what the photo shows.
+    """
+
+    def __init__(self, approvals: ApprovalService) -> None:
+        self._approvals = approvals
+
+    async def propose(self, household_id: str, items: Sequence[PhotoItem]) -> dict[str, Any] | None:
+        """Store one pending card for the items and return it for the App, or None.
+
+        One item is a `single_action` card, several a `batch_action` card. Nothing but
+        the pending card is written; a card that cannot be stored is not shown.
+        """
+        if not items:
+            return None
+        lines = [
+            photo_item_operation(name=item.name, quantity=item.quantity, unit=item.unit)
+            for item in items
+        ]
+        presentation = (
+            ApprovalPresentation.SINGLE_ACTION
+            if len(lines) == 1
+            else ApprovalPresentation.BATCH_ACTION
+        )
+        try:
+            record = await self._approvals.save(
+                self._approvals.prepare(
+                    household_id=household_id, presentation=presentation, operations=lines
+                )
+            )
+        except Exception:  # storage or planning failed; no card was stored
+            logger.warning("Photo new-item card was not stored", exc_info=True)
+            return None
+        return ApprovalService.to_pending_approval(record).model_dump(mode="json")
+
+
+def _bought(purchased_at: datetime | None) -> str:
+    """「11/15 買的，」 on a dated line; nothing when the confirmation time is used."""
+    if purchased_at is None:
+        return ""
+    day = purchased_at.astimezone(TAIPEI).date()
+    return f"{day.month}/{day.day} 買的，"
+
+
+def _purchased_at_value(purchased_at: datetime | None) -> dict[str, str]:
+    """`purchased_at` for the line's values; `CardInputResolver` passes it on to C1."""
+    return {} if purchased_at is None else {"purchased_at": purchased_at.isoformat()}
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class CardRecordReader(PurchaseRecordReader, Protocol):
@@ -215,14 +381,58 @@ class _Requested:
     quantity: int
     unit: str | None = None
     location: str | None = None
+    purchased_on: str | None = None
 
 
 class PurchaseCards:
-    """The `complete_purchase` tool: makes and stores a pending purchase card."""
+    """The `complete_purchase` tool: makes and stores a pending purchase card.
 
-    def __init__(self, reader: CardRecordReader, approvals: ApprovalService) -> None:
+    `dated_purchases` (A1-50; off unless `NESTOCK_DATED_PURCHASES=1`, read in
+    `read_agent._purchase_cards`): the model is told today's date and may give each
+    item the day it was bought. A past day goes on the line as `purchased_at` (12:00
+    Taipei that day, `purchase_time.py`) and in its text; today or no day leaves it
+    off, so the confirmation time is used. Contract section 11 says when it is on.
+    """
+
+    def __init__(
+        self,
+        reader: CardRecordReader,
+        approvals: ApprovalService,
+        *,
+        dated_purchases: bool = False,
+        clock: Callable[[], datetime] = _utc_now,
+    ) -> None:
         self._reader = reader
         self._approvals = approvals
+        self._dated = dated_purchases
+        self._clock = clock
+
+    @property
+    def tool_schema(self) -> dict[str, Any]:
+        """The tool offered to the model; no `purchased_on` while dated purchases are off."""
+        return DATED_PURCHASE_TOOL_SCHEMA if self._dated else PURCHASE_TOOL_SCHEMA
+
+    def date_note(self) -> str | None:
+        """Today's date for the model with dated purchases on; None while they are off."""
+        if not self._dated:
+            return None
+        return TODAY_NOTE.format(today=taipei_today(self._clock()).isoformat())
+
+    async def open_cards(self, household_id: str) -> list[ApprovalRecord] | None:
+        """Pending cards the household has not answered, newest first (section 8).
+
+        After 清除對話 or reopening the App a card is gone from the screen but still
+        open here; the next reply shows the newest one again. Confirmed cards waiting
+        for a retry are left out. None when the cards cannot be listed: the message is
+        still answered, but it makes no new card (`OPEN_CARDS_UNKNOWN`).
+        """
+        try:
+            cards = await self._approvals.list_open(household_id=household_id)
+        except Exception:
+            logger.warning("Open cards could not be listed", exc_info=True)
+            return None
+        pending = [card for card in cards if card.status is ApprovalStatus.PENDING]
+        return sorted(pending, key=lambda card: card.created_at, reverse=True)
 
     async def card_to_change(self, household_id: str, approval_id: str) -> ApprovalRecord:
         """The pending card a 送出修改 replaces (contract section 7, Issue #91).
@@ -298,9 +508,92 @@ class PurchaseCards:
         `replaces_approval_id` is the card a 送出修改 replaces; the new card records it
         (section 7).
         """
-        requested = _requested_items(args.get("items"))
+        requested = _requested_items(args.get("items"), dated=self._dated)
         if not requested:
             return json.dumps({"error": "no_items"}), None
+        lines, left_out = await self._lines(household_id, requested)
+        if not lines:
+            return json.dumps({"card": None, "not_on_card": left_out}, ensure_ascii=False), None
+        record, error = await self._store(household_id, lines, replaces_approval_id)
+        if record is None:
+            return error, None
+        card = ApprovalService.to_pending_approval(record)
+        view = {
+            "card": {"lines": [line.description for line in lines]},
+            "not_on_card": left_out,
+        }
+        return json.dumps(view, ensure_ascii=False), card.model_dump(mode="json")
+
+    async def change_card(
+        self, old: ApprovalRecord, changes: Sequence[CardChange]
+    ) -> dict[str, Any]:
+        """The new card for a 送出修改 sent as data (Issue #162); the model is not used.
+
+        Every line of `old` goes on the new card as it was, with the changed fields
+        replaced, read again from the current records (section 7). Raises
+        `CardChangeRefused` and stores nothing when a change does not fit the card or
+        any line can no longer be recorded: the new card never silently drops a line.
+        The caller retires `old` once the new card is stored (`retire`).
+        """
+        by_id = {op.operation_id: op for op in old.operations}
+        today = taipei_today(self._clock())
+        changed: dict[str, CardChange] = {}
+        for change in changes:
+            if change.operation_id not in by_id:
+                raise CardChangeRefused(
+                    "unknown_operation", CHANGE_UNKNOWN_LINE, operation_id=change.operation_id
+                )
+            if change.operation_id in changed:
+                raise CardChangeRefused(
+                    "duplicate_operation", CHANGE_DUPLICATE_LINE, operation_id=change.operation_id
+                )
+            changed[change.operation_id] = change
+            if "purchased_on" in change.model_fields_set:
+                if not self._dated:
+                    raise CardChangeRefused("purchase_day_off", CHANGE_DAY_OFF)
+                if change.purchased_on is not None and change.purchased_on > today:
+                    raise CardChangeRefused(
+                        "future_date", CHANGE_FUTURE_DAY, operation_id=change.operation_id
+                    )
+        before = [_line_as_said(op) for op in old.operations]
+        if any(item is None for item in before):
+            raise CardChangeRefused("line_refused", CHANGE_NOT_THIS_CARD)
+        if not self._dated and any("purchased_on" in item for item in before if item):
+            raise CardChangeRefused("purchase_day_off", CHANGE_DAY_OFF)
+        after = [
+            _with_change(item, changed.get(op.operation_id), today)
+            for op, item in zip(old.operations, before, strict=True)
+            if item is not None
+        ]
+        if after == before:
+            raise CardChangeRefused("nothing_changed", CHANGE_NOTHING)
+        lines, left_out = await self._lines(
+            old.household_id, _requested_items(after, dated=self._dated)
+        )
+        if left_out:
+            names = {
+                str(op.values.get("shopping_item_id")): str(op.values.get("name") or "")
+                for op in old.operations
+            }
+            refused = [
+                f"「{names.get(row['shopping_item_id']) or row['shopping_item_id']}」"
+                f"{row['reason']}"
+                for row in left_out
+            ]
+            raise CardChangeRefused(
+                "line_refused", CHANGE_LINE_REFUSED + "".join(refused), lines=left_out
+            )
+        record, error = await self._store(old.household_id, lines, old.approval_id)
+        if record is None:
+            if error == CARD_FAILED:
+                raise RuntimeError("The changed card was not stored.")
+            raise CardChangeRefused("line_refused", CHANGE_LINE_REFUSED + CHANGE_RECORDS_MOVED)
+        return ApprovalService.to_pending_approval(record).model_dump(mode="json")
+
+    async def _lines(
+        self, household_id: str, requested: Sequence[_Requested]
+    ) -> tuple[list[NewOperation], list[dict[str, Any]]]:
+        """Card lines for the requested items, and the items left off with why."""
         lines: list[NewOperation] = []
         left_out: list[dict[str, Any]] = []
         for item in requested:
@@ -309,9 +602,12 @@ class PurchaseCards:
                 left_out.append({"shopping_item_id": item.shopping_item_id, "reason": reason})
             else:
                 lines.append(line)
-        if not lines:
-            return json.dumps({"card": None, "not_on_card": left_out}, ensure_ascii=False), None
+        return lines, left_out
 
+    async def _store(
+        self, household_id: str, lines: list[NewOperation], replaces_approval_id: str | None
+    ) -> tuple[ApprovalRecord | None, str]:
+        """Store the pending card: (record, "") or (None, the error for the model)."""
         presentation = (
             ApprovalPresentation.SINGLE_ACTION
             if len(lines) == 1
@@ -327,20 +623,34 @@ class PurchaseCards:
                 )
             )
         except BatchTooLarge:
-            return TOO_MANY_ITEMS, None
+            return None, TOO_MANY_ITEMS
         except TargetChanged:
-            return RECORDS_CHANGED, None
+            return None, RECORDS_CHANGED
         except Exception:  # storage failed; no card was stored
             logger.warning("Purchase card was not stored", exc_info=True)
-            return CARD_FAILED, None
-        card = ApprovalService.to_pending_approval(record)
-        view = {
-            "card": {"lines": [line.description for line in lines]},
-            "not_on_card": left_out,
-        }
-        return json.dumps(view, ensure_ascii=False), card.model_dump(mode="json")
+            return None, CARD_FAILED
+        return record, ""
+
+    def _purchase_time(self, item: _Requested) -> tuple[datetime | None, str]:
+        """(purchased_at for the line, why the item is left off). Today means no time."""
+        if item.purchased_on is None:
+            return None, ""
+        try:
+            day = date.fromisoformat(item.purchased_on)
+        except ValueError:
+            return None, UNREADABLE_DAY
+        now = self._clock()
+        if day == taipei_today(now):
+            return None, ""
+        try:
+            return resolve_purchased_at(day, now), ""
+        except FuturePurchaseDate:
+            return None, FUTURE_DAY
 
     async def _line(self, household_id: str, item: _Requested) -> tuple[NewOperation | None, str]:
+        purchased_at, refused = self._purchase_time(item)
+        if refused:
+            return None, refused
         quantity = item.quantity
         shopping = await self._reader.read_shopping_item_with_etag(
             household_id=household_id, shopping_item_id=item.shopping_item_id
@@ -349,7 +659,7 @@ class PurchaseCards:
             return None, NOT_ON_LIST
         entry = shopping.record
         if not entry.item_id:
-            return await self._new_item_line(household_id, shopping, item)
+            return await self._new_item_line(household_id, shopping, item, purchased_at)
         if entry.quantity is not None and quantity > entry.quantity:
             return None, MORE_THAN_LISTED
         inventory = await self._reader.read_inventory_item_with_etag(
@@ -360,12 +670,19 @@ class PurchaseCards:
         if entry.unit is not None and inventory.record.unit != entry.unit:
             return None, OTHER_UNIT
         try:
-            return purchase_operation(shopping=shopping, inventory=inventory, quantity=quantity), ""
+            line = purchase_operation(
+                shopping=shopping, inventory=inventory, quantity=quantity, purchased_at=purchased_at
+            )
+            return line, ""
         except (ShoppingPreviewError, ValueError) as error:
             return None, f"這一筆現在還不能記錄：{error}"
 
     async def _new_item_line(
-        self, household_id: str, shopping: MappedDocument[ShoppingItem], item: _Requested
+        self,
+        household_id: str,
+        shopping: MappedDocument[ShoppingItem],
+        item: _Requested,
+        purchased_at: datetime | None = None,
     ) -> tuple[NewOperation | None, str]:
         """A list entry the household does not have yet becomes a `create_item` line."""
         entry = shopping.record
@@ -383,7 +700,11 @@ class PurchaseCards:
             return None, NEEDS_LOCATION
         try:
             line = new_item_operation(
-                shopping=shopping, quantity=item.quantity, unit=unit, location=item.location
+                shopping=shopping,
+                quantity=item.quantity,
+                unit=unit,
+                location=item.location,
+                purchased_at=purchased_at,
             )
         except ValueError as error:
             return None, f"這一筆現在還不能記錄：{error}"
@@ -399,11 +720,12 @@ def _not_replaced_because(record: ApprovalRecord | None) -> str | None:
     return record.status.value
 
 
-def _requested_items(value: Any) -> list[_Requested]:
+def _requested_items(value: Any, *, dated: bool = False) -> list[_Requested]:
     """The model's items, each shopping entry once, quantities as whole numbers ≥ 1.
 
-    `unit` and `location` are optional words. Blank text counts as not said: the real
-    model fills unused optional fields with "" (seen on Azure OpenAI, 2026-11-13).
+    `unit` and `location` are optional words, and so is `purchased_on`, which is read
+    only with dated purchases on. Blank text counts as not said: the real model fills
+    unused optional fields with "" (seen on Azure OpenAI, 2026-11-13).
     """
     if not isinstance(value, list):
         return []
@@ -414,7 +736,8 @@ def _requested_items(value: Any) -> list[_Requested]:
             return []
         shopping_item_id = str(item.get("shopping_item_id") or "").strip()
         quantity = item.get("quantity")
-        words = [item.get("unit"), item.get("location")]
+        day = item.get("purchased_on") if dated else None
+        words = [item.get("unit"), item.get("location"), day]
         if (
             not shopping_item_id
             or shopping_item_id in seen
@@ -425,9 +748,70 @@ def _requested_items(value: Any) -> list[_Requested]:
         ):
             return []
         seen.add(shopping_item_id)
-        unit, location = ((w or "").strip() or None for w in words)
-        requested.append(_Requested(shopping_item_id, quantity, unit, location))
+        unit, location, purchased_on = ((w or "").strip() or None for w in words)
+        requested.append(_Requested(shopping_item_id, quantity, unit, location, purchased_on))
     return requested
+
+
+class CardChangeRefused(Exception):
+    """A 送出修改 sent as data was refused; nothing was stored (Issue #162).
+
+    `code` is one of the codes in contract section 7; `details` go with it.
+    """
+
+    def __init__(self, code: str, message: str, **details: Any) -> None:
+        super().__init__(code)
+        self.code = code
+        self.message = message
+        self.details = details
+
+
+def _whole(value: Any) -> Any:
+    """A whole number read back from JSON may come as 2.0."""
+    return int(value) if isinstance(value, float) and value.is_integer() else value
+
+
+def _line_as_said(op: Any) -> dict[str, Any] | None:
+    """A stored card line as the items `propose` takes; None for lines that cannot change.
+
+    A purchase line gives its shopping entry and quantity; a new-item line from the
+    list also its unit and location; a dated line its Taipei day (`purchased_on`).
+    """
+    values = op.values
+    if op.action == COMPLETE_PURCHASE:
+        item = {
+            "shopping_item_id": values.get("shopping_item_id"),
+            "quantity": _whole(values.get("purchased_quantity")),
+        }
+    elif op.action == CREATE_ITEM and values.get("shopping_item_id"):
+        item = {
+            "shopping_item_id": values.get("shopping_item_id"),
+            "quantity": _whole(values.get("quantity")),
+            "unit": values.get("unit"),
+            "location": values.get("location"),
+        }
+    else:
+        return None
+    purchased_at = values.get("purchased_at")
+    if isinstance(purchased_at, str):
+        day = datetime.fromisoformat(purchased_at).astimezone(TAIPEI).date()
+        item["purchased_on"] = day.isoformat()
+    return item
+
+
+def _with_change(item: dict[str, Any], change: CardChange | None, today: date) -> dict[str, Any]:
+    """The line after the user's change; fields the change leaves out stay as they were."""
+    if change is None:
+        return item
+    changed = dict(item)
+    if change.quantity is not None:
+        changed["quantity"] = change.quantity
+    if "purchased_on" in change.model_fields_set:
+        if change.purchased_on is None or change.purchased_on == today:
+            changed.pop("purchased_on", None)  # back to today: the confirmation time
+        else:
+            changed["purchased_on"] = change.purchased_on.isoformat()
+    return changed
 
 
 RESUME_MESSAGES = {

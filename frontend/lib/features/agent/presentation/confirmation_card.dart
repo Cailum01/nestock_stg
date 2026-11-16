@@ -1,10 +1,9 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../shared/theme/app_theme.dart';
 import '../domain/agent_view_data.dart';
+import 'hand_drawn_card_shell.dart';
 
 enum ConfirmationDraftField { name, quantity, unit, location }
 
@@ -108,7 +107,7 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
     ];
     _locations = [
       for (final item in widget.items)
-        TextEditingController(text: item.location),
+        TextEditingController(text: item.location ?? ''),
     ];
     _lastValidQuantities = [
       for (final controller in _quantities) controller.text,
@@ -231,7 +230,7 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
             ? int.parse(_quantities[index].text)
             : widget.items[index].quantity,
         unit: _units[index].text.trim(),
-        location: _locations[index].text.trim(),
+        location: _normalizedLocation(_locations[index].text),
       ),
   ];
 
@@ -253,92 +252,80 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
   bool get _hasInvalidQuantity =>
       _quantities.any((controller) => !_isValidQuantity(controller.text));
 
+  String? _normalizedLocation(String value) {
+    final location = value.trim();
+    return location.isEmpty ? null : location;
+  }
+
   @override
-  Widget build(BuildContext context) => Stack(
+  Widget build(BuildContext context) => HandDrawnCardShell(
     key: const Key('confirmation-card-shell'),
-    clipBehavior: Clip.none,
-    children: [
-      Padding(
-        padding: const EdgeInsets.all(26),
-        child: Material(
-          color: Theme.of(context).colorScheme.surfaceContainerLowest,
-          borderRadius: BorderRadius.circular(14),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  widget.title,
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                if (widget.description != null) ...[
-                  const SizedBox(height: 4),
-                  Text(widget.description!),
-                ],
-                const SizedBox(height: 8),
-                for (var index = 0; index < widget.items.length; index++)
-                  _ConfirmationItem(
-                    key: ValueKey('confirmation-item-$index'),
-                    item: widget.items[index],
-                    excluded: _excluded.contains(index),
-                    editing: _editingIndex == index,
-                    nameController: _names[index],
-                    quantityController: _quantities[index],
-                    unitController: _units[index],
-                    locationController: _locations[index],
-                    nameFocusNode: _nameFocusNodes[index],
-                    quantityFocusNode: _quantityFocusNodes[index],
-                    unitFocusNode: _unitFocusNodes[index],
-                    locationFocusNode: _locationFocusNodes[index],
-                    onToggle: () => _toggleItem(index),
-                    onEdit: () => _setEditingIndex(index),
-                    onFinishEdit: () => _finishEditing(index),
-                    onChanged: () => setState(() {}),
-                    index: index,
-                    allowExclusion: widget.allowExclusion,
-                  ),
-                if (widget.items.isEmpty)
-                  for (final entry in widget.details.entries)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 2),
-                      child: Text('${entry.key}：${entry.value}'),
-                    ),
-                const SizedBox(height: 10),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(
-                      key: const Key('confirmation-cancel'),
-                      onPressed: widget.onCancel,
-                      child: const Text('取消'),
-                    ),
-                    const SizedBox(width: 8),
-                    if (widget.onSubmitChanges != null &&
-                        _hasChanges &&
-                        !_hasInvalidQuantity) ...[
-                      OutlinedButton(
-                        key: const Key('confirmation-submit-changes'),
-                        onPressed: () => widget.onSubmitChanges!(_drafts),
-                        child: const Text('送出修改'),
-                      ),
-                      const SizedBox(width: 8),
-                    ],
-                    FilledButton(
-                      key: const Key('confirmation-confirm'),
-                      onPressed: widget.onConfirm,
-                      child: const Text('確認'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(widget.title, style: Theme.of(context).textTheme.titleMedium),
+        if (widget.description != null) ...[
+          const SizedBox(height: 4),
+          Text(widget.description!),
+        ],
+        const SizedBox(height: 8),
+        for (var index = 0; index < widget.items.length; index++)
+          _ConfirmationItem(
+            key: ValueKey('confirmation-item-$index'),
+            item: widget.items[index],
+            excluded: _excluded.contains(index),
+            editing: _editingIndex == index,
+            nameController: _names[index],
+            quantityController: _quantities[index],
+            unitController: _units[index],
+            locationController: _locations[index],
+            nameFocusNode: _nameFocusNodes[index],
+            quantityFocusNode: _quantityFocusNodes[index],
+            unitFocusNode: _unitFocusNodes[index],
+            locationFocusNode: _locationFocusNodes[index],
+            onToggle: () => _toggleItem(index),
+            onEdit: () => _setEditingIndex(index),
+            onFinishEdit: () => _finishEditing(index),
+            onChanged: () => setState(() {}),
+            index: index,
+            allowExclusion: widget.allowExclusion,
           ),
+        if (widget.items.isEmpty)
+          for (final entry in widget.details.entries)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Text('${entry.key}：${entry.value}'),
+            ),
+        const SizedBox(height: 10),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            TextButton(
+              key: const Key('confirmation-cancel'),
+              onPressed: widget.onCancel,
+              child: const Text('取消'),
+            ),
+            const SizedBox(width: 8),
+            if (widget.onSubmitChanges != null &&
+                _hasChanges &&
+                !_hasInvalidQuantity) ...[
+              OutlinedButton(
+                key: const Key('confirmation-submit-changes'),
+                onPressed: () => widget.onSubmitChanges!(_drafts),
+                child: const Text('送出修改'),
+              ),
+              const SizedBox(width: 8),
+            ],
+            FilledButton(
+              key: const Key('confirmation-confirm'),
+              onPressed: widget.onConfirm,
+              child: const Text('確認'),
+            ),
+          ],
         ),
-      ),
-      const _ConfirmationBorder(),
-    ],
+      ],
+    ),
   );
 }
 
@@ -509,7 +496,9 @@ class _ConfirmationItem extends StatelessWidget {
                                       ),
                                     )
                                   : Text(
-                                      locationController.text,
+                                      locationController.text.isEmpty
+                                          ? '未填'
+                                          : locationController.text,
                                       style: detailStyle,
                                     ),
                             ),
@@ -571,76 +560,4 @@ class _ConfirmationItem extends StatelessWidget {
       ),
     );
   }
-}
-
-class _ConfirmationBorder extends StatelessWidget {
-  const _ConfirmationBorder();
-
-  static const _strokeThickness = 22.0;
-  // Adjacent bounds meet at their corners without overlapping. The artwork
-  // itself provides the intentionally open visual corner.
-  static const _cornerInset = _strokeThickness;
-
-  @override
-  Widget build(BuildContext context) => Positioned.fill(
-    child: IgnorePointer(
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          Positioned(
-            key: const Key('confirmation-border-top'),
-            left: _cornerInset,
-            right: _cornerInset,
-            top: 0,
-            height: _strokeThickness,
-            child: Image.asset(
-              'assets/images/ui/confirmation_border_horizontal.png',
-              fit: BoxFit.fill,
-            ),
-          ),
-          Positioned(
-            key: const Key('confirmation-border-bottom'),
-            left: _cornerInset,
-            right: _cornerInset,
-            bottom: 0,
-            height: _strokeThickness,
-            child: Transform.rotate(
-              key: const Key('confirmation-border-bottom-rotate'),
-              angle: math.pi,
-              child: Image.asset(
-                'assets/images/ui/confirmation_border_horizontal.png',
-                fit: BoxFit.fill,
-              ),
-            ),
-          ),
-          Positioned(
-            key: const Key('confirmation-border-left'),
-            left: 0,
-            top: _cornerInset,
-            bottom: _cornerInset,
-            width: _strokeThickness,
-            child: Image.asset(
-              'assets/images/ui/confirmation_border_vertical.png',
-              fit: BoxFit.fill,
-            ),
-          ),
-          Positioned(
-            key: const Key('confirmation-border-right'),
-            right: 0,
-            top: _cornerInset,
-            bottom: _cornerInset,
-            width: _strokeThickness,
-            child: Transform.rotate(
-              key: const Key('confirmation-border-right-rotate'),
-              angle: math.pi,
-              child: Image.asset(
-                'assets/images/ui/confirmation_border_vertical.png',
-                fit: BoxFit.fill,
-              ),
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
 }

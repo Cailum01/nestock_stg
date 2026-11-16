@@ -21,7 +21,7 @@ void main() {
           ),
         );
         await tester.enterText(find.byType(TextField), '查看照片');
-        await tester.tap(find.text('送出'));
+        await tester.tap(find.byKey(const Key('paw-send')));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 50));
         final clip = find.byKey(const Key('room-work-clip'));
@@ -42,12 +42,12 @@ void main() {
             tester.getTopLeft(find.byKey(const Key('composer'))).dy,
           ),
         );
-        expect(find.byKey(const Key('toolbar')).hitTestable(), findsOneWidget);
+        expect(find.byKey(const Key('paw-send')).hitTestable(), findsOneWidget);
         await tester.pumpAndSettle();
         await tester.tap(find.byTooltip('關閉'));
         await tester.pump(const Duration(milliseconds: 60));
         expect(tester.getRect(clip), roomRect);
-        expect(find.byKey(const Key('toolbar')).hitTestable(), findsOneWidget);
+        expect(find.byKey(const Key('paw-send')).hitTestable(), findsOneWidget);
         await tester.pumpAndSettle();
         expect(
           find.byKey(const Key('work-surface')).hitTestable(),

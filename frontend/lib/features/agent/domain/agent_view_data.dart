@@ -70,7 +70,7 @@ class ConfirmationItemView {
   final String name;
   final num quantity;
   final String unit;
-  final String location;
+  final String? location;
 }
 
 class AgentReply {

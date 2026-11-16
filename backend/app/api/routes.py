@@ -35,7 +35,7 @@ from app.models.storage import (
     UploadAuthorizationResponse,
 )
 from app.services.approvals import ApprovalNotFound, ApprovalService, InvalidSelection
-from app.services.commerce.biggo import BigGoCommerceProvider
+from app.services.commerce import BaseCommerceProvider
 from app.services.interfaces import InventoryService, ShoppingService
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.speech import SpeechServiceError, SpeechToTextService
@@ -71,14 +71,14 @@ async def shopping(
     "/api/commerce/options",
     response_model=CommerceSearchResponse,
     tags=["commerce"],
-    summary="[A2] 查詢外部推薦比價選項 (固定回傳3筆)",
+    summary="查詢外部推薦比價選項 (固定回傳3筆)",
     responses={
         200: {"description": "比價搜尋結果與推薦清單"},
     },
 )
 async def commerce_options(
     keyword: Annotated[str, Query(description="要比價的品名關鍵字")],
-    service: Annotated[BigGoCommerceProvider, Depends(get_commerce_service)],
+    service: Annotated[BaseCommerceProvider, Depends(get_commerce_service)],
 ) -> CommerceSearchResponse:
     clean_keyword = keyword.strip()
     if not clean_keyword:

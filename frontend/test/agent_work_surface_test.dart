@@ -24,7 +24,7 @@ void main() {
       );
       expect(find.byKey(const Key('work-surface')), findsNothing);
       await tester.enterText(find.byType(TextField), '查看照片');
-      await tester.tap(find.text('送出'));
+      await tester.tap(find.byKey(const Key('paw-send')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('work-surface')), findsOneWidget);
       for (final entry in [(0, '衛生紙'), (1, '洗衣精'), (2, '咖啡')]) {
@@ -66,7 +66,7 @@ void main() {
             .hitTestable(),
         findsOneWidget,
       );
-      expect(find.byKey(const Key('toolbar')).hitTestable(), findsOneWidget);
+      expect(find.byKey(const Key('paw-send')).hitTestable(), findsOneWidget);
       await tester.tap(find.text('確認全部入庫'));
       await tester.pumpAndSettle();
       expect((await catalog.inventory()).map((e) => e.detail).toList(), before);
@@ -84,7 +84,7 @@ void main() {
       ),
     );
     await tester.enterText(find.byType(TextField), '查看照片');
-    await tester.tap(find.text('送出'));
+    await tester.tap(find.byKey(const Key('paw-send')));
     await tester.pumpAndSettle();
     await tester.drag(
       find.byKey(const Key('work-items')),

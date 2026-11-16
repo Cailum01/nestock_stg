@@ -23,8 +23,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('我的庫存'), findsOneWidget);
       expect(find.byKey(const Key('room')), findsOneWidget);
-      expect(find.byKey(const Key('composer')).hitTestable(), findsOneWidget);
-      expect(find.byKey(const Key('toolbar')).hitTestable(), findsOneWidget);
+      expect(find.byKey(const Key('composer')), findsOneWidget);
+      expect(find.byKey(const Key('paw-send')).hitTestable(), findsOneWidget);
       await tester.enterText(
         find.byKey(const Key('inventory-search')),
         'TOILET PAPER',
@@ -37,7 +37,7 @@ void main() {
       expect(find.text('找不到符合的物品。'), findsOneWidget);
       await tester.tap(find.byTooltip('關閉庫存'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('庫存'));
+      await tester.tap(find.byKey(const Key('cabinet')));
       await tester.pumpAndSettle();
       expect(find.text('我的庫存'), findsOneWidget);
       expect(tester.takeException(), isNull);

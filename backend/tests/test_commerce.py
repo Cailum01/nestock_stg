@@ -274,3 +274,141 @@ async def test_biggo_provider_http_error_graceful_degradation() -> None:
 
     assert len(results) > 0
     assert all(opt.source == "demo" for opt in results)
+
+
+@pytest.mark.anyio
+async def test_biggo_provider_bait_and_price_floor_filtering() -> None:
+    """Validate that BigGo filters loss-leader bait keywords and prices under MIN_PRICE_FLOOR."""
+    mock_payload = {
+        "list": [
+            {
+                "title": "[首購限定] 試用包 濕式衛生紙 10抽",
+                "price": "1.0",
+                "url": "https://momo.com/item/1",
+                "store": "momo",
+            },
+            {
+                "title": "無關鍵字但價格僅8元之引流商品",
+                "price": "8.0",
+                "url": "https://pchome.com/item/2",
+                "store": "PChome",
+            },
+            {
+                "title": "舒潔 頂級三層抽取衛生紙 100抽x24包",
+                "price": "389.0",
+                "url": "https://shopee.tw/item/3",
+                "store": "蝦皮",
+            },
+        ]
+    }
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_resp = AsyncMock(spec=httpx.Response)
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = mock_payload
+    mock_client.get.return_value = mock_resp
+
+    provider = BigGoCommerceProvider(
+        client_id="dummy_id",
+        client_secret="dummy_secret",
+    )
+
+    with (
+        patch.object(provider, "_fetch_access_token", return_value="mock_token"),
+        patch.object(provider, "_get_http_client", return_value=mock_client),
+    ):
+        results = await provider.search_options("衛生紙", limit=3)
+
+    # Only the 389.0 normal product must survive
+    assert len(results) == 1
+    assert results[0].estimated_price == 389.0
+    assert results[0].option_id == "opt-biggo-1"
+    assert results[0].store == "蝦皮"
+    assert "首購" not in results[0].title
+
+
+def test_purchase_option_raw_title_retained_and_response_view_excluded() -> None:
+    """Verify PurchaseOption retains raw_title internally, while response envelope excludes it."""
+    from app.models.commerce import CommerceSearchResponse, CommerceSearchStatus
+
+    opt = PurchaseOption(
+        option_id="opt-1",
+        title="乾淨品名",
+        raw_title="原始帶廣告品名 100抽x24包",
+        store="momo",
+        source="live",
+        product_url="https://example.com",
+    )
+    # Domain model must preserve raw_title
+    dumped_opt = opt.model_dump()
+    assert dumped_opt.get("raw_title") == "原始帶廣告品名 100抽x24包"
+
+    # Response envelope must project into CommerceOptionView and exclude raw_title
+    resp = CommerceSearchResponse(
+        status=CommerceSearchStatus.SUCCESS,
+        code="OK",
+        message="成功",
+        options=[opt],
+    )
+    dumped_resp = resp.model_dump()
+    assert "raw_title" not in dumped_resp["options"][0]
+    assert dumped_resp["options"][0]["title"] == "乾淨品名"
+
+
+@pytest.mark.anyio
+async def test_biggo_provider_demo_fallback_detergent_and_flour() -> None:
+    """Verify depleted demo items in demo-household (laundry detergent, flour) return options."""
+    provider = BigGoCommerceProvider(demo_mode=True)
+
+    # 1. Laundry detergent
+    detergent_opts = await provider.search_options("洗衣精", limit=3)
+    assert len(detergent_opts) >= 2
+    assert any("洗衣精" in opt.title for opt in detergent_opts)
+    assert all(opt.source == "demo" for opt in detergent_opts)
+
+    # 2. Flour
+    flour_opts = await provider.search_options("麵粉", limit=3)
+    assert len(flour_opts) >= 2
+    assert any("麵粉" in opt.title or "強力粉" in opt.title for opt in flour_opts)
+    assert all(opt.source == "demo" for opt in flour_opts)
+
+
+@pytest.mark.anyio
+async def test_biggo_provider_filters_accessory_keywords() -> None:
+    """Verify accessories/parts (e.g. 麵粉袋蓋 NT$ 28) are filtered when searching core items."""
+    mock_payload = {
+        "status": 200,
+        "results": [
+            {
+                "title": "食品級 麵粉袋密封蓋 / 麵粉袋蓋 28元",
+                "price": "28.0",
+                "store": "蝦皮商城",
+                "url": "https://shopee.tw/p/lid",
+            },
+            {
+                "title": "日正 中筋麵粉 1kg",
+                "price": "55.0",
+                "store": "全聯",
+                "url": "https://pxmart.com.tw/p/flour",
+            },
+        ],
+    }
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_resp = AsyncMock(spec=httpx.Response)
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = mock_payload
+    mock_client.get.return_value = mock_resp
+
+    provider = BigGoCommerceProvider(client_id="dummy", client_secret="dummy")
+
+    with (
+        patch.object(provider, "_fetch_access_token", return_value="mock_token"),
+        patch.object(provider, "_get_http_client", return_value=mock_client),
+    ):
+        results = await provider.search_options("麵粉", limit=3)
+
+    # 麵粉袋蓋 (28元) 必須被過濾，僅保留 55 元正規麵粉
+    assert len(results) == 1
+    assert results[0].title == "日正 中筋麵粉 1kg"
+    assert results[0].estimated_price == 55.0

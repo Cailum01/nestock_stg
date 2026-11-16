@@ -35,9 +35,9 @@ void main() {
       await tester.ensureVisible(find.byType(TextField));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), '查看庫存');
-      await tester.ensureVisible(find.text('送出'));
+      await tester.ensureVisible(find.byKey(const Key('paw-send')));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('送出'));
+      await tester.tap(find.byKey(const Key('paw-send')));
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
         find.text('單一操作確認示範'),

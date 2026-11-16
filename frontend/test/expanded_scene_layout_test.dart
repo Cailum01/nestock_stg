@@ -12,6 +12,11 @@ class VisionAgent implements PhotoAwareAgentClient {
   Future<AgentReply> send(String message, {String? replacesApprovalId}) async =>
       sendWithPhoto(message, 'ref');
   @override
+  Future<AgentReply> submitCardChanges({
+    required String approvalId,
+    required List<CardChange> changes,
+  }) async => const AgentReply(message: '');
+  @override
   Future<AgentReply> sendWithPhoto(
     String message,
     String imageRef,

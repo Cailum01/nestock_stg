@@ -140,9 +140,9 @@ class _AgentHomeState extends State<AgentHome> {
     }
   }
 
-  Future<void> _submitApprovalChanges({
+  Future<void> _submitCardChanges({
     required AgentReply currentReply,
-    required String message,
+    required List<CardChange> changes,
   }) async {
     final approval = currentReply.approval;
     if (_busy || approval == null) return;
@@ -150,12 +150,12 @@ class _AgentHomeState extends State<AgentHome> {
     setState(() {
       _state = AgentState.loading;
       _retry = () =>
-          _submitApprovalChanges(currentReply: currentReply, message: message);
+          _submitCardChanges(currentReply: currentReply, changes: changes);
     });
     try {
-      final reply = await widget.client.send(
-        message,
-        replacesApprovalId: approval.id,
+      final reply = await widget.client.submitCardChanges(
+        approvalId: approval.id,
+        changes: changes,
       );
       if (!mounted || generation != _conversationGeneration) return;
       setState(() {
@@ -168,7 +168,9 @@ class _AgentHomeState extends State<AgentHome> {
         ));
         if (reply.approval != null) _reply = reply;
         _workOpen = true;
-        _state = AgentState.waitingForApproval;
+        _state = reply.approval == null
+            ? AgentState.completed
+            : AgentState.waitingForApproval;
       });
       _showLatestMessage();
     } on TimeoutException {
@@ -180,6 +182,25 @@ class _AgentHomeState extends State<AgentHome> {
         setState(() => _state = AgentState.error);
       }
     }
+  }
+
+  Map<String, String> _cardChangeErrors(AgentReply reply) {
+    final errors = <String, String>{};
+    for (final result in reply.results) {
+      final data = result.data;
+      if (data['code'] != 'line_refused' || data['lines'] is! List) continue;
+      for (final line in data['lines'] as List<dynamic>) {
+        if (line is! Map) continue;
+        final operationId = line['operation_id'];
+        final reason = line['reason'];
+        if (operationId is String &&
+            operationId.isNotEmpty &&
+            reason is String) {
+          errors[operationId] = reason;
+        }
+      }
+    }
+    return errors;
   }
 
   void _clearConversation() {
@@ -653,8 +674,10 @@ class _AgentHomeState extends State<AgentHome> {
                     if (entry.reply!.approval != null &&
                         identical(entry.reply, _reply))
                       ApprovalCard(
+                        key: ValueKey('approval-${entry.reply!.approval!.id}'),
                         approval: entry.reply!.approval!,
                         busy: _busy,
+                        changeErrors: _cardChangeErrors(entry.reply!),
                         onDecision:
                             ({
                               required approved,
@@ -668,9 +691,9 @@ class _AgentHomeState extends State<AgentHome> {
                                 approvedOperationIds: approvedOperationIds,
                               ),
                             ),
-                        onSubmitChanges: (message) => _submitApprovalChanges(
+                        onSubmitCardChanges: (changes) => _submitCardChanges(
                           currentReply: entry.reply!,
-                          message: message,
+                          changes: changes,
                         ),
                       ),
                     if (entry.reply!.mockVisionItems != null)

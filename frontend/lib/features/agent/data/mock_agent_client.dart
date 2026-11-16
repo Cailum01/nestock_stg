@@ -80,6 +80,12 @@ class MockAgentClient implements AgentClient {
   }
 
   @override
+  Future<AgentReply> submitCardChanges({
+    required String approvalId,
+    required List<CardChange> changes,
+  }) => send('送出修改', replacesApprovalId: approvalId);
+
+  @override
   Future<AgentReply> resume({
     required String approvalId,
     required bool approved,

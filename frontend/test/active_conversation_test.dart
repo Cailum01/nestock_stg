@@ -10,6 +10,11 @@ class LocalAgent implements AgentClient {
   Future<AgentReply> send(String message, {String? replacesApprovalId}) async =>
       AgentReply(message: '回答 $message');
   @override
+  Future<AgentReply> submitCardChanges({
+    required String approvalId,
+    required List<CardChange> changes,
+  }) async => const AgentReply(message: '完成');
+  @override
   Future<AgentReply> resume({
     required String approvalId,
     required bool approved,

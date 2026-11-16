@@ -16,6 +16,11 @@ class DelayedAgent implements AgentClient {
   Future<AgentReply> send(String message, {String? replacesApprovalId}) =>
       result.future;
   @override
+  Future<AgentReply> submitCardChanges({
+    required String approvalId,
+    required List<CardChange> changes,
+  }) => result.future;
+  @override
   Future<AgentReply> resume({
     required String approvalId,
     required bool approved,
@@ -36,6 +41,12 @@ class MixedAgent implements AgentClient {
     }
     return AgentReply(message: '回覆 $message');
   }
+
+  @override
+  Future<AgentReply> submitCardChanges({
+    required String approvalId,
+    required List<CardChange> changes,
+  }) async => const AgentReply(message: '完成');
 
   @override
   Future<AgentReply> resume({

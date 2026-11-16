@@ -10,6 +10,7 @@ class _ApprovalEditClient implements AgentClient {
 
   final bool replacement;
   final List<(String message, String? replacesApprovalId)> sends = [];
+  final List<(String approvalId, List<CardChange> changes)> cardChanges = [];
 
   @override
   Future<AgentReply> send(String message, {String? replacesApprovalId}) async {
@@ -22,6 +23,22 @@ class _ApprovalEditClient implements AgentClient {
       );
     }
     if (!replacement) return const AgentReply(message: '請補充更多資訊。');
+    return _reply(
+      approvalId: 'approval-new',
+      operationId: 'operation-new',
+      description: '新卡：會新增一個庫存品項：衛生紙',
+    );
+  }
+
+  @override
+  Future<AgentReply> submitCardChanges({
+    required String approvalId,
+    required List<CardChange> changes,
+  }) async {
+    cardChanges.add((approvalId, changes));
+    if (!replacement) {
+      return const AgentReply(message: '請補充更多資訊。');
+    }
     return _reply(
       approvalId: 'approval-new',
       operationId: 'operation-new',
@@ -93,7 +110,12 @@ void main() {
 
     await _openApproval(tester, client);
 
-    expect(client.sends, [('衛生紙買回來了', null), ('衛生紙：數量改成 3', 'approval-old')]);
+    expect(client.sends, [('衛生紙買回來了', null)]);
+    expect(client.cardChanges.single.$1, 'approval-old');
+    expect(client.cardChanges.single.$2.single.toJson(), {
+      'operation_id': 'operation-old',
+      'quantity': 3,
+    });
     expect(find.text('舊卡：會新增一個庫存品項：衛生紙'), findsOneWidget);
     expect(find.text('請補充更多資訊。'), findsOneWidget);
     expect(find.byKey(const Key('confirmation-card-shell')), findsOneWidget);

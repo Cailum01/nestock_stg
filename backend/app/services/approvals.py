@@ -81,6 +81,8 @@ class CancelReason(StrEnum):
     """The user pressed "cancel"."""
     REPLACED = "replaced"
     """The Agent replaced the card with a new one (PR #47 sections 6 and 7)."""
+    REPLACE_FAILED = "replace_failed"
+    """A 送出修改 card whose original could not be cancelled (section 7): never shown."""
 
 
 class TargetVersion(ContractModel):
@@ -122,10 +124,20 @@ class ApprovalRecord(ContractModel):
     selected_option_id: str | None = None
     outcome: dict[str, JsonValue] | None = None
     cancel_reason: CancelReason | None = None
+    replaces_approval_id: str | None = None
+    """Set only on a card made by 送出修改: the card it replaces (section 7). Such a card
+    counts only once that card is cancelled as `replaced` (`ApprovalService.counts`)."""
 
     @property
     def operation_ids(self) -> list[str]:
         return [operation.operation_id for operation in self.operations]
+
+    @property
+    def is_replaced(self) -> bool:
+        """Cancelled because a 送出修改 card took its place (section 7)."""
+        return (
+            self.status is ApprovalStatus.CANCELLED and self.cancel_reason is CancelReason.REPLACED
+        )
 
     def is_past_expiry(self, now: datetime) -> bool:
         return now >= self.expires_at
@@ -258,7 +270,7 @@ class DomainWriteBuilder(Protocol):
     """Turns approved operations into batch writes (C1, B1).
 
     The builder reads the current records and raises `TargetChanged` when a target's
-    ETag differs from the version stored on the card (PR #47 section 4 point 6).
+    ETag differs from the version stored on the card (PR #47 section 4 point 7).
     Replace operations must use those stored ETags.
     """
 
@@ -267,6 +279,17 @@ class DomainWriteBuilder(Protocol):
 
 class ApprovalNotFound(LookupError):
     """Unknown `approval_id`, or it belongs to another household."""
+
+
+class CardNotChangeable(Exception):
+    """送出修改 on a card that cannot be changed any more (section 7).
+
+    `reason` is `not_found`, `expired`, `confirmed`, `completed` or `cancelled`.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class InvalidSelection(ValueError):
@@ -345,11 +368,13 @@ class ApprovalService:
         presentation: ApprovalPresentation,
         operations: Sequence[NewOperation],
         options: Sequence[NewOption] = (),
+        replaces_approval_id: str | None = None,
     ) -> ApprovalRecord:
         """Build a new `pending` card without storing it. IDs are made here, never by the App.
 
         IDs and times are fixed once, so a retry of `save` sends exactly the same card
         (PR #47 section 6, rule 6: retries reuse the same identity).
+        `replaces_approval_id` is set only by 送出修改 (section 7).
         """
         if not household_id:
             raise ValueError("household_id must not be empty.")
@@ -376,6 +401,7 @@ class ApprovalService:
             status=ApprovalStatus.PENDING,
             created_at=now,
             expires_at=now + self._lifetime,
+            replaces_approval_id=replaces_approval_id,
         )
 
     async def save(self, record: ApprovalRecord) -> ApprovalRecord:
@@ -443,16 +469,26 @@ class ApprovalService:
         )
 
     async def list_open(self, *, household_id: str) -> list[ApprovalRecord]:
-        """Cards the Agent mentions on the next message (PR #47 section 8).
+        """Open cards: the newest pending one comes back with the next message (section 8).
 
-        Expired cards are left out and recorded as `expired` here.
+        Expired cards are left out and recorded as `expired` here. A 送出修改 card that
+        does not count (`counts`) is left out too; so is one whose original cannot be
+        read right now.
         """
         now = self._clock()
         open_cards: list[ApprovalRecord] = []
         for stored in await self._storage.list_open_approvals(household_id=household_id):
             record = ApprovalRecord.from_document(stored.document)
             if record.status is ApprovalStatus.PENDING and not record.is_past_expiry(now):
-                open_cards.append(record)
+                try:
+                    if await self.counts(record):
+                        open_cards.append(record)
+                except Exception:
+                    logger.warning(
+                        "Original of card %s could not be read; card left out.",
+                        record.approval_id,
+                        exc_info=True,
+                    )
             elif record.can_retry(now):
                 open_cards.append(record)
             elif record.status in (ApprovalStatus.PENDING, ApprovalStatus.CONFIRMED):
@@ -469,11 +505,62 @@ class ApprovalService:
             return await self._cancel(record, stored.etag, CancelReason.USER)
         return await self._approve(record, stored.etag, request)
 
+    async def card_to_change(self, *, household_id: str, approval_id: str) -> ApprovalRecord:
+        """The card a 送出修改 replaces: same household, `pending` and not past expiry.
+
+        Section 7: an expired, confirmed or cancelled card gets no new card, so this
+        raises `CardNotChangeable` with the reason; a pending card found past its
+        expiry is recorded as `expired` here. Nothing else is written.
+        """
+        try:
+            stored = await self._load(household_id, approval_id)
+        except ApprovalNotFound:
+            raise CardNotChangeable("not_found") from None
+        record = ApprovalRecord.from_document(stored.document)
+        if record.status is ApprovalStatus.PENDING:
+            if not record.is_past_expiry(self._clock()):
+                return record
+            await self._record_expired(record, stored.etag)
+            raise CardNotChangeable(ApprovalStatus.EXPIRED.value)
+        raise CardNotChangeable(record.status.value)
+
     async def cancel_replaced(self, *, household_id: str, approval_id: str) -> ResumeResult:
         """Cancel a card the Agent replaced with a new one (PR #47 section 7)."""
         stored = await self._load(household_id, approval_id)
         record = ApprovalRecord.from_document(stored.document)
         return await self._cancel(record, stored.etag, CancelReason.REPLACED)
+
+    async def cancel_failed_replacement(
+        self, *, household_id: str, approval_id: str
+    ) -> ResumeResult:
+        """Cancel a new card whose original could not be cancelled (section 7)."""
+        stored = await self._load(household_id, approval_id)
+        record = ApprovalRecord.from_document(stored.document)
+        return await self._cancel(record, stored.etag, CancelReason.REPLACE_FAILED)
+
+    async def read_card(self, *, household_id: str, approval_id: str) -> ApprovalRecord:
+        """Read a stored card, e.g. to check a cancel whose reply was lost."""
+        stored = await self._load(household_id, approval_id)
+        return ApprovalRecord.from_document(stored.document)
+
+    async def counts(self, record: ApprovalRecord) -> bool:
+        """False for a 送出修改 card whose original is not cancelled as `replaced`.
+
+        Such a card is not listed and cannot be confirmed (section 7), so the user never
+        holds two cards that can be confirmed, even when cancelling the original and
+        withdrawing the new card both failed (PR #143 C2 review). Every other card
+        counts. A cancelled original is kept for `CLEANUP_WINDOW`, longer than a card's
+        lifetime, so it can still be read while the new card is open.
+        """
+        if record.replaces_approval_id is None:
+            return True
+        try:
+            original = await self.read_card(
+                household_id=record.household_id, approval_id=record.replaces_approval_id
+            )
+        except ApprovalNotFound:
+            return False
+        return original.is_replaced
 
     async def _approve(
         self, record: ApprovalRecord, etag: str, request: ResumeRequest
@@ -486,6 +573,14 @@ class ApprovalService:
         if record.status is ApprovalStatus.PENDING:
             if record.is_past_expiry(now):
                 return await self._record_expired(record, etag)
+            if not await self.counts(record):
+                # Section 7: a 送出修改 card whose original was not replaced writes nothing.
+                logger.warning(
+                    "Card %s replaces %s, which was not cancelled as replaced; not confirmed.",
+                    record.approval_id,
+                    record.replaces_approval_id,
+                )
+                return await self._cancel(record, etag, CancelReason.REPLACE_FAILED)
             approved_ids, option_id = _selection_for(record, request)
             # decided_at is fixed before planning, so the builder can use it (for example as
             # the change event's recorded_at, Issue #60) and a retry plans with the same value.
@@ -739,7 +834,7 @@ def _check_card_shape(
 
 
 def _selection_for(record: ApprovalRecord, request: ResumeRequest) -> tuple[list[str], str | None]:
-    """Validate a first confirmation against the card type (v8 section 12, §4 point 5)."""
+    """Validate a first confirmation against the card type (v8 section 12, §4 point 6)."""
     ids = request.approved_operation_ids
     option_id = request.selected_option_id
     if record.presentation is ApprovalPresentation.SINGLE_ACTION:

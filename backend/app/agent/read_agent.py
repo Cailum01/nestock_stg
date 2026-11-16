@@ -40,6 +40,8 @@ from langgraph.graph.message import add_messages
 
 from app.agent.cards import (
     ONE_CARD_PER_MESSAGE,
+    OPEN_CARD_FIRST,
+    OPEN_CARDS_UNKNOWN,
     PHOTO_CARD_MADE,
     PURCHASE_TOOL_SCHEMA,
     PhotoCards,
@@ -58,6 +60,7 @@ from app.models.agent import AgentRequest, AgentResponse, AgentResult, ResultKin
 from app.models.commerce import PurchaseOption
 from app.models.domain import InventoryItem
 from app.models.vision import SceneType, VisionAnalysisResult
+from app.services.approvals import ApprovalRecord, ApprovalService, CardNotChangeable
 from app.services.commerce.biggo import BigGoCommerceProvider
 from app.services.item_matching import ItemMatch, ItemMatcher, MatchMethod, match_term
 from app.services.provisional_storage.interfaces import MediaStorageService
@@ -78,6 +81,34 @@ PHOTO_NOT_SUPPORTED = (
 )
 PHOTO_ATTACHED = "使用者這次附了一張照片。請先呼叫 analyze_photo 看照片內容，再回答。"
 PHOTO_NOT_FOUND = "找不到這張照片，請重新拍一次或重新上傳。"
+CHANGING_CARD = (
+    "使用者在下面這張確認卡上按了「送出修改」，這則訊息只寫了改過的地方。"
+    "請照改過的內容，用原卡上的 shopping_item_id 重新呼叫 complete_purchase 出一張新卡；"
+    "原卡上沒改到的品項和值照舊放進新卡。不要再問卡上已經有的資訊。原本的卡：{card}"
+)
+"""Given to the model with a 送出修改 message (contract section 7, Issue #91)."""
+OPEN_CARD = (
+    "使用者還有沒確認的確認卡，這次的回覆會再把最新的一張顯示出來：{card}。"
+    "先回答使用者這則訊息，再用一句話提醒這張卡還沒確認，可以確認或取消。{more}"
+    "這則訊息不要再出新卡：使用者說又買了東西，請他先確認或取消這張卡；"
+    "使用者要改這張卡上的值，請他在卡上改好，再按「送出修改」。"
+)
+"""Given to the model when an open card is shown again (contract section 8, Issue #91)."""
+OPEN_CARD_MORE = (
+    "總共還有 {count} 張沒處理，這張處理完，下一則訊息會再顯示下一張；提醒時請說還有幾張。"
+)
+CARD_CHANGE_REFUSED = {
+    "not_found": "找不到這張確認卡，請再說一次要記錄的內容。",
+    "expired": "這張確認卡已經過期，請再說一次要記錄的內容。",
+    "confirmed": "這張確認卡已經確認了，不能再修改。",
+    "completed": "這張確認卡已經記錄好了，不能再修改。",
+    "cancelled": "這張確認卡已經取消了，請再說一次要記錄的內容。",
+}
+CARD_CHANGE_UNAVAILABLE = "現在不能修改確認卡，請再說一次要記錄的內容。"
+CARD_CHANGE_NOT_DONE = (
+    "這次修改沒有完成。請直接確認或取消原本那張卡；要改的話，取消後用說的再講一次。"
+)
+"""The old card could not be cancelled, so the new one was withdrawn (section 7)."""
 LOW_CONFIDENCE = 0.6  # below this, the Agent says it is unsure (Issue #17)
 NO_PHOTO = "這次沒有附照片，無法辨識。"
 PHOTO_FAILED = json.dumps({"error": "photo_analysis_failed"})
@@ -224,6 +255,12 @@ class _State(TypedDict, total=False):
     vision: dict[str, Any]
     purchase_options: list[dict[str, Any]]
     pending_approval: dict[str, Any]
+    replaces_approval_id: str
+    """The card a 送出修改 replaces (section 7); the new card records it."""
+    open_card_shown: bool
+    """An open card is shown again with this reply (section 8); no new card is made."""
+    open_cards_unknown: bool
+    """The open cards could not be listed (section 8); no new card is made."""
 
 
 def load_system_prompt() -> str:
@@ -249,6 +286,19 @@ def _match_view(match: ItemMatch) -> dict[str, Any]:
             {"item_id": choice.item_id, "item_name": choice.name} for choice in match.items
         ]
     return view
+
+
+def _card_view(record: ApprovalRecord) -> str:
+    """The card being changed, as the model needs it: lines and their shown values."""
+    lines = [
+        {
+            "action": operation.action,
+            "description": operation.description,
+            "values": {k: v for k, v in operation.values.items() if k != "transaction_id"},
+        }
+        for operation in record.operations
+    ]
+    return json.dumps(lines, ensure_ascii=False)
 
 
 def _household_item_view(item: InventoryItem) -> dict[str, Any]:
@@ -462,7 +512,13 @@ class ReadAgent:
                         earlier = update.get("forecasts", state.get("forecasts", []))
                         update["forecasts"] = [*earlier, card]
                 elif call["name"] == "analyze_photo":
-                    carded = "pending_approval" in update or "pending_approval" in state
+                    # Section 8: no photo card with an open card shown again, nor when
+                    # the open cards could not be listed (unknown is not "none").
+                    carded = (
+                        "pending_approval" in update
+                        or "pending_approval" in state
+                        or bool(state.get("open_cards_unknown"))
+                    )
                     content, vision, card = await self._analyze(
                         state, call.get("args") or {}, may_make_card=not carded
                     )
@@ -658,9 +714,17 @@ class ReadAgent:
         """Make the purchase card. One card per message; it writes nothing else."""
         if self._purchases is None:
             return f"沒有這個工具：{call['name']}", None
+        if state.get("open_cards_unknown"):
+            return OPEN_CARDS_UNKNOWN, None
+        if state.get("open_card_shown"):
+            return OPEN_CARD_FIRST, None
         if "pending_approval" in update or "pending_approval" in state:
             return ONE_CARD_PER_MESSAGE, None
-        return await self._purchases.propose(state["household_id"], call.get("args") or {})
+        return await self._purchases.propose(
+            state["household_id"],
+            call.get("args") or {},
+            replaces_approval_id=state.get("replaces_approval_id"),
+        )
 
     async def respond(self, request: AgentRequest) -> AgentResponse:
         messages: list[AnyMessage] = [SystemMessage(self._system_prompt)]
@@ -673,12 +737,50 @@ class ReadAgent:
             messages.append(SystemMessage(PHOTO_ATTACHED))
         elif request.image_ref:  # accepted, not read: no vision service configured
             messages.append(SystemMessage(PHOTO_NOT_SUPPORTED))
+        replacing = None
+        if request.replaces_approval_id:
+            if self._purchases is None:
+                return AgentResponse(message=CARD_CHANGE_UNAVAILABLE)
+            try:
+                replacing = await self._purchases.card_to_change(
+                    request.household_id, request.replaces_approval_id
+                )
+            except CardNotChangeable as refused:
+                return AgentResponse(message=CARD_CHANGE_REFUSED[refused.reason])
+            start["replaces_approval_id"] = replacing.approval_id
+            messages.append(SystemMessage(CHANGING_CARD.format(card=_card_view(replacing))))
+        elif self._purchases is not None:
+            # Section 8: a card cleared from the screen is still open; show the newest
+            # one again (same approval_id) instead of a reminder the user cannot press.
+            open_cards = await self._purchases.open_cards(request.household_id)
+            if open_cards is None:
+                start["open_cards_unknown"] = True  # unknown is not "none": no new card
+            elif open_cards:
+                shown = open_cards[0]
+                card = ApprovalService.to_pending_approval(shown).model_dump(mode="json")
+                start["pending_approval"] = card
+                start["open_card_shown"] = True
+                more = OPEN_CARD_MORE.format(count=len(open_cards)) if len(open_cards) > 1 else ""
+                messages.append(SystemMessage(OPEN_CARD.format(card=_card_view(shown), more=more)))
         messages.append(HumanMessage(request.message))
         start["messages"] = messages
         try:
             final = await self._graph.ainvoke(start, {"recursion_limit": MAX_STEPS})
         except GraphRecursionError:
             return AgentResponse(message="這個問題我查了太多次還是答不出來，請換個方式問問看。")
+        if replacing is not None and final.get("pending_approval") is not None:
+            # Section 7: the old card is cancelled only after the new one is stored. Unless
+            # it ends up cancelled as replaced, the new card is withdrawn and not shown, and
+            # it never counts: never two cards that can be confirmed.
+            not_replaced = await self._purchases.retire(
+                request.household_id,
+                replacing.approval_id,
+                final["pending_approval"]["approval_id"],
+            )
+            if not_replaced is not None:
+                return AgentResponse(
+                    message=CARD_CHANGE_REFUSED.get(not_replaced, CARD_CHANGE_NOT_DONE)
+                )
 
         results = []
         if "inventory" in final:

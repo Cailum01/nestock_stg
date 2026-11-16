@@ -38,7 +38,7 @@ class ControlledAgent implements AgentClient {
 
 Future<void> sendMessage(WidgetTester tester) async {
   await tester.enterText(find.byType(TextField), '查看庫存');
-  await tester.tap(find.text('送出'));
+  await tester.tap(find.byKey(const Key('paw-send')));
   await tester.pump();
 }
 
@@ -74,7 +74,7 @@ void main() {
     expect(find.text('牛奶'), findsOneWidget);
     await tester.tap(find.byTooltip('關閉購物清單'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('拍照'));
+    await tester.tap(find.byKey(const Key('paw-camera')));
     await tester.pumpAndSettle();
     expect(testCamera.calls, 1);
   });
@@ -124,11 +124,11 @@ void main() {
           catalog: const DemoCatalog(),
         ),
       );
-      await tester.tap(find.text('送出'));
+      await tester.tap(find.byKey(const Key('paw-send')));
       expect(client.messages, isEmpty);
       await sendMessage(tester);
       expect(find.byType(LoadingState), findsOneWidget);
-      await tester.tap(find.text('送出'));
+      await tester.tap(find.byKey(const Key('paw-send')));
       expect(client.messages, ['查看庫存']);
       client.pending.completeError(Exception('offline'));
       await tester.pumpAndSettle();

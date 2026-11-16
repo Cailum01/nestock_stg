@@ -18,10 +18,11 @@ rules and runs on B1's `CosmosWriteRepository`. With Cosmos configured,
 `POST /agent/resume` calls it; without Cosmos it returns 503. The only card the
 Agent makes so far is the v8 flow C purchase card (`complete_purchase`, section 11;
 read back by A1's `backend/app/services/purchase_inputs.py` and written through C1's
-`ShoppingWriteBuilder`). Not built yet:
-changing a card (section 7), reminders (section 8), and the Agent making the new
-card by itself after a record changed (section 4 point 6); for now the reply asks
-the user to say it again.
+`ShoppingWriteBuilder`), including new-item lines for entries not yet in inventory
+(section 10). Changing a card with 送出修改 is built (section 7), and an open card
+comes back with the next message (section 8). Not built yet: the Agent making the
+new card by itself after a record changed (section 4 point 7); for now the reply
+asks the user to say it again.
 
 ## 1. Sources
 
@@ -58,6 +59,8 @@ Stored:
 - `selection`: `approved_operation_ids` or `selected_option_id`, fixed at the
   first confirmation (stored by the `pending → confirmed` update, #48)
 - `outcome` for each written operation, after completion
+- `replaces_approval_id`: only on a card made by 送出修改, the card it replaces
+  (section 7)
 
 Not stored: prompts, model reasoning, raw media, or the full conversation
 (B1 design doc §8.2, #28).
@@ -87,8 +90,9 @@ confirmed ──past expires_at, purchase_options only, recorded later─▶ exp
   `expires_at`. The Agent asks the user again and makes a new card; nothing else
   is written.
 - `cancelled`: the user pressed "cancel", or the Agent replaced the card with a
-  new one (sections 6 and 7). Collapsing or switching screens is not a cancel
-  (#39). Nothing is written.
+  new one (sections 6 and 7), or the card was a replacement whose original could
+  not be cancelled (section 7, reason `replace_failed`). Collapsing or switching
+  screens is not a cancel (#39). Nothing is written.
 - `confirmed`: the user approved. A conditional update on the approval's ETag
   changes only the approval record: it sets `confirmed`, the fixed selection and
   `decided_at` (#48). No inventory, shopping or transaction data is written in
@@ -111,7 +115,7 @@ Rules for a `confirmed` card that is not yet `completed` (#48; A1 decision):
   cancel and the batch run at the same time, only one succeeds: the batch also
   needs the approval's ETag. If the batch committed first, the cancel is rejected
   and the backend returns the completed outcome.
-- When the user sends the next message, the Agent mentions it (section 8).
+- It is not brought back with the next message (section 8): not built.
 
 Every status change is a conditional update on the record's ETag, so a card can
 leave `pending` only once (#41). Cosmos TTL only removes records that can no
@@ -140,10 +144,13 @@ A1's domain service checks, in this order, before any write:
 4. `expires_at` has not passed. This applies to the first confirmation, and
    also to every retry of a `purchase_options` card (section 3). If it has
    passed, nothing is written except recording `expired`.
-5. The selection is valid: every `approved_operation_ids` entry, or the
+5. A card made by 送出修改 counts: its original is `cancelled` with reason
+   `replaced` (section 7). If not, nothing is written and the card becomes
+   `cancelled` (reason `replace_failed`).
+6. The selection is valid: every `approved_operation_ids` entry, or the
    `selected_option_id`, is on this card (#42 c). Unlisted items are not written.
    On a retry, the stored selection is used; a different selection is rejected.
-6. The target records have not changed since the card was created (their ETags
+7. The target records have not changed since the card was created (their ETags
    still match). If they changed, nothing is written and the Agent makes a new
    card (#39, #27).
 
@@ -224,20 +231,61 @@ How the App sends the change (agreed with C2 in Issue #91):
   makes no new card (an error, or it asks the user something), the old card stays
   `pending`. An expired, confirmed or cancelled original gets no new card; the
   reply says why.
-- A change typed in the chat box (no `replaces_approval_id`): the Agent is given
-  the household's open cards (the same lookup as section 8) and decides whether the
-  message changes one of them. With one open card it changes that card; with
-  several and no clear match it asks which; otherwise it answers normally.
+- If cancelling the old card raises an error, the old card is read back first. If
+  it reads back `cancelled` with reason `replaced`, the cancel was written but its
+  reply was lost, and the new card stands. Any other status counts as not replaced.
+- If the old card does not end up `cancelled` with reason `replaced` after the new
+  card is stored, the reply is not a success: the new card is cancelled too (reason
+  `replace_failed`) and the reply carries no card. It tells the user to confirm or
+  cancel the original card, or cancel it and say the change again; if the original
+  was meanwhile confirmed, cancelled by the user or recorded as `expired`, it says
+  that instead, in the same words as for such an original before the change.
+- The new card records the card it replaces (`replaces_approval_id`, section 2) and
+  counts only once that card is `cancelled` with reason `replaced`. A card that does
+  not count is never mentioned (section 8) and cannot be confirmed (section 4). So
+  even if cancelling the old card and withdrawing the new card both fail, the user
+  never holds two cards that can be confirmed; the new card is logged and expires.
+- A change typed in the chat box (no `replaces_approval_id`) is not a change. The
+  reply brings the open card back (section 8), and the Agent asks the user to change
+  it on the card and tap 送出修改 (Issue #91, 2026-11-16; this replaces the earlier
+  plan where the Agent judged which open card the message changed).
 
-Not built yet on main: the 送出修改 path (in PR #143) and the chat-box change
-(Issue #91).
+Built (A1): 送出修改 with `replaces_approval_id`. The Agent is given the old card's
+lines (without `transaction_id`) and makes the new card with `complete_purchase`; a
+missing, expired, confirmed or cancelled original gets a reply with the reason and no
+card, and the model is not called; an original that does not end up replaced withdraws
+the new card, and a new card counts only once its original is replaced, as described
+above. A typed change is answered as in section 8.
 
 ## 8. Reminders
 
-When the user sends the next message, the Agent mentions cards that are still
-`pending`, and `confirmed` cards that can still be retried (section 3). Expired
-cards are not mentioned; this check is also when they are recorded as `expired`.
-There is no background job or push notification (#39).
+The App shows a card only with the reply that brought it. After 清除對話 or reopening
+the App, the card is gone from the screen but still open in the backend. So the
+reminder is the card itself, not a sentence the user cannot act on (Issue #91,
+2026-11-16; C2 confirmed the App side the same day):
+
+- On every `POST /agent/messages` without `replaces_approval_id`, the backend lists
+  the household's open cards (`ApprovalService.list_open`). Expired cards are left
+  out and recorded as `expired` here. A 送出修改 card that does not count (section 7)
+  is left out too.
+- If `pending` cards are left, the reply's `pending_approval` is the newest one again:
+  the same `approval_id`, lines and expiry. The App shows it like any card; confirm,
+  cancel and 送出修改 work as before. The Agent answers the message and says the card
+  is not confirmed yet. With several, it says how many are left; each later message
+  brings back the newest one still open.
+- That message makes no new card. When the user says something else was bought, the
+  Agent asks them to confirm or cancel this card first (`complete_purchase` returns
+  `open_card_not_answered`). A typed change gets the same answer (section 7).
+- `confirmed` cards that can still be retried (section 3) are not shown again: not
+  built.
+- If the open cards cannot be listed, the message is answered without them, but it
+  makes no new card (`complete_purchase` returns `open_cards_unknown`): unknown is
+  not "none", and a new card could be a second card for the same purchase (PR #160
+  C2 review). The user says it again later.
+- A 送出修改 message (with `replaces_approval_id`) skips this lookup; section 7 applies.
+
+Built (A1): `PurchaseCards.open_cards` and `ReadAgent.respond`. There is no background
+job or push notification (#39).
 
 ## 9. Open items
 

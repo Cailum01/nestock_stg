@@ -21,6 +21,7 @@ from app.services.approvals import (
 )
 from app.services.cosmos_read import CosmosDocumentMapper
 from app.services.cosmos_write import CosmosWriteRepository, ReplaceDocument
+from app.services.inventory_item_identity import resolve_inventory_item_id
 from app.services.shopping.planning import NewInventoryTarget, PurchaseInput
 from app.services.shopping.preview import ShoppingPreviewError
 from app.services.shopping.workflow import (
@@ -132,7 +133,9 @@ def setup(kinds=("existing",), *, save=True):
                 inventory_etag=inv_etag if kind == "existing" else None,
                 purchased_quantity=1,
                 purchased_at=T0 - timedelta(days=1),
-                new_inventory=NewInventoryTarget(f"new-{op.operation_id}", "洗碗精", "瓶", "水槽下")
+                new_inventory=NewInventoryTarget(
+                    resolve_inventory_item_id(op.operation_id), "洗碗精", "瓶", "水槽下"
+                )
                 if kind == "new"
                 else None,
             )

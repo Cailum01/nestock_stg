@@ -1,10 +1,15 @@
 import atexit
+import logging
 import os
 import threading
 from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+from dotenv import load_dotenv
 
 from app.services.approvals import ApprovalService
-from app.services.commerce.biggo import BigGoCommerceProvider
+from app.services.commerce import BaseCommerceProvider, FallbackCommerceProvider
 from app.services.cosmos_read import (
     CosmosInventoryService,
     CosmosReadRepository,
@@ -12,9 +17,11 @@ from app.services.cosmos_read import (
     DocumentQueryClient,
 )
 from app.services.cosmos_sdk import create_azure_cosmos_repositories
-from app.services.cosmos_write import CosmosWriteRepository
+from app.services.cosmos_write import CosmosWriteRepository, TransactionalBatchClient
 from app.services.demo import DemoInventoryService, DemoShoppingService
 from app.services.interfaces import InventoryService, ShoppingService
+from app.services.media_mapping import CosmosMediaMappingStorage, MediaMappingPort
+from app.services.provisional_storage.azure_blob_adapter import AzureBlobMediaStorage
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
 from app.services.speech import (
@@ -26,6 +33,19 @@ from app.services.vision import (
     VisionService,
     load_vision_azure_settings,
 )
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+SKIP_DOTENV_VAR = "NESTOCK_SKIP_DOTENV"
+
+
+def _load_local_env() -> None:
+    """Load `backend/.env` before the Cosmos composition below reads `os.environ`.
+
+    Real environment variables win (`override=False`). Tests set `NESTOCK_SKIP_DOTENV`
+    so a developer's local `.env` never points them at a real Cosmos account.
+    """
+    if not os.environ.get(SKIP_DOTENV_VAR):
+        load_dotenv(BACKEND_DIR / ".env", override=False)
 
 
 def _create_domain_read_services(
@@ -107,14 +127,90 @@ def _create_vision_service(
     return None
 
 
+logger = logging.getLogger(__name__)
+
+
+def _resolve_vision_service_for_media() -> VisionService | None:
+    return get_vision_service()
+
+
 def _create_media_storage_service(
+    read_repository: CosmosReadRepository | None = None,
+    write_client: TransactionalBatchClient | None = None,
+    mapping_port: MediaMappingPort | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> MediaStorageService:
     env = os.environ if environment is None else environment
     base_url = env.get("NESTOCK_STAGING_BASE_URL")
-    return LocalStagingMediaStorage(base_staging_url=base_url)
+    if mapping_port is None and read_repository is not None:
+        client_obj = getattr(read_repository, "_client", None) or getattr(
+            read_repository, "_query_client", None
+        )
+        if write_client is not None:
+            mapping_port = CosmosMediaMappingStorage(
+                read_repository=read_repository,
+                write_client=write_client,
+            )
+        elif hasattr(client_obj, "execute_batch"):
+            mapping_port = CosmosMediaMappingStorage(
+                read_repository=read_repository,
+                write_client=client_obj,  # type: ignore[arg-type]
+            )
+        elif hasattr(client_obj, "_container"):
+            from app.services.cosmos_sdk import AzureCosmosTransactionalBatchClient
+
+            mapping_port = CosmosMediaMappingStorage(
+                read_repository=read_repository,
+                write_client=AzureCosmosTransactionalBatchClient(client_obj._container),
+            )
+
+    # 偵測雲端 Azure Blob Storage 配置 (支援連線字串或 Endpoint + DefaultAzureCredential)
+    conn_str = env.get("AZURE_STORAGE_CONNECTION_STRING")
+    blob_endpoint = env.get("AZURE_STORAGE_BLOB_ENDPOINT")
+    container_name = env.get("AZURE_STORAGE_CONTAINER_NAME", "media")
+
+    kwargs: dict[str, Any] = {
+        "container_name": container_name,
+        "base_staging_url": base_url,
+        "mapping_port": mapping_port,
+        "vision_service": _resolve_vision_service_for_media,
+    }
+
+    if conn_str:
+        try:
+            from azure.storage.blob import BlobServiceClient
+
+            blob_client = BlobServiceClient.from_connection_string(conn_str)
+            return AzureBlobMediaStorage(blob_service_client=blob_client, **kwargs)
+        except Exception as exc:
+            logger.error(
+                "Failed to initialize AzureBlobMediaStorage from connection string: %s", exc
+            )
+            raise RuntimeError(
+                f"Azure Blob Storage configuration failed from connection string: {exc}"
+            ) from exc
+    elif blob_endpoint:
+        try:
+            from azure.identity import DefaultAzureCredential
+            from azure.storage.blob import BlobServiceClient
+
+            credential = DefaultAzureCredential()
+            blob_client = BlobServiceClient(account_url=blob_endpoint, credential=credential)
+            return AzureBlobMediaStorage(blob_service_client=blob_client, **kwargs)
+        except Exception as exc:
+            logger.error("Failed to initialize AzureBlobMediaStorage from blob endpoint: %s", exc)
+            raise RuntimeError(
+                f"Azure Blob Storage configuration failed from blob endpoint: {exc}"
+            ) from exc
+
+    return LocalStagingMediaStorage(
+        base_staging_url=base_url,
+        mapping_port=mapping_port,
+        vision_service=_resolve_vision_service_for_media,
+    )
 
 
+_load_local_env()
 (
     inventory_service,
     shopping_service,
@@ -122,7 +218,9 @@ def _create_media_storage_service(
     cosmos_write_repository,
     cosmos_document_reader,
 ) = _create_cosmos_composition()
-media_storage_service: MediaStorageService = _create_media_storage_service()
+media_storage_service: MediaStorageService = _create_media_storage_service(
+    read_repository=cosmos_read_repository
+)
 _speech_service: SpeechToTextService | None = None
 _speech_service_resolved: bool = False
 _speech_lock = threading.Lock()
@@ -201,21 +299,21 @@ def _reset_vision_service_for_test() -> None:
     _vision_service_resolved = False
 
 
-_commerce_service: BigGoCommerceProvider | None = None
+_commerce_service: BaseCommerceProvider | None = None
 _commerce_service_resolved: bool = False
 _commerce_lock = threading.Lock()
 
 
-def get_commerce_service() -> BigGoCommerceProvider:
-    """FastAPI dependency for BigGoCommerceProvider.
+def get_commerce_service() -> BaseCommerceProvider:
+    """FastAPI dependency for BaseCommerceProvider.
 
-    Thread-safe lazy resolution of BigGoCommerceProvider.
+    Thread-safe lazy resolution of FallbackCommerceProvider.
     """
     global _commerce_service, _commerce_service_resolved
     if not _commerce_service_resolved:
         with _commerce_lock:
             if not _commerce_service_resolved:
-                _commerce_service = BigGoCommerceProvider()
+                _commerce_service = FallbackCommerceProvider()
                 _commerce_service_resolved = True
     return _commerce_service
 

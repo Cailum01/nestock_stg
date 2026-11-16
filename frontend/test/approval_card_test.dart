@@ -445,7 +445,15 @@ void main() {
       );
 
       expect(find.byKey(const Key('purchase-approval-card')), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('purchase-approval-card')),
+          matching: find.byKey(const Key('confirmation-border-top')),
+        ),
+        findsOneWidget,
+      );
       expect(find.text('衛生紙 2 包'), findsOneWidget);
+      expect(find.textContaining('購買日期：'), findsNothing);
       expect(find.text('shopping-1'), findsNothing);
       expect(find.text('item-1'), findsNothing);
       expect(find.text('transaction-1'), findsNothing);
@@ -469,6 +477,136 @@ void main() {
       expect(operationIds, isNull);
     },
   );
+
+  testWidgets('purchase dates retain each supplied timestamp calendar day', (
+    tester,
+  ) async {
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-purchase-dates',
+        presentation: ApprovalPresentation.batchAction,
+        operations: [
+          OperationView(
+            id: 'operation-east',
+            action: 'complete_purchase',
+            description: '衛生紙 +2 包',
+            values: {
+              'name': '衛生紙',
+              'purchased_quantity': 2,
+              'purchased_unit': '包',
+              'purchased_at': '2026-11-09T00:30:00+14:00',
+            },
+          ),
+          OperationView(
+            id: 'operation-west',
+            action: 'complete_purchase',
+            description: '洗衣精 +1 瓶',
+            values: {
+              'name': '洗衣精',
+              'purchased_quantity': 1,
+              'purchased_unit': '瓶',
+              'purchased_at': '2026-11-09T23:30:00-11:00',
+            },
+          ),
+        ],
+      ),
+    );
+
+    expect(find.text('購買日期：2026/11/09'), findsNWidgets(2));
+    expect(
+      find.byKey(const Key('purchase-date-operation-east')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('purchase-date-operation-west')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('2026-11-09T'), findsNothing);
+    expect(find.byTooltip('修改購買日期'), findsNothing);
+  });
+
+  testWidgets('purchase card omits missing and invalid purchase dates', (
+    tester,
+  ) async {
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-purchase-invalid-date',
+        presentation: ApprovalPresentation.batchAction,
+        operations: [
+          OperationView(
+            id: 'operation-missing-date',
+            action: 'complete_purchase',
+            description: '衛生紙 +2 包',
+            values: {
+              'name': '衛生紙',
+              'purchased_quantity': 2,
+              'purchased_unit': '包',
+              'created_at': '2026-11-11T12:00:00+08:00',
+            },
+          ),
+          OperationView(
+            id: 'operation-invalid-date',
+            action: 'complete_purchase',
+            description: '洗衣精 +1 瓶',
+            values: {
+              'name': '洗衣精',
+              'purchased_quantity': 1,
+              'purchased_unit': '瓶',
+              'purchased_at': '2026-02-29T12:00:00+08:00',
+            },
+          ),
+        ],
+      ),
+    );
+
+    expect(find.textContaining('購買日期：'), findsNothing);
+    expect(find.textContaining('purchased_at'), findsNothing);
+    expect(find.textContaining('2026-02-29'), findsNothing);
+  });
+
+  testWidgets('purchase dates fit a narrow Android viewport without overflow', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(320, 568));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-purchase-narrow-date',
+        presentation: ApprovalPresentation.batchAction,
+        operations: [
+          OperationView(
+            id: 'operation-long-a',
+            action: 'complete_purchase',
+            description: '長名稱衛生紙 +2 包',
+            values: {
+              'name': '特長名稱的衛生紙補貨項目',
+              'purchased_quantity': 2,
+              'purchased_unit': '包',
+              'purchased_at': '2026-11-09T12:00:00+08:00',
+            },
+          ),
+          OperationView(
+            id: 'operation-long-b',
+            action: 'complete_purchase',
+            description: '長名稱洗衣精 +1 瓶',
+            values: {
+              'name': '特長名稱的洗衣精補貨項目',
+              'purchased_quantity': 1,
+              'purchased_unit': '瓶',
+              'purchased_at': '2026-11-10T12:00:00+08:00',
+            },
+          ),
+        ],
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('購買日期：2026/11/09'), findsOneWidget);
+    expect(find.text('購買日期：2026/11/10'), findsOneWidget);
+  });
 
   testWidgets('purchase quantity editor permits only positive integers', (
     tester,

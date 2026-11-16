@@ -3,6 +3,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../domain/agent_view_data.dart';
 import 'confirmation_card.dart';
+import 'hand_drawn_card_shell.dart';
 
 typedef ApprovalDecisionCallback = void Function({
   required bool approved,
@@ -123,12 +124,14 @@ class _PurchaseValues {
     required this.name,
     required this.quantity,
     required this.unit,
+    required this.purchaseDate,
   });
 
   final OperationView operation;
   final String name;
   final num quantity;
   final String unit;
+  final String? purchaseDate;
 }
 
 _PurchaseValues? _purchaseValues(OperationView operation) {
@@ -147,7 +150,41 @@ _PurchaseValues? _purchaseValues(OperationView operation) {
     name: name.trim(),
     quantity: quantity,
     unit: unit.trim(),
+    purchaseDate: _purchaseDateLabel(operation.values['purchased_at']),
   );
+}
+
+/// Formats the source timestamp's calendar day without converting it to the
+/// device time zone. A purchase date is a user-supplied fact, not a display of
+/// when this approval card was created.
+String? _purchaseDateLabel(Object? rawValue) {
+  if (rawValue is! String) return null;
+  final match = RegExp(
+    r'^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$',
+  ).firstMatch(rawValue.trim());
+  if (match == null) return null;
+
+  final year = int.parse(match.group(1)!);
+  final month = int.parse(match.group(2)!);
+  final day = int.parse(match.group(3)!);
+  final hour = int.parse(match.group(4)!);
+  final minute = int.parse(match.group(5)!);
+  final second = int.parse(match.group(6) ?? '0');
+  final zone = match.group(7)!;
+  if (hour > 23 || minute > 59 || second > 59) return null;
+  if (zone != 'Z') {
+    final offsetHour = int.parse(zone.substring(1, 3));
+    final offsetMinute = int.parse(zone.substring(4, 6));
+    if (offsetHour > 23 || offsetMinute > 59) return null;
+  }
+
+  final calendarDay = DateTime.utc(year, month, day);
+  if (calendarDay.year != year ||
+      calendarDay.month != month ||
+      calendarDay.day != day) {
+    return null;
+  }
+  return '${match.group(1)}/${match.group(2)}/${match.group(3)}';
 }
 
 class _PurchaseApprovalCard extends StatefulWidget {
@@ -270,57 +307,32 @@ class _PurchaseApprovalCardState extends State<_PurchaseApprovalCard> {
         onDecision: widget.onDecision,
       );
     }
-    return Card(
+    return HandDrawnCardShell(
       key: const Key('purchase-approval-card'),
-      color: Theme.of(context).colorScheme.secondaryContainer,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              _isBatch ? '確認完成購買項目' : '確認完成購買',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-            for (final item in _items)
-              _isBatch
-                  ? CheckboxListTile(
-                      key: Key('purchase-operation-${item.operation.id}'),
-                      contentPadding: EdgeInsets.zero,
-                      value: _selectedOperationIds.contains(item.operation.id),
-                      onChanged: widget.busy
-                          ? null
-                          : (selected) => setState(() {
-                              if (selected ?? false) {
-                                _selectedOperationIds.add(item.operation.id);
-                              } else {
-                                _selectedOperationIds.remove(item.operation.id);
-                              }
-                            }),
-                      title: Row(
-                        children: [
-                          Expanded(child: _PurchaseLine(item: item)),
-                          if (!_editingOperationIds.contains(
-                                item.operation.id,
-                              ) &&
-                              !widget.busy)
-                            IconButton(
-                              key: _quantityEditKey(item),
-                              tooltip: '修改數量',
-                              onPressed: () => setState(
-                                () =>
-                                    _editingOperationIds.add(item.operation.id),
-                              ),
-                              icon: const Icon(Icons.edit_outlined),
-                            ),
-                        ],
-                      ),
-                      subtitle: _editingOperationIds.contains(item.operation.id)
-                          ? _quantityEditor(item)
-                          : null,
-                    )
-                  : Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _isBatch ? '確認完成購買項目' : '確認完成購買',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          for (final item in _items)
+            _isBatch
+                ? CheckboxListTile(
+                    key: Key('purchase-operation-${item.operation.id}'),
+                    contentPadding: EdgeInsets.zero,
+                    value: _selectedOperationIds.contains(item.operation.id),
+                    onChanged: widget.busy
+                        ? null
+                        : (selected) => setState(() {
+                            if (selected ?? false) {
+                              _selectedOperationIds.add(item.operation.id);
+                            } else {
+                              _selectedOperationIds.remove(item.operation.id);
+                            }
+                          }),
+                    title: Row(
                       children: [
                         Expanded(child: _PurchaseLine(item: item)),
                         if (!_editingOperationIds.contains(item.operation.id) &&
@@ -335,43 +347,61 @@ class _PurchaseApprovalCardState extends State<_PurchaseApprovalCard> {
                           ),
                       ],
                     ),
-            if (!_isBatch && _editingOperationIds.isNotEmpty)
-              _quantityEditor(_items.single),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 12,
-              children: [
-                TextButton(
-                  key: const Key('approval-cancel'),
-                  onPressed: widget.busy
-                      ? null
-                      : () => widget.onDecision(approved: false),
-                  child: const Text('取消'),
-                ),
-                FilledButton(
-                  key: const Key('approval-confirm'),
-                  onPressed:
-                      widget.busy || (_isBatch && _selectedOperationIds.isEmpty)
-                      ? null
-                      : () => widget.onDecision(
-                          approved: true,
-                          approvedOperationIds: _isBatch
-                              ? _items
-                                    .where(
-                                      (item) => _selectedOperationIds.contains(
-                                        item.operation.id,
-                                      ),
-                                    )
-                                    .map((item) => item.operation.id)
-                                    .toList(growable: false)
-                              : null,
+                    subtitle: _editingOperationIds.contains(item.operation.id)
+                        ? _quantityEditor(item)
+                        : null,
+                  )
+                : Row(
+                    children: [
+                      Expanded(child: _PurchaseLine(item: item)),
+                      if (!_editingOperationIds.contains(item.operation.id) &&
+                          !widget.busy)
+                        IconButton(
+                          key: _quantityEditKey(item),
+                          tooltip: '修改數量',
+                          onPressed: () => setState(
+                            () => _editingOperationIds.add(item.operation.id),
+                          ),
+                          icon: const Icon(Icons.edit_outlined),
                         ),
-                  child: const Text('確認'),
-                ),
-              ],
-            ),
-          ],
-        ),
+                    ],
+                  ),
+          if (!_isBatch && _editingOperationIds.isNotEmpty)
+            _quantityEditor(_items.single),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 12,
+            children: [
+              TextButton(
+                key: const Key('approval-cancel'),
+                onPressed: widget.busy
+                    ? null
+                    : () => widget.onDecision(approved: false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                key: const Key('approval-confirm'),
+                onPressed:
+                    widget.busy || (_isBatch && _selectedOperationIds.isEmpty)
+                    ? null
+                    : () => widget.onDecision(
+                        approved: true,
+                        approvedOperationIds: _isBatch
+                            ? _items
+                                  .where(
+                                    (item) => _selectedOperationIds.contains(
+                                      item.operation.id,
+                                    ),
+                                  )
+                                  .map((item) => item.operation.id)
+                                  .toList(growable: false)
+                            : null,
+                      ),
+                child: const Text('確認'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -383,8 +413,17 @@ class _PurchaseLine extends StatelessWidget {
   final _PurchaseValues item;
 
   @override
-  Widget build(BuildContext context) =>
-      Text('${item.name} ${_quantityText(item.quantity)} ${item.unit}');
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text('${item.name} ${_quantityText(item.quantity)} ${item.unit}'),
+      if (item.purchaseDate != null)
+        Text(
+          '購買日期：${item.purchaseDate}',
+          key: Key('purchase-date-${item.operation.id}'),
+        ),
+    ],
+  );
 }
 
 class _PurchaseOptionsApprovalCard extends StatefulWidget {

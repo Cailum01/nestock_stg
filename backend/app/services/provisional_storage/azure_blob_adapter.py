@@ -14,6 +14,11 @@ import logging
 from datetime import datetime
 from typing import Any
 
+try:
+    from azure.storage.blob import ContentSettings
+except ImportError:
+    ContentSettings = None  # type: ignore[assignment, misc]
+
 from app.services.media_mapping import MediaMappingNotReady, MediaMappingPort
 from app.services.provisional_storage._lifecycle import BaseMediaStorageLifecycle
 
@@ -78,13 +83,19 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
         blob_path: str,
         data: bytes | str,
         content_type: str | None = None,
+        content_settings: Any | None = None,
         metadata: dict[str, str] | None = None,
         tags: dict[str, str] | None = None,
     ) -> None:
         blob_client = await self._resolve_client(blob_path)
         kwargs: dict[str, Any] = {"overwrite": True}
-        if content_type:
-            kwargs["content_type"] = content_type
+        if content_settings is not None:
+            kwargs["content_settings"] = content_settings
+        elif content_type:
+            if ContentSettings is not None:
+                kwargs["content_settings"] = ContentSettings(content_type=content_type)
+            else:
+                kwargs["content_type"] = content_type
         if metadata is not None:
             kwargs["metadata"] = metadata
         if tags is not None:
@@ -140,6 +151,20 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
             if self._is_not_found(exc):
                 return False
             logger.error("Blob exists check failed for path %s: %s", blob_path, exc)
+            raise
+
+    async def _get_blob_properties(self, blob_path: str) -> Any | None:
+        try:
+            blob_client = await self._resolve_client(blob_path)
+            prop_func = getattr(blob_client, "get_blob_properties", None)
+            if prop_func is not None:
+                return await self._call_client(prop_func)
+            return None
+        except Exception as exc:
+            if self._is_not_found(exc):
+                logger.debug("Blob properties not found for path %s: %s", blob_path, exc)
+                return None
+            logger.error("Failed to get blob properties for %s: %s", blob_path, exc)
             raise
 
     async def _delete_blob(self, blob_path: str) -> None:
@@ -215,21 +240,36 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
         is_orphan = rec.get("retention") == "orphan"
 
         if is_orphan:
+            props = await self._get_blob_properties(raw_path)
             raw_bytes = await self._download_from_blob(raw_path)
             if raw_bytes is not None:
-                await self._upload_to_blob(raw_path, raw_bytes, metadata=meta, tags=tags)
+                raw_cs = getattr(props, "content_settings", None) if props is not None else None
+                await self._upload_to_blob(
+                    raw_path,
+                    raw_bytes,
+                    content_settings=raw_cs,
+                    metadata=meta,
+                    tags=tags,
+                )
             else:
                 await self._set_blob_metadata(raw_path, meta)
                 await self._set_blob_tags(raw_path, tags)
 
             if rec.get("artifact_ref"):
                 art_path = self._ref_to_blob_path(str(rec["artifact_ref"]))
+                art_props = await self._get_blob_properties(art_path)
                 art_bytes = await self._download_from_blob(art_path)
                 if art_bytes is not None:
+                    art_cs = (
+                        getattr(art_props, "content_settings", None)
+                        if art_props is not None
+                        else None
+                    )
                     await self._upload_to_blob(
                         art_path,
                         art_bytes,
-                        content_type="application/json",
+                        content_type="application/json" if art_cs is None else None,
+                        content_settings=art_cs,
                         metadata=meta,
                         tags=tags,
                     )

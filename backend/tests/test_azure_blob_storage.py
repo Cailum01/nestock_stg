@@ -13,8 +13,10 @@
 import hashlib
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
+from azure.storage.blob import ContentSettings
 
 from app.core.dependencies import _create_media_storage_service
 from app.models.domain import (
@@ -48,11 +50,13 @@ class FakeBlobProperties:
         metadata: dict[str, str] | None = None,
         tags: dict[str, str] | None = None,
         creation_time: datetime | None = None,
+        content_settings: Any | None = None,
     ) -> None:
         self.name = name
         self.metadata = dict(metadata or {})
         self.tags = dict(tags or {})
         self.creation_time = creation_time or datetime.now(UTC)
+        self.content_settings = content_settings or ContentSettings()
 
 
 class FakeBlobClient:
@@ -62,12 +66,14 @@ class FakeBlobClient:
         metadata_dict: dict[str, dict[str, str]],
         tags_dict: dict[str, dict[str, str]],
         creation_time_dict: dict[str, datetime],
+        content_settings_dict: dict[str, Any],
         blob_name: str,
     ) -> None:
         self._container_dict = container_dict
         self._metadata_dict = metadata_dict
         self._tags_dict = tags_dict
         self._creation_time_dict = creation_time_dict
+        self._content_settings_dict = content_settings_dict
         self._blob_name = blob_name
 
     async def upload_blob(self, data: bytes | str, overwrite: bool = True, **kwargs) -> None:
@@ -84,6 +90,17 @@ class FakeBlobClient:
         elif self._blob_name not in self._tags_dict:
             self._tags_dict[self._blob_name] = {}
         self._creation_time_dict[self._blob_name] = datetime.now(UTC)
+        cs = kwargs.get("content_settings")
+        if cs is not None:
+            self._content_settings_dict[self._blob_name] = cs
+        elif "content_type" in kwargs:
+            self._content_settings_dict[self._blob_name] = ContentSettings(
+                content_type=kwargs["content_type"]
+            )
+        else:
+            self._content_settings_dict[self._blob_name] = ContentSettings(
+                content_type="application/octet-stream"
+            )
 
     async def set_blob_metadata(self, metadata: dict[str, str] | None = None, **kwargs) -> None:
         if self._blob_name not in self._container_dict:
@@ -108,6 +125,7 @@ class FakeBlobClient:
             metadata=self._metadata_dict.get(self._blob_name, {}),
             tags=self._tags_dict.get(self._blob_name, {}),
             creation_time=self._creation_time_dict.get(self._blob_name),
+            content_settings=self._content_settings_dict.get(self._blob_name),
         )
 
     async def delete_blob(self, **kwargs) -> None:
@@ -115,6 +133,7 @@ class FakeBlobClient:
         self._metadata_dict.pop(self._blob_name, None)
         self._tags_dict.pop(self._blob_name, None)
         self._creation_time_dict.pop(self._blob_name, None)
+        self._content_settings_dict.pop(self._blob_name, None)
 
     async def download_blob(self):
         if self._blob_name not in self._container_dict:
@@ -141,6 +160,7 @@ class FakeContainerClient:
         metadata_store: dict[str, dict[str, dict[str, str]]],
         tags_store: dict[str, dict[str, dict[str, str]]],
         creation_time_store: dict[str, dict[str, datetime]],
+        content_settings_store: dict[str, dict[str, Any]],
         container_name: str,
     ) -> None:
         self._container_name = container_name
@@ -152,14 +172,22 @@ class FakeContainerClient:
             tags_store[container_name] = {}
         if container_name not in creation_time_store:
             creation_time_store[container_name] = {}
+        if container_name not in content_settings_store:
+            content_settings_store[container_name] = {}
         self._blobs = storage_dict[container_name]
         self._metadata = metadata_store[container_name]
         self._tags = tags_store[container_name]
         self._creation_times = creation_time_store[container_name]
+        self._content_settings = content_settings_store[container_name]
 
     def get_blob_client(self, blob_name: str) -> FakeBlobClient:
         return FakeBlobClient(
-            self._blobs, self._metadata, self._tags, self._creation_times, blob_name
+            self._blobs,
+            self._metadata,
+            self._tags,
+            self._creation_times,
+            self._content_settings,
+            blob_name,
         )
 
     def list_blobs(self, name_starts_with: str | None = None, **kwargs):
@@ -170,6 +198,7 @@ class FakeContainerClient:
                 metadata=self._metadata.get(name, {}),
                 tags=self._tags.get(name, {}),
                 creation_time=self._creation_times.get(name),
+                content_settings=self._content_settings.get(name),
             )
             for name in list(self._blobs.keys())
             if name.startswith(prefix)
@@ -201,10 +230,16 @@ class FakeBlobServiceClient:
         self.metadata: dict[str, dict[str, dict[str, str]]] = {}
         self.tags: dict[str, dict[str, dict[str, str]]] = {}
         self.creation_times: dict[str, dict[str, datetime]] = {}
+        self.content_settings: dict[str, dict[str, Any]] = {}
 
     def get_container_client(self, container_name: str) -> FakeContainerClient:
         return FakeContainerClient(
-            self.storage, self.metadata, self.tags, self.creation_times, container_name
+            self.storage,
+            self.metadata,
+            self.tags,
+            self.creation_times,
+            self.content_settings,
+            container_name,
         )
 
 
@@ -1116,3 +1151,58 @@ async def test_azure_blob_upload_fails_fast_on_hierarchical_namespace(
     finally:
         FakeBlobClient.upload_blob = original_upload
         FakeBlobClient.set_blob_tags = original_set_tags
+
+
+@pytest.mark.anyio
+async def test_azure_blob_unretain_preserves_content_settings(
+    blob_storage, fake_blob_service
+):
+    """驗證 PR #155 關鍵要求：
+
+    1. 上傳 image/jpeg 媒體至 Azure Blob。
+    2. 驗證初始 content_settings 具有 content_type="image/jpeg"。
+    3. 執行 retain_media 推進至 attached。
+    4. 執行 unretain_media 解除附加（觸發自我重寫以刷新 24h 建立時間時鐘）。
+    5. 斷言重寫後：
+       - tags['retention'] 變為 'orphan'
+       - content_settings.content_type 依然保持 'image/jpeg'，未被重設或丟失！
+    """
+    req = UploadAuthorizationRequest(
+        household_id="home-dev",
+        filename="preserve_mime.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=32,
+    )
+    auth = await blob_storage.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
+
+    hh, img_ref = await blob_storage.receive_staged_upload(token, b"X" * 32)
+    blob_path = img_ref.removeprefix("blob://").lstrip("/")
+
+    container = fake_blob_service.get_container_client("media")
+    blob_client = container.get_blob_client(blob_path)
+
+    # 1. 驗證初始屬性
+    init_props = await blob_client.get_blob_properties()
+    assert init_props.content_settings.content_type == "image/jpeg"
+    init_creation = init_props.creation_time
+
+    # 2. 標記為保留 (attached)
+    await blob_storage.retain_media("home-dev", img_ref)
+    retained_tags = await blob_client.get_blob_tags()
+    assert retained_tags.get("retention") == "attached"
+
+    # 微調時鐘以確保重寫後 creation_time 產生可觀測差異
+    time.sleep(0.01)
+
+    # 3. 解除保留 (unretain_media -> orphan, 自我重寫刷新時鐘)
+    await blob_storage.unretain_media("home-dev", img_ref)
+
+    # 4. 關鍵斷言：檢查重寫後的 Blob 屬性
+    final_props = await blob_client.get_blob_properties()
+    final_tags = await blob_client.get_blob_tags()
+
+    assert final_tags.get("retention") == "orphan"
+    assert final_props.creation_time >= init_creation
+    # 核心不變量：MIME / HTTP Content-Type 必須 100% 完整保留
+    assert final_props.content_settings.content_type == "image/jpeg"

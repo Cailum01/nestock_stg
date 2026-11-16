@@ -16,19 +16,24 @@ quantity, unit and location. When the household already has an item with that na
 or alias, no line is made; the item-match card that would ask "is it this one?" has
 no confirm rules yet.
 
+A purchase day the user says (「昨天買的」, A1-50) is built but off
+(`dated_purchases`): the App does not show it on the card yet, and a card may only
+hold values the user sees (HITL rule 4).
+
 Not covered yet: items that are not on the list, the item-match card (Issue #90),
-buying more than listed, a different unit, a purchase time other than the
-confirmation time, spreading more items than one batch holds over several cards,
-changing a card (Issue #91), and reminding the user of open cards.
+buying more than listed, a different unit, spreading more items than one batch holds
+over several cards, changing a card (Issue #91), and reminding the user of open cards.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from typing import Any, Protocol
 
 from app.models.agent import AgentResponse, AgentResult, ApprovalPresentation, ResultKind
@@ -47,6 +52,12 @@ from app.services.approvals import (
 from app.services.cosmos_read import MappedDocument
 from app.services.item_matching import match_term
 from app.services.purchase_inputs import COMPLETE_PURCHASE, CREATE_ITEM, PurchaseRecordReader
+from app.services.purchase_time import (
+    TAIPEI,
+    FuturePurchaseDate,
+    resolve_purchased_at,
+    taipei_today,
+)
 from app.services.shopping.preview import ShoppingPreviewError, ShoppingPreviewService
 
 logger = logging.getLogger(__name__)
@@ -104,6 +115,30 @@ PURCHASE_TOOL_SCHEMA: dict[str, Any] = {
     },
 }
 
+PURCHASED_ON_FIELD: dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "只有使用者說了哪天買的（例如「昨天買的」「11/3 買的」）才填："
+        "那一天的日期，格式 YYYY-MM-DD。沒說就不要填。"
+    ),
+}
+"""Offered to the model only with dated purchases on (A1-50); off in the running app."""
+
+
+def _with_purchase_day(schema: dict[str, Any]) -> dict[str, Any]:
+    dated = copy.deepcopy(schema)
+    item = dated["function"]["parameters"]["properties"]["items"]["items"]
+    item["properties"]["purchased_on"] = PURCHASED_ON_FIELD
+    return dated
+
+
+DATED_PURCHASE_TOOL_SCHEMA = _with_purchase_day(PURCHASE_TOOL_SCHEMA)
+TODAY_NOTE = (
+    "今天是 {today}（台北時間）。使用者說了哪天買的（例如昨天、11/3），"
+    "呼叫 complete_purchase 時把那一天換成日期填進 purchased_on；沒說就不要填。"
+)
+"""Given to the model with dated purchases on, so it can turn a spoken day into a date."""
+
 NOT_ON_LIST = "待購清單上找不到這一筆，可能已經買過或被刪掉。"
 NOT_LINKED = "這樣東西還沒有對應到庫存裡的品項，現在還不能從對話記錄購買。"
 MORE_THAN_LISTED = "買的數量比待購清單上多，現在還不能記錄。"
@@ -111,6 +146,8 @@ OTHER_UNIT = "待購清單和庫存用的單位不同，現在還不能記錄。
 ALREADY_HAVE = "家裡已經有「{names}」，但待購清單上這一筆沒有連到它，現在還不能從對話記錄。"
 NEEDS_UNIT = "待購清單上沒寫單位，請使用者說買了幾個什麼（例如 2 瓶）。"
 NEEDS_LOCATION = "這是家裡還沒有的東西，要說放在哪裡，才能新增到庫存。"
+UNREADABLE_DAY = "看不懂是哪一天買的，請使用者說日期（例如 11/15）。"
+FUTURE_DAY = "購買日期在今天之後，不能記錄；請使用者再說一次是哪天買的。"
 ONE_CARD_PER_MESSAGE = json.dumps({"error": "card_already_made"})
 """A second `complete_purchase` in the same message: the first card stands."""
 CARD_FAILED = json.dumps({"error": "card_not_made"})
@@ -126,6 +163,7 @@ def purchase_operation(
     inventory: MappedDocument[InventoryItem] | None,
     quantity: int,
     transaction_id: str | None = None,
+    purchased_at: datetime | None = None,
 ) -> NewOperation:
     """One card line: "this shopping entry was bought, add it to this inventory item".
 
@@ -152,7 +190,9 @@ def purchase_operation(
     name = shopping.record.name
     return NewOperation(
         action=COMPLETE_PURCHASE,
-        description=f"{name} +{quantity} {preview.unit}（從待購清單完成購買）",
+        description=(
+            f"{name} +{quantity} {preview.unit}（{_bought(purchased_at)}從待購清單完成購買）"
+        ),
         values={
             "name": name,
             "purchased_quantity": quantity,
@@ -160,6 +200,7 @@ def purchase_operation(
             "shopping_item_id": shopping.record.shopping_item_id,
             "item_id": inventory.record.item_id,
             "transaction_id": transaction_id or uuid.uuid4().hex,
+            **_purchased_at_value(purchased_at),
         },
         targets=[
             TargetVersion(record_id=shopping.document_id, etag=shopping.etag),
@@ -175,6 +216,7 @@ def new_item_operation(
     unit: str,
     location: str,
     transaction_id: str | None = None,
+    purchased_at: datetime | None = None,
 ) -> NewOperation:
     """One card line: "this list entry was bought; add it as a new inventory item".
 
@@ -189,7 +231,8 @@ def new_item_operation(
     return NewOperation(
         action=CREATE_ITEM,
         description=(
-            f"會新增一個庫存品項：{name} {quantity} {unit}，放在{location}（從待購清單完成購買）"
+            f"會新增一個庫存品項：{name} {quantity} {unit}，放在{location}"
+            f"（{_bought(purchased_at)}從待購清單完成購買）"
         ),
         values={
             "name": name,
@@ -198,9 +241,27 @@ def new_item_operation(
             "location": location,
             "shopping_item_id": shopping.record.shopping_item_id,
             "transaction_id": transaction_id or uuid.uuid4().hex,
+            **_purchased_at_value(purchased_at),
         },
         targets=[TargetVersion(record_id=shopping.document_id, etag=shopping.etag)],
     )
+
+
+def _bought(purchased_at: datetime | None) -> str:
+    """「11/15 買的，」 on a dated line; nothing when the confirmation time is used."""
+    if purchased_at is None:
+        return ""
+    day = purchased_at.astimezone(TAIPEI).date()
+    return f"{day.month}/{day.day} 買的，"
+
+
+def _purchased_at_value(purchased_at: datetime | None) -> dict[str, str]:
+    """`purchased_at` for the line's values; `CardInputResolver` passes it on to C1."""
+    return {} if purchased_at is None else {"purchased_at": purchased_at.isoformat()}
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class CardRecordReader(PurchaseRecordReader, Protocol):
@@ -215,14 +276,42 @@ class _Requested:
     quantity: int
     unit: str | None = None
     location: str | None = None
+    purchased_on: str | None = None
 
 
 class PurchaseCards:
-    """The `complete_purchase` tool: makes and stores a pending purchase card."""
+    """The `complete_purchase` tool: makes and stores a pending purchase card.
 
-    def __init__(self, reader: CardRecordReader, approvals: ApprovalService) -> None:
+    `dated_purchases` (A1-50, off in the running app): the model is told today's date
+    and may give each item the day it was bought. A past day goes on the line as
+    `purchased_at` (12:00 Taipei that day, `purchase_time.py`) and in its text; today
+    or no day leaves it off, so the confirmation time is used. It stays off until the
+    App shows the day on the card (HITL rule 4) and changing it is agreed with C2.
+    """
+
+    def __init__(
+        self,
+        reader: CardRecordReader,
+        approvals: ApprovalService,
+        *,
+        dated_purchases: bool = False,
+        clock: Callable[[], datetime] = _utc_now,
+    ) -> None:
         self._reader = reader
         self._approvals = approvals
+        self._dated = dated_purchases
+        self._clock = clock
+
+    @property
+    def tool_schema(self) -> dict[str, Any]:
+        """The tool offered to the model; no `purchased_on` while dated purchases are off."""
+        return DATED_PURCHASE_TOOL_SCHEMA if self._dated else PURCHASE_TOOL_SCHEMA
+
+    def date_note(self) -> str | None:
+        """Today's date for the model with dated purchases on; None while they are off."""
+        if not self._dated:
+            return None
+        return TODAY_NOTE.format(today=taipei_today(self._clock()).isoformat())
 
     async def card_to_change(self, household_id: str, approval_id: str) -> ApprovalRecord:
         """The pending card a 送出修改 replaces (contract section 7, Issue #91).
@@ -298,7 +387,7 @@ class PurchaseCards:
         `replaces_approval_id` is the card a 送出修改 replaces; the new card records it
         (section 7).
         """
-        requested = _requested_items(args.get("items"))
+        requested = _requested_items(args.get("items"), dated=self._dated)
         if not requested:
             return json.dumps({"error": "no_items"}), None
         lines: list[NewOperation] = []
@@ -340,7 +429,26 @@ class PurchaseCards:
         }
         return json.dumps(view, ensure_ascii=False), card.model_dump(mode="json")
 
+    def _purchase_time(self, item: _Requested) -> tuple[datetime | None, str]:
+        """(purchased_at for the line, why the item is left off). Today means no time."""
+        if item.purchased_on is None:
+            return None, ""
+        try:
+            day = date.fromisoformat(item.purchased_on)
+        except ValueError:
+            return None, UNREADABLE_DAY
+        now = self._clock()
+        if day == taipei_today(now):
+            return None, ""
+        try:
+            return resolve_purchased_at(day, now), ""
+        except FuturePurchaseDate:
+            return None, FUTURE_DAY
+
     async def _line(self, household_id: str, item: _Requested) -> tuple[NewOperation | None, str]:
+        purchased_at, refused = self._purchase_time(item)
+        if refused:
+            return None, refused
         quantity = item.quantity
         shopping = await self._reader.read_shopping_item_with_etag(
             household_id=household_id, shopping_item_id=item.shopping_item_id
@@ -349,7 +457,7 @@ class PurchaseCards:
             return None, NOT_ON_LIST
         entry = shopping.record
         if not entry.item_id:
-            return await self._new_item_line(household_id, shopping, item)
+            return await self._new_item_line(household_id, shopping, item, purchased_at)
         if entry.quantity is not None and quantity > entry.quantity:
             return None, MORE_THAN_LISTED
         inventory = await self._reader.read_inventory_item_with_etag(
@@ -360,12 +468,19 @@ class PurchaseCards:
         if entry.unit is not None and inventory.record.unit != entry.unit:
             return None, OTHER_UNIT
         try:
-            return purchase_operation(shopping=shopping, inventory=inventory, quantity=quantity), ""
+            line = purchase_operation(
+                shopping=shopping, inventory=inventory, quantity=quantity, purchased_at=purchased_at
+            )
+            return line, ""
         except (ShoppingPreviewError, ValueError) as error:
             return None, f"這一筆現在還不能記錄：{error}"
 
     async def _new_item_line(
-        self, household_id: str, shopping: MappedDocument[ShoppingItem], item: _Requested
+        self,
+        household_id: str,
+        shopping: MappedDocument[ShoppingItem],
+        item: _Requested,
+        purchased_at: datetime | None = None,
     ) -> tuple[NewOperation | None, str]:
         """A list entry the household does not have yet becomes a `create_item` line."""
         entry = shopping.record
@@ -383,7 +498,11 @@ class PurchaseCards:
             return None, NEEDS_LOCATION
         try:
             line = new_item_operation(
-                shopping=shopping, quantity=item.quantity, unit=unit, location=item.location
+                shopping=shopping,
+                quantity=item.quantity,
+                unit=unit,
+                location=item.location,
+                purchased_at=purchased_at,
             )
         except ValueError as error:
             return None, f"這一筆現在還不能記錄：{error}"
@@ -399,11 +518,12 @@ def _not_replaced_because(record: ApprovalRecord | None) -> str | None:
     return record.status.value
 
 
-def _requested_items(value: Any) -> list[_Requested]:
+def _requested_items(value: Any, *, dated: bool = False) -> list[_Requested]:
     """The model's items, each shopping entry once, quantities as whole numbers ≥ 1.
 
-    `unit` and `location` are optional words. Blank text counts as not said: the real
-    model fills unused optional fields with "" (seen on Azure OpenAI, 2026-11-13).
+    `unit` and `location` are optional words, and so is `purchased_on`, which is read
+    only with dated purchases on. Blank text counts as not said: the real model fills
+    unused optional fields with "" (seen on Azure OpenAI, 2026-11-13).
     """
     if not isinstance(value, list):
         return []
@@ -414,7 +534,8 @@ def _requested_items(value: Any) -> list[_Requested]:
             return []
         shopping_item_id = str(item.get("shopping_item_id") or "").strip()
         quantity = item.get("quantity")
-        words = [item.get("unit"), item.get("location")]
+        day = item.get("purchased_on") if dated else None
+        words = [item.get("unit"), item.get("location"), day]
         if (
             not shopping_item_id
             or shopping_item_id in seen
@@ -425,8 +546,8 @@ def _requested_items(value: Any) -> list[_Requested]:
         ):
             return []
         seen.add(shopping_item_id)
-        unit, location = ((w or "").strip() or None for w in words)
-        requested.append(_Requested(shopping_item_id, quantity, unit, location))
+        unit, location, purchased_on = ((w or "").strip() or None for w in words)
+        requested.append(_Requested(shopping_item_id, quantity, unit, location, purchased_on))
     return requested
 
 

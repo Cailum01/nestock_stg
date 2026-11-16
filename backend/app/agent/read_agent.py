@@ -429,7 +429,7 @@ class ReadAgent:
         purchases: PurchaseCards | None = None,
     ) -> None:
         self._model = model.bind_tools(
-            [*TOOL_SCHEMAS, PURCHASE_TOOL_SCHEMA] if purchases is not None else TOOL_SCHEMAS
+            [*TOOL_SCHEMAS, purchases.tool_schema] if purchases is not None else TOOL_SCHEMAS
         )
         self._handlers: dict[str, Callable[[str], Awaitable[list[Any]]]] = {
             "list_inventory": tools.list_inventory,
@@ -654,6 +654,8 @@ class ReadAgent:
 
     async def respond(self, request: AgentRequest) -> AgentResponse:
         messages: list[AnyMessage] = [SystemMessage(self._system_prompt)]
+        if self._purchases is not None and (today := self._purchases.date_note()):
+            messages.append(SystemMessage(today))  # dated purchases only (A1-50); off
         start: _State = {"household_id": request.household_id}
         if request.image_ref and self.reads_photos:
             # D-5: the photo must belong to this household before anything reads it.

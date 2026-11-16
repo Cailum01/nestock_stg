@@ -383,12 +383,18 @@ quantity can be changed.
   written (Issue #42 c).
 - A changed value goes back to the Agent as in section 7 (Issue #91).
 - Purchase time (Issue #113): the Transaction's `created_at` is when the purchase
-  happened. No purchase time is on the card yet, so the first `decided_at` is used,
-  and a retry keeps that same time. When the user says a day (昨天買的), the line
-  will carry `purchased_at`, shown only as a date and changed as in section 7; the
-  Agent does not do this yet. `backend/app/services/purchase_time.py` (PR #71) has
-  the rule for turning the day into a time, and `purchase_inputs.py` already reads
-  `purchased_at` when present.
+  happened. Without a day on the line, the first `decided_at` is used, and a retry
+  keeps that same time.
+- A day the user says (昨天買的, A1-50) is built but off in the running app
+  (`PurchaseCards(dated_purchases=...)`). With it on, the model is told today's
+  Taipei date and may give each item `purchased_on` (YYYY-MM-DD). A past day goes on
+  the line as `purchased_at` (12:00 Taipei that day, `purchase_time.py`, PR #71) and
+  in its description (「11/15 買的」); today or no day leaves it off; a future or
+  unreadable day leaves the item off the card. `purchase_inputs.py` passes
+  `purchased_at` on to C1. It stays off until the App shows the day on the purchase
+  card (HITL rule 4; the App shows only name, quantity and unit today) and how the
+  user changes the day is agreed with C2 (the card can change only the quantity
+  today).
 
 ```json
 {

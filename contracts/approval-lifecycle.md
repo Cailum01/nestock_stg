@@ -444,6 +444,19 @@ New-item cards from a photo (Issue #124; built, but off in the running app):
   is no `shopping_item_id` and no target version.
 - Items the household has, unsure items and items without a confirmed unit are only
   reported, as before. A photo item-match card (Issue #124 point 2) is not built.
+- Confirming (Issue #124; A1's part built, not used by the app yet): A1's
+  `PhotoInputResolver` (`backend/app/services/purchase_inputs.py`) turns each line in
+  the fixed `approved_operation_ids`, in card order, into C1's `AdjustmentInput`
+  from the stored card only: `approval_id`, `operation_id`, `transaction_id`,
+  `quantity`, and a new item with `name`, `unit`, `location` (null) and `item_id`
+  from B1's `resolve_inventory_item_id(operation_id)`. B1's builder (not built) plans
+  each line with C1's `plan_adjustment`, using the card's `decided_at` as the time,
+  and writes the item, the `adjustment` Transaction, the change event
+  (`shopping_item_id` null) and the receipts with the completed card in one batch
+  (#42). A1's `CardWriteRouter` (`backend/app/services/card_writes.py`) sends photo
+  cards to that builder and purchase cards to C1's `ShoppingWriteBuilder`; without
+  B1's builder it refuses a photo card, so nothing is stored or written. It goes into
+  `get_approval_service` together with B1's builder.
 - As in section 8, a photo makes no card in a message that brings an open card back,
   or when the open cards cannot be listed; the photo is only reported.
 - The quantity can be changed on the card with `card_changes` (section 7.1); a new

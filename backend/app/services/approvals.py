@@ -613,7 +613,8 @@ class ApprovalService:
         if not record.can_retry(now):
             return await self._record_expired(record, etag)
         _check_retry_selection(record, request)
-        if await self._has_receipts(record):
+        # Same read as `_recover`: a failed read is logged with the card (§6, Issue #27).
+        if await self._operations_with_receipts(record):
             # Re-read: another request's batch may have just committed (then it is done).
             return await self._recover(record)
         plan = await self._plan(record, etag)
@@ -771,15 +772,6 @@ class ApprovalService:
             )
             raise
         return with_receipt
-
-    async def _has_receipts(self, record: ApprovalRecord) -> bool:
-        for operation_id in record.approved_operation_ids or ():
-            receipt = await self._storage.read_operation_receipt(
-                household_id=record.household_id, operation_id=operation_id
-            )
-            if receipt is not None:
-                return True
-        return False
 
     async def _record_expired(self, record: ApprovalRecord, etag: str) -> ResumeResult:
         """Expiry is decided from `expires_at`; recording it is best effort (§3)."""

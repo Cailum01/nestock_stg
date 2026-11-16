@@ -1044,6 +1044,32 @@ def test_a_failed_first_receipt_read_logs_the_card_and_stops(caplog):
     assert stored_record(storage, record).status is ApprovalStatus.CONFIRMED
 
 
+def test_a_failed_receipt_read_on_a_confirmed_card_retry_logs_the_card_and_stops(caplog):
+    """The other way in (PR #158 C1 review): a confirmed card confirmed again reads its
+    receipts before planning; a failed first read is logged the same way."""
+    service, storage, _, _, _ = setup()
+    record = make_batch(service, names=("豆漿", "衛生紙"))
+    storage.fail_next_batch = RuntimeError("Cosmos unavailable")
+    first = confirm(service, record, approved_operation_ids=record.operation_ids)
+    assert first.outcome is ResumeOutcome.NOT_WRITTEN  # no receipts: the card stays confirmed
+    assert stored_record(storage, record).status is ApprovalStatus.CONFIRMED
+    storage.fail_next_receipt_read = RuntimeError("Cosmos unavailable")
+
+    with caplog.at_level("ERROR", logger="app.services.approvals"):
+        with pytest.raises(RuntimeError):
+            confirm(service, record, approved_operation_ids=record.operation_ids)
+
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    line = errors[0].getMessage()
+    assert "reconciliation-required" in line and "could not be read" in line
+    assert f"household={HOME}" in line and f"approval={record.approval_id}" in line
+    assert f"operations={list(record.operation_ids)}" in line
+    assert storage.batch_attempts == 1  # the retry wrote nothing
+    assert not storage.batches
+    assert stored_record(storage, record).status is ApprovalStatus.CONFIRMED
+
+
 def test_timeout_on_the_confirm_step_can_be_retried():
     service, storage, _, _, etag = setup()
     record = make_single(service, etag)

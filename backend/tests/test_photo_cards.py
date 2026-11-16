@@ -10,7 +10,7 @@ import asyncio
 from datetime import UTC, datetime
 
 from langchain_core.messages import AIMessage
-from test_purchase_cards import FakeCosmosContainer
+from test_purchase_cards import FakeCosmosContainer, setup
 from test_read_agent import (
     HOUSEHOLD,
     PHOTO,
@@ -25,10 +25,11 @@ from test_read_agent import (
     _StubVision,
 )
 
-from app.agent.cards import PHOTO_CARD_MADE, PhotoCards
+from app.agent.cards import PHOTO_CARD_MADE, PhotoCards, PurchaseCards
 from app.agent.read_agent import ReadAgent, load_system_prompt
 from app.models.agent import ApprovalPresentation, ResultKind
 from app.services.approvals import ApprovalService, DomainWritePlan
+from app.services.cosmos_read import CosmosInventoryService, CosmosShoppingService
 from app.services.cosmos_write import CosmosWriteRepository
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
 from app.tools.queries import QueryTools
@@ -174,3 +175,65 @@ def test_one_card_per_message():
 
     assert response.pending_approval is not None
     assert len(container.of_type("pending_approval")) == 1
+
+
+# ----- with purchase cards too: open cards (contract section 8, PR #160) -----------
+
+
+def _photo_with_purchases():
+    """A household with a tissue entry on the list, photo cards on and purchase cards."""
+    container, reader, _ = setup()
+    approvals = ApprovalService(
+        CosmosWriteRepository(container, query_client=container),
+        _PlanEveryLine(),
+        clock=lambda: T0,
+    )
+    media = LocalStagingMediaStorage()
+    asyncio.run(media.simulate_client_upload(HOUSEHOLD, PHOTO, b"jpeg-bytes"))
+    model = ScriptedModel(_call("analyze_photo"), AIMessage(content="看到滑鼠。"))
+    purchases = PurchaseCards(reader, approvals)
+    agent = ReadAgent(
+        model,
+        QueryTools(CosmosInventoryService(reader), CosmosShoppingService(reader)),
+        load_system_prompt(),
+        vision=_StubVision(_detected("滑鼠", unit="個")),
+        media=media,
+        purchases=purchases,
+        photo_cards=PhotoCards(approvals),
+    )
+    return container, approvals, purchases, agent, model
+
+
+def _stored(container):
+    return [(d["approval_id"], d["status"]) for d in container.of_type("pending_approval")]
+
+
+def test_no_photo_card_while_an_open_card_is_shown():
+    """The message that brings an open card back makes no new card, a photo included."""
+    container, _, purchases, agent, model = _photo_with_purchases()
+    _, open_card = asyncio.run(
+        purchases.propose(HOUSEHOLD, {"items": [{"shopping_item_id": "tissue-1", "quantity": 2}]})
+    )
+
+    response = _ask_photo(agent)
+
+    assert response.pending_approval.model_dump(mode="json") == open_card
+    assert _stored(container) == [(open_card["approval_id"], "pending")]
+    assert "new_item_card" not in _seen_by_model(model)
+    assert [result.kind for result in response.results] == [ResultKind.VISION]
+
+
+def test_no_photo_card_when_the_open_cards_cannot_be_listed(monkeypatch):
+    """Unknown is not "none": a card may still be open (PR #160 C2 review)."""
+    container, approvals, _, agent, model = _photo_with_purchases()
+
+    async def unreachable(**_):
+        raise ConnectionError("Cosmos is unreachable")
+
+    monkeypatch.setattr(approvals, "list_open", unreachable)
+    response = _ask_photo(agent)
+
+    assert response.pending_approval is None
+    assert _stored(container) == []
+    assert "new_item_card" not in _seen_by_model(model)
+    assert [result.kind for result in response.results] == [ResultKind.VISION]

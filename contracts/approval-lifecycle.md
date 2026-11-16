@@ -367,6 +367,8 @@ New-item cards from a photo (Issue #124; built, but off in the running app):
   is no `shopping_item_id` and no target version.
 - Items the household has, unsure items and items without a confirmed unit are only
   reported, as before. A photo item-match card (Issue #124 point 2) is not built.
+- As in section 8, a photo makes no card in a message that brings an open card back,
+  or when the open cards cannot be listed; the photo is only reported.
 - Off in `get_read_agent` until confirming can be written: B1's write for a new item
   without a Shopping List entry (Issue #124 point 1), and A1 handing the card to it.
   Until then a photo is only reported, so the App never gets a card it cannot write.

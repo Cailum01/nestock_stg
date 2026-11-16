@@ -466,8 +466,9 @@ quantity can be changed.
   (`backend/.env` on your own computer) turns it on for testing; any other value, or
   none, is off, and the cloud does not set it. It stays off in the cloud until the
   App shows the day on the purchase card (HITL rule 4; PR #163), the App sends a
-  changed day as `card_changes` (section 7.1), and the live-model tests cover days
-  (Issue #127).
+  changed day as `card_changes` (section 7.1), and the live-model test of spoken days
+  passes (`test_purchase_dates.py`, `-m live_eval`, Issue #127). A changed day needs
+  no model: `card_changes` is applied by the backend.
 
 ```json
 {

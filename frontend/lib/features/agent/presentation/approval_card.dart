@@ -98,9 +98,7 @@ class ApprovalCard extends StatelessWidget {
       onOpenProductUrl: onOpenProductUrl ?? _openExternalProductUrl,
     ),
     ApprovalPresentation.singleAction || ApprovalPresentation.batchAction
-        when approval.operations.every(
-          (operation) => operation.action == 'complete_purchase',
-        ) =>
+        when approval.operations.every(_isPurchaseWorkflowOperation) =>
       _PurchaseApprovalCard(
         approval: approval,
         busy: busy,
@@ -110,9 +108,7 @@ class ApprovalCard extends StatelessWidget {
         datedPurchasesEnabled: config.datedPurchasesEnabled,
       ),
     ApprovalPresentation.batchAction
-        when approval.operations.every(
-          (operation) => operation.action == 'create_item',
-        ) =>
+        when approval.operations.every(_isPhotoCreateItemOperation) =>
       _CreateItemBatchApprovalCard(
         approval: approval,
         busy: busy,
@@ -120,8 +116,9 @@ class ApprovalCard extends StatelessWidget {
         onSubmitCardChanges: onSubmitCardChanges,
         changeErrors: changeErrors,
       ),
-    // TODO(#162): A batch mixing complete_purchase and create_item remains a
-    // generic card. Route it deliberately before enabling dated purchases.
+    // A batch which mixes a photo-created item with purchase workflow lines has
+    // no dedicated contract presentation. Keep it generic rather than treating
+    // a photo item as a Shopping-backed purchase.
     ApprovalPresentation.batchAction => _GenericBatchApprovalCard(
       approval: approval,
       busy: busy,
@@ -145,6 +142,18 @@ class ApprovalCard extends StatelessWidget {
   };
 }
 
+bool _isPurchaseWorkflowOperation(OperationView operation) =>
+    operation.action == 'complete_purchase' ||
+    (operation.action == 'create_item' &&
+        _hasNonBlankShoppingItemId(operation.values['shopping_item_id']));
+
+bool _hasNonBlankShoppingItemId(Object? value) =>
+    value is String && value.trim().isNotEmpty;
+
+bool _isPhotoCreateItemOperation(OperationView operation) =>
+    operation.action == 'create_item' &&
+    !_isPurchaseWorkflowOperation(operation);
+
 class _PurchaseValues {
   const _PurchaseValues({
     required this.operation,
@@ -167,8 +176,13 @@ class _PurchaseValues {
 
 _PurchaseValues? _purchaseValues(OperationView operation) {
   final name = operation.values['name'];
-  final quantity = operation.values['purchased_quantity'];
-  final unit = operation.values['purchased_unit'];
+  final isShoppingBackedCreateItem =
+      operation.action == 'create_item' &&
+      _isPurchaseWorkflowOperation(operation);
+  final quantity = operation
+      .values[isShoppingBackedCreateItem ? 'quantity' : 'purchased_quantity'];
+  final unit =
+      operation.values[isShoppingBackedCreateItem ? 'unit' : 'purchased_unit'];
   if (name is! String ||
       name.trim().isEmpty ||
       quantity is! num ||

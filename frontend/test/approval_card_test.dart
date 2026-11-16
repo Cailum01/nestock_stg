@@ -366,6 +366,7 @@ void main() {
         find.byKey(const Key('create-item-batch-approval-card')),
         findsOneWidget,
       );
+      expect(find.byKey(const Key('purchase-approval-card')), findsNothing);
       expect(find.text('滑鼠 1 個'), findsOneWidget);
       expect(find.text('鍵盤 1 個'), findsOneWidget);
       expect(find.textContaining('opaque-'), findsNothing);
@@ -548,6 +549,173 @@ void main() {
       });
 
       expect(operationIds, isNull);
+    },
+  );
+
+  testWidgets(
+    'Shopping-backed create item uses the purchase card and structured edits',
+    (tester) async {
+      List<CardChange>? changes;
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-shopping-create-purchase',
+          presentation: ApprovalPresentation.singleAction,
+          operations: [
+            OperationView(
+              id: 'operation-shopping-create-purchase',
+              action: 'create_item',
+              description: '建立庫存品項：衛生紙',
+              values: {
+                'name': '衛生紙',
+                'quantity': 2,
+                'unit': '包',
+                'location': '浴室櫃',
+                'shopping_item_id': 'shopping-first-purchase',
+                'transaction_id': 'transaction-first-purchase',
+                'purchased_at': '2026-11-09T12:00:00+08:00',
+              },
+            ),
+          ],
+        ),
+        onCardChanges: (value) => changes = value,
+      );
+
+      expect(find.byKey(const Key('purchase-approval-card')), findsOneWidget);
+      expect(find.byKey(const Key('confirmation-card-shell')), findsNothing);
+      expect(find.text('衛生紙 2 包'), findsOneWidget);
+      expect(find.text('購買日期：2026/11/09'), findsOneWidget);
+      expect(find.textContaining('shopping-first-purchase'), findsNothing);
+      expect(find.textContaining('transaction-first-purchase'), findsNothing);
+
+      await tester.tap(find.byKey(const Key('purchase-edit-quantity')));
+      await tester.pump();
+      await tester.enterText(
+        find.byKey(const Key('purchase-quantity-field')),
+        '3',
+      );
+      await tester.pump();
+
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+            .onPressed,
+        isNull,
+      );
+      await tester.tap(find.byKey(const Key('purchase-submit-card-changes')));
+      expect(changes!.single.toJson(), {
+        'operation_id': 'operation-shopping-create-purchase',
+        'quantity': 3,
+      });
+    },
+  );
+
+  testWidgets(
+    'mixed complete purchase and Shopping-backed create items use one purchase card',
+    (tester) async {
+      List<String>? selectedIds;
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-mixed-shopping-purchase',
+          presentation: ApprovalPresentation.batchAction,
+          operations: [
+            OperationView(
+              id: 'operation-existing-item',
+              action: 'complete_purchase',
+              description: '洗衣精 +1 瓶',
+              values: {
+                'name': '洗衣精',
+                'purchased_quantity': 1,
+                'purchased_unit': '瓶',
+              },
+            ),
+            OperationView(
+              id: 'operation-first-item',
+              action: 'create_item',
+              description: '建立庫存品項：衛生紙',
+              values: {
+                'name': '衛生紙',
+                'quantity': 2,
+                'unit': '包',
+                'location': '浴室櫃',
+                'shopping_item_id': 'shopping-first-item',
+                'transaction_id': 'transaction-first-item',
+                'purchased_at': '2026-11-09T12:00:00+08:00',
+              },
+            ),
+          ],
+        ),
+        onDecision:
+            ({required approved, selectedOptionId, approvedOperationIds}) {
+              selectedIds = approvedOperationIds;
+            },
+      );
+
+      expect(find.byKey(const Key('purchase-approval-card')), findsOneWidget);
+      expect(
+        find.byKey(const Key('generic-batch-approval-card')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const Key('create-item-batch-approval-card')),
+        findsNothing,
+      );
+      expect(find.text('洗衣精 1 瓶'), findsOneWidget);
+      expect(find.text('衛生紙 2 包'), findsOneWidget);
+      expect(find.text('購買日期：2026/11/09'), findsOneWidget);
+
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const Key('purchase-operation-operation-first-item')),
+          matching: find.byType(Checkbox),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('approval-confirm')));
+
+      expect(selectedIds, ['operation-existing-item']);
+    },
+  );
+
+  testWidgets(
+    'photo create item mixed with a purchase keeps the generic batch fallback',
+    (tester) async {
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-photo-and-purchase',
+          presentation: ApprovalPresentation.batchAction,
+          operations: [
+            OperationView(
+              id: 'operation-photo-item',
+              action: 'create_item',
+              description: '建立庫存品項：滑鼠',
+              values: {'name': '滑鼠', 'quantity': 1, 'unit': '個'},
+            ),
+            OperationView(
+              id: 'operation-purchased-item',
+              action: 'complete_purchase',
+              description: '衛生紙 +2 包',
+              values: {
+                'name': '衛生紙',
+                'purchased_quantity': 2,
+                'purchased_unit': '包',
+              },
+            ),
+          ],
+        ),
+      );
+
+      expect(
+        find.byKey(const Key('generic-batch-approval-card')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('purchase-approval-card')), findsNothing);
+      expect(
+        find.byKey(const Key('create-item-batch-approval-card')),
+        findsNothing,
+      );
     },
   );
 

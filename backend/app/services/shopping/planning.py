@@ -314,8 +314,8 @@ class ShoppingPlanService:
     ) -> AdjustmentPlan:
         """Plan a standalone incoming-stock addition from an approved proposal.
 
-        This only creates immutable domain values. It performs no authorization,
-        ChangeEvent construction, Cosmos writes, or public API integration.
+        This only creates immutable domain values, including the provenance event.
+        It performs no authorization, Cosmos writes, or public API integration.
         """
         _identity(household_id, "Household")
         _identity(adjustment.operation_id, "Operation ID")

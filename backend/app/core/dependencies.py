@@ -3,7 +3,10 @@ import logging
 import os
 import threading
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
 
 from app.services.approvals import ApprovalService
 from app.services.commerce.biggo import BigGoCommerceProvider
@@ -30,6 +33,19 @@ from app.services.vision import (
     VisionService,
     load_vision_azure_settings,
 )
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+SKIP_DOTENV_VAR = "NESTOCK_SKIP_DOTENV"
+
+
+def _load_local_env() -> None:
+    """Load `backend/.env` before the Cosmos composition below reads `os.environ`.
+
+    Real environment variables win (`override=False`). Tests set `NESTOCK_SKIP_DOTENV`
+    so a developer's local `.env` never points them at a real Cosmos account.
+    """
+    if not os.environ.get(SKIP_DOTENV_VAR):
+        load_dotenv(BACKEND_DIR / ".env", override=False)
 
 
 def _create_domain_read_services(
@@ -194,6 +210,7 @@ def _create_media_storage_service(
     )
 
 
+_load_local_env()
 (
     inventory_service,
     shopping_service,

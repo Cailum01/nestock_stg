@@ -751,7 +751,9 @@ class ReadAgent:
 
         The reply is 200 either way. A refused change carries `results[0].data.code`
         and, while the old card is still pending, that card again, so it stays on
-        screen; nothing new is stored.
+        screen; nothing new is stored. A photo new-item card is changed by
+        `PhotoCards` (Issue #124), only while photo cards are on; with them off it is
+        refused like any card that cannot be changed on the card.
         """
         household_id = request.household_id
         if self._purchases is None:
@@ -762,8 +764,14 @@ class ReadAgent:
             return _change_refused(
                 "card_not_changeable", CARD_CHANGE_REFUSED[refused.reason], reason=refused.reason
             )
+        changes = request.card_changes or []
         try:
-            card = await self._purchases.change_card(old, request.card_changes or [])
+            if self._photo_cards is not None and PhotoCards.made(old):
+                # Issue #124: a photo card's quantity, checked against today's items.
+                items = await self._matcher.household_items(household_id)
+                card = await self._photo_cards.change_card(old, changes, items)
+            else:
+                card = await self._purchases.change_card(old, changes)
         except CardChangeRefused as refused:
             shown = ApprovalService.to_pending_approval(old).model_dump(mode="json")
             return _change_refused(refused.code, refused.message, card=shown, **refused.details)

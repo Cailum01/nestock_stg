@@ -305,7 +305,34 @@ and until then the sentence above keeps working.
 | `nothing_changed` | Every value is the same as on the original |
 | `purchase_day_off` | A day is changed, or the original has one, while dated purchases are off (section 11) |
 | `future_date` | `purchased_on` is after today in Taipei |
-| `line_refused` | A line cannot be recorded with the current records (`lines`: `shopping_item_id` and `reason`); a new card never leaves a line out |
+| `line_refused` | A line cannot go on a new card: it cannot be recorded with the current records, a photo line is given a day, or the line cannot be changed on the card. `lines` has one entry per refused line: its `operation_id` on the original, `shopping_item_id` for a line from the Shopping List, and `reason`. A new card never leaves a line out |
+
+Photo new-item cards (section 10, Issue #124) are changed the same way, only while
+photo cards are on:
+
+- Only `quantity` changes. A photo line has no purchase day, so a `purchased_on`
+  (even `null`) refuses it (`line_refused`), whether or not dated purchases are on.
+- Every line goes on the new card with its `name`, `unit` and `location` (null) as
+  on the original, a changed line with its new `quantity`, a line not listed with its
+  old one. The card keeps its presentation (`single_action` or `batch_action`).
+  Every line gets a new `operation_id` and `transaction_id`, and the card a new
+  `approval_id`; the original is retired as in section 7.
+- Before the new card is stored, each line is checked against the household's items
+  again: a line whose name is now the name or alias of a household item is refused
+  (`line_refused`), so confirming never adds a second item.
+- With photo cards off (the running app, section 10), a photo card cannot be
+  changed on the card: `line_refused`, each line with reason 這一項不能在卡上修改。
+- A photo card is changed only with `card_changes`. The sentence format in section 7
+  is for purchase cards: the Agent's card tool makes purchase cards only.
+
+```json
+{
+  "message": "沒有出新卡：「滑鼠」照片新增的品項沒有購買日期，不能改日期。",
+  "results": [{"kind": "action_result", "data": {"code": "line_refused",
+    "lines": [{"operation_id": "op-1", "reason": "照片新增的品項沒有購買日期，不能改日期。"}]}}],
+  "pending_approval": "（原卡）"
+}
+```
 
 ## 8. Reminders
 
@@ -417,11 +444,27 @@ New-item cards from a photo (Issue #124; built, but off in the running app):
   is no `shopping_item_id` and no target version.
 - Items the household has, unsure items and items without a confirmed unit are only
   reported, as before. A photo item-match card (Issue #124 point 2) is not built.
+- Confirming (Issue #124; A1's part built, not used by the app yet): A1's
+  `PhotoInputResolver` (`backend/app/services/purchase_inputs.py`) turns each line in
+  the fixed `approved_operation_ids`, in card order, into C1's `AdjustmentInput`
+  from the stored card only: `approval_id`, `operation_id`, `transaction_id`,
+  `quantity`, and a new item with `name`, `unit`, `location` (null) and `item_id`
+  from B1's `resolve_inventory_item_id(operation_id)`. B1's builder (not built) plans
+  each line with C1's `plan_adjustment`, using the card's `decided_at` as the time,
+  and writes the item, the `adjustment` Transaction, the change event
+  (`shopping_item_id` null) and the receipts with the completed card in one batch
+  (#42). A1's `CardWriteRouter` (`backend/app/services/card_writes.py`) sends photo
+  cards to that builder and purchase cards to C1's `ShoppingWriteBuilder`; without
+  B1's builder it refuses a photo card, so nothing is stored or written. It goes into
+  `get_approval_service` together with B1's builder.
 - As in section 8, a photo makes no card in a message that brings an open card back,
   or when the open cards cannot be listed; the photo is only reported.
+- The quantity can be changed on the card with `card_changes` (section 7.1); a new
+  card replaces the old one, and the user confirms again.
 - Off in `get_read_agent` until confirming can be written: B1's write for a new item
   without a Shopping List entry (Issue #124 point 1), and A1 handing the card to it.
-  Until then a photo is only reported, so the App never gets a card it cannot write.
+  Until then a photo is only reported, so the App never gets a card it cannot write;
+  changing one on the card is off with it.
 
 ```json
 {

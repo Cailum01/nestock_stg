@@ -348,16 +348,16 @@ def test_new_target_plans_create_actual_stock_without_placeholder_or_fake_etag()
 
 
 def adjustment(**changes):
-    operation_id = "photo-adjustment-1"
+    operation_id = "standalone-stock-add-1"
     values = {
         "operation_id": operation_id,
-        "transaction_id": "photo-transaction-1",
-        "approval_id": "photo-approval-1",
+        "transaction_id": "standalone-stock-transaction-1",
+        "approval_id": "standalone-stock-approval-1",
         "new_inventory": NewInventoryTarget(
             item_id=resolve_inventory_item_id(operation_id),
-            name="羅技 G400s 有線電競滑鼠",
-            unit="個",
-            location=None,
+            name="手作果醬",
+            unit="罐",
+            location="廚房",
         ),
         "quantity": 1,
     }
@@ -365,7 +365,7 @@ def adjustment(**changes):
     return AdjustmentInput(**values)
 
 
-def test_photo_new_item_adjustment_plans_stock_and_transaction_without_shopping():
+def test_standalone_stock_addition_plans_inventory_transaction_and_event_without_shopping():
     source = adjustment()
     result = ShoppingPlanService().plan_adjustment(
         household_id=HOUSEHOLD,
@@ -379,10 +379,10 @@ def test_photo_new_item_adjustment_plans_stock_and_transaction_without_shopping(
     assert result.recorded_at == RECORDED
     assert result.inventory_create.operation_id == source.operation_id
     assert result.inventory_create.record.item_id == resolve_inventory_item_id(source.operation_id)
-    assert result.inventory_create.record.name == "羅技 G400s 有線電競滑鼠"
+    assert result.inventory_create.record.name == "手作果醬"
     assert result.inventory_create.record.quantity == 1
-    assert result.inventory_create.record.unit == "個"
-    assert result.inventory_create.record.location is None
+    assert result.inventory_create.record.unit == "罐"
+    assert result.inventory_create.record.location == "廚房"
     assert result.inventory_create.record.created_at == RECORDED
     assert result.inventory_create.record.updated_at == RECORDED
     assert result.transaction.transaction_id == source.transaction_id
@@ -391,8 +391,15 @@ def test_photo_new_item_adjustment_plans_stock_and_transaction_without_shopping(
     assert result.transaction.quantity_delta == 1
     assert result.transaction.reason == TransactionReason.ADJUSTMENT
     assert result.transaction.created_at == RECORDED
-    # Rebuilding the same approved proposal is deterministic; no Shopping row,
-    # ChangeEvent, authorization, or persistence operation is produced here.
+    assert result.change_event.event_id == source.operation_id
+    assert result.change_event.operation_id == source.operation_id
+    assert result.change_event.approval_id == source.approval_id
+    assert result.change_event.transaction_id == source.transaction_id
+    assert result.change_event.shopping_item_id is None
+    assert result.change_event.item_id == result.inventory_create.record.item_id
+    assert result.change_event.occurred_at == result.change_event.recorded_at == RECORDED
+    # Rebuilding the same approved proposal is deterministic; this plan does
+    # not authorize or execute the persistence operation.
     assert (
         ShoppingPlanService().plan_adjustment(
             household_id=HOUSEHOLD,
@@ -426,7 +433,7 @@ def test_photo_new_item_adjustment_plans_stock_and_transaction_without_shopping(
         ),
     ],
 )
-def test_photo_new_item_adjustment_rejects_unresolved_or_invalid_values(changes, message):
+def test_standalone_stock_addition_rejects_unresolved_or_invalid_values(changes, message):
     with pytest.raises(ShoppingPreviewError, match=message):
         ShoppingPlanService().plan_adjustment(
             household_id=HOUSEHOLD,
@@ -435,7 +442,7 @@ def test_photo_new_item_adjustment_rejects_unresolved_or_invalid_values(changes,
         )
 
 
-def test_photo_new_item_adjustment_rejects_blank_household_and_naive_time():
+def test_standalone_stock_addition_rejects_blank_household_and_naive_time():
     service = ShoppingPlanService()
     source = adjustment()
     with pytest.raises(ShoppingPreviewError, match="Household"):

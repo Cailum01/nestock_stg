@@ -176,7 +176,11 @@ def test_the_refused_line_is_named_with_its_reason():
 
     assert response.message == "沒有出新卡：「衛生紙」買的數量比待購清單上多，現在還不能記錄。"
     assert response.results[0].data["lines"] == [
-        {"shopping_item_id": "tissue-1", "reason": "買的數量比待購清單上多，現在還不能記錄。"}
+        {
+            "operation_id": line.operation_id,  # Issue #124: every refused line has it
+            "shopping_item_id": "tissue-1",
+            "reason": "買的數量比待購清單上多，現在還不能記錄。",
+        }
     ]
 
 

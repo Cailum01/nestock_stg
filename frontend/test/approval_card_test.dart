@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nestock/features/agent/domain/agent_view_data.dart';
 import 'package:nestock/features/agent/domain/agent_client.dart';
 import 'package:nestock/features/agent/presentation/approval_card.dart';
+import 'package:nestock/features/agent/presentation/approval_card_config.dart';
 
 void main() {
   Future<void> pumpCard(
@@ -12,6 +13,7 @@ void main() {
     ValueChanged<String>? onEdit,
     ValueChanged<List<CardChange>>? onCardChanges,
     Future<void> Function(Uri url)? onOpenProductUrl,
+    ApprovalCardConfig config = const ApprovalCardConfig(),
   }) {
     return tester.pumpWidget(
       MaterialApp(
@@ -29,6 +31,7 @@ void main() {
             onSubmitChanges: onEdit,
             onSubmitCardChanges: onCardChanges,
             onOpenProductUrl: onOpenProductUrl,
+            config: config,
           ),
         ),
       ),
@@ -88,6 +91,7 @@ void main() {
     tester,
   ) async {
     List<CardChange>? changes;
+    bool? decision;
     await pumpCard(
       tester,
       const ApprovalView(
@@ -108,6 +112,11 @@ void main() {
         ],
       ),
       onCardChanges: (value) => changes = value,
+      onDecision: ({
+        required approved,
+        selectedOptionId,
+        approvedOperationIds,
+      }) => decision = approved,
     );
 
     expect(find.text('確認建立庫存品項'), findsOneWidget);
@@ -122,6 +131,14 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('confirmation-unit-0')), findsNothing);
     expect(find.byKey(const Key('confirmation-location-0')), findsNothing);
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('confirmation-confirm')))
+          .onPressed,
+      isNull,
+    );
+    await tester.tap(find.byKey(const Key('confirmation-cancel')));
+    expect(decision, isFalse);
     await tester.tap(find.byKey(const Key('confirmation-submit-changes')));
 
     expect(changes!.single.toJson(), {
@@ -364,6 +381,48 @@ void main() {
     },
   );
 
+  testWidgets('batch create item draft blocks confirmation', (tester) async {
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-create-batch-draft',
+        presentation: ApprovalPresentation.batchAction,
+        operations: [
+          OperationView(
+            id: 'operation-create-draft',
+            action: 'create_item',
+            description: '建立庫存品項：滑鼠',
+            values: {'name': '滑鼠', 'quantity': 1, 'unit': '個'},
+          ),
+        ],
+      ),
+      onCardChanges: (_) {},
+    );
+
+    await tester.tap(
+      find.byKey(const Key('create-item-edit-quantity-operation-create-draft')),
+    );
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('create-item-quantity-operation-create-draft')),
+      '2',
+    );
+    await tester.pump();
+
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<TextButton>(find.byKey(const Key('approval-cancel')))
+          .onPressed,
+      isNotNull,
+    );
+  });
+
   test('edit messages are stable and only include changed fields', () {
     const original = ConfirmationItemView(
       name: '衛生紙',
@@ -474,14 +533,20 @@ void main() {
         '3',
       );
       await tester.pump();
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+            .onPressed,
+        isNull,
+      );
+      await tester.tap(find.byKey(const Key('approval-cancel')));
+      expect(approvalWasAccepted, isFalse);
       await tester.tap(find.byKey(const Key('purchase-submit-card-changes')));
       expect(changes!.single.toJson(), {
         'operation_id': 'operation-purchase-1',
         'quantity': 3,
       });
 
-      await tester.tap(find.byKey(const Key('approval-confirm')));
-      expect(approvalWasAccepted, isTrue);
       expect(operationIds, isNull);
     },
   );
@@ -533,6 +598,9 @@ void main() {
     );
     expect(find.textContaining('2026-11-09T'), findsNothing);
     expect(find.byTooltip('修改購買日期'), findsNothing);
+    expect(find.text('補填購買日期'), findsNothing);
+    expect(find.text('修改購買日期'), findsNothing);
+    expect(find.text('改回今天'), findsNothing);
   });
 
   testWidgets('purchase card omits missing and invalid purchase dates', (
@@ -599,10 +667,13 @@ void main() {
           ],
         ),
         onCardChanges: (value) => changes = value,
+        config: const ApprovalCardConfig(datedPurchasesEnabled: true),
       );
 
       await tester.tap(find.byKey(const Key('purchase-edit-quantity')));
       await tester.pump();
+      expect(find.text('修改購買日期'), findsOneWidget);
+      expect(find.text('改回今天'), findsOneWidget);
       await tester.tap(
         find.byKey(const Key('purchase-reset-date-operation-reset-date')),
       );
@@ -693,6 +764,12 @@ void main() {
         find.byKey(const Key('purchase-submit-card-changes')),
         findsNothing,
         reason: '$invalidValue must not produce a replacement request',
+      );
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+            .onPressed,
+        isNull,
       );
     }
 
@@ -788,6 +865,12 @@ void main() {
     });
     expect(find.text('衛生紙 2 包'), findsOneWidget);
     expect(find.text('洗衣精 1 瓶'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+          .onPressed,
+      isNull,
+    );
 
     await tester.tap(
       find.descendant(
@@ -796,8 +879,15 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.tap(find.byKey(const Key('approval-confirm')));
-    expect(operationIds, ['operation-a']);
+    expect(operationIds, isNull);
+    expect(
+      tester
+          .widget<CheckboxListTile>(
+            find.byKey(const Key('purchase-operation-operation-b')),
+          )
+          .value,
+      isFalse,
+    );
 
     await tester.tap(
       find.descendant(

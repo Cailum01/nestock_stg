@@ -117,6 +117,61 @@ AgentReply _reply({
   ),
 );
 
+class _BatchReplacementClient implements AgentClient {
+  final List<List<String>?> approvedOperationIds = [];
+
+  @override
+  Future<AgentReply> send(String message, {String? replacesApprovalId}) async =>
+      _batchReply('approval-old', 'old');
+
+  @override
+  Future<AgentReply> submitCardChanges({
+    required String approvalId,
+    required List<CardChange> changes,
+  }) async => _batchReply('approval-new', 'new');
+
+  @override
+  Future<AgentReply> resume({
+    required String approvalId,
+    required bool approved,
+    String? selectedOptionId,
+    List<String>? approvedOperationIds,
+  }) async {
+    this.approvedOperationIds.add(approvedOperationIds);
+    return const AgentReply(message: '完成');
+  }
+}
+
+AgentReply _batchReply(String approvalId, String prefix) => AgentReply(
+  message: '請確認。',
+  approval: ApprovalView(
+    id: approvalId,
+    presentation: ApprovalPresentation.batchAction,
+    operations: [
+      OperationView(
+        id: '$prefix-a',
+        action: 'complete_purchase',
+        description: '衛生紙 +2 包',
+        values: const {
+          'name': '衛生紙',
+          'purchased_quantity': 2,
+          'purchased_unit': '包',
+        },
+      ),
+      OperationView(
+        id: '$prefix-b',
+        action: 'complete_purchase',
+        description: '洗衣精 +1 瓶',
+        values: const {
+          'name': '洗衣精',
+          'purchased_quantity': 1,
+          'purchased_unit': '瓶',
+        },
+      ),
+    ],
+  ),
+);
+
 Future<void> _openApproval(
   WidgetTester tester,
   _ApprovalEditClient client,
@@ -192,5 +247,56 @@ void main() {
     expect(find.text('舊卡：會新增一個庫存品項：衛生紙'), findsNothing);
     expect(find.text('新卡：會新增一個庫存品項：衛生紙'), findsOneWidget);
     expect(find.byKey(const Key('confirmation-card-shell')), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('confirmation-confirm')))
+          .onPressed,
+      isNotNull,
+    );
+  });
+
+  testWidgets('replacement batch restores selection before confirmation', (
+    tester,
+  ) async {
+    final client = _BatchReplacementClient();
+    await tester.pumpWidget(
+      NestockApp(agentClient: client, catalog: const DemoCatalog()),
+    );
+    final input = find.descendant(
+      of: find.byKey(const Key('composer')),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(input, '買回來了');
+    await tester.tap(find.byKey(const Key('paw-send')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('purchase-edit-quantity-old-b')));
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('purchase-quantity-field-old-b')),
+      '2',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('purchase-submit-card-changes')));
+    await tester.pumpAndSettle();
+
+    for (final id in ['new-a', 'new-b']) {
+      expect(
+        tester
+            .widget<CheckboxListTile>(find.byKey(Key('purchase-operation-$id')))
+            .value,
+        isTrue,
+      );
+    }
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('purchase-operation-new-b')),
+        matching: find.byType(Checkbox),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('approval-confirm')));
+
+    expect(client.approvedOperationIds, [
+      <String>['new-a'],
+    ]);
   });
 }

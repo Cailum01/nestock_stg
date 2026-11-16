@@ -3,6 +3,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../domain/agent_client.dart';
 import '../domain/agent_view_data.dart';
+import 'approval_card_config.dart';
 import 'confirmation_card.dart';
 import 'hand_drawn_card_shell.dart';
 
@@ -57,6 +58,7 @@ class ApprovalCard extends StatelessWidget {
     this.onSubmitChanges,
     this.onSubmitCardChanges,
     this.changeErrors = const {},
+    this.config = const ApprovalCardConfig(),
     this.onOpenProductUrl,
   });
 
@@ -68,6 +70,7 @@ class ApprovalCard extends StatelessWidget {
 
   /// Backend per-operation card-change refusals, if it supplied any.
   final Map<String, String> changeErrors;
+  final ApprovalCardConfig config;
   final Future<void> Function(Uri url)? onOpenProductUrl;
 
   @override
@@ -104,6 +107,7 @@ class ApprovalCard extends StatelessWidget {
         onDecision: onDecision,
         onSubmitCardChanges: onSubmitCardChanges,
         changeErrors: changeErrors,
+        datedPurchasesEnabled: config.datedPurchasesEnabled,
       ),
     ApprovalPresentation.batchAction
         when approval.operations.every(
@@ -116,6 +120,8 @@ class ApprovalCard extends StatelessWidget {
         onSubmitCardChanges: onSubmitCardChanges,
         changeErrors: changeErrors,
       ),
+    // TODO(#162): A batch mixing complete_purchase and create_item remains a
+    // generic card. Route it deliberately before enabling dated purchases.
     ApprovalPresentation.batchAction => _GenericBatchApprovalCard(
       approval: approval,
       busy: busy,
@@ -227,6 +233,7 @@ class _PurchaseApprovalCard extends StatefulWidget {
     required this.onDecision,
     required this.onSubmitCardChanges,
     required this.changeErrors,
+    required this.datedPurchasesEnabled,
   });
 
   final ApprovalView approval;
@@ -234,6 +241,7 @@ class _PurchaseApprovalCard extends StatefulWidget {
   final ApprovalDecisionCallback onDecision;
   final ValueChanged<List<CardChange>>? onSubmitCardChanges;
   final Map<String, String> changeErrors;
+  final bool datedPurchasesEnabled;
 
   @override
   State<_PurchaseApprovalCard> createState() => _PurchaseApprovalCardState();
@@ -325,6 +333,8 @@ class _PurchaseApprovalCardState extends State<_PurchaseApprovalCard> {
     return quantity == null || quantity < 1;
   });
 
+  bool get _hasUnsentDraft => _changes.isNotEmpty || _hasInvalidEditedQuantity;
+
   Future<void> _pickPurchaseDay(_PurchaseValues item) async {
     final initialText = _effectivePurchasedOn(item);
     final initialDate = initialText != null && _isValidPurchaseDay(initialText)
@@ -359,27 +369,29 @@ class _PurchaseApprovalCardState extends State<_PurchaseApprovalCard> {
           decoration: const InputDecoration(labelText: '購入數量'),
           onChanged: (_) => setState(() {}),
         ),
-        const SizedBox(height: 4),
-        Wrap(
-          spacing: 8,
-          children: [
-            TextButton(
-              key: Key('purchase-edit-date-${item.operation.id}'),
-              onPressed: widget.busy ? null : () => _pickPurchaseDay(item),
-              child: Text(date == null ? '補填購買日期' : '修改購買日期'),
-            ),
-            if (date != null)
+        if (widget.datedPurchasesEnabled) ...[
+          const SizedBox(height: 4),
+          Wrap(
+            spacing: 8,
+            children: [
               TextButton(
-                key: Key('purchase-reset-date-${item.operation.id}'),
-                onPressed: widget.busy
-                    ? null
-                    : () => setState(
-                        () => _purchasedOnDrafts[item.operation.id] = null,
-                      ),
-                child: const Text('改回今天'),
+                key: Key('purchase-edit-date-${item.operation.id}'),
+                onPressed: widget.busy ? null : () => _pickPurchaseDay(item),
+                child: Text(date == null ? '補填購買日期' : '修改購買日期'),
               ),
-          ],
-        ),
+              if (date != null)
+                TextButton(
+                  key: Key('purchase-reset-date-${item.operation.id}'),
+                  onPressed: widget.busy
+                      ? null
+                      : () => setState(
+                          () => _purchasedOnDrafts[item.operation.id] = null,
+                        ),
+                  child: const Text('改回今天'),
+                ),
+            ],
+          ),
+        ],
       ],
     );
   }
@@ -489,7 +501,9 @@ class _PurchaseApprovalCardState extends State<_PurchaseApprovalCard> {
               FilledButton(
                 key: const Key('approval-confirm'),
                 onPressed:
-                    widget.busy || (_isBatch && _selectedOperationIds.isEmpty)
+                    widget.busy ||
+                        _hasUnsentDraft ||
+                        (_isBatch && _selectedOperationIds.isEmpty)
                     ? null
                     : () => widget.onDecision(
                         approved: true,
@@ -904,6 +918,13 @@ class _CreateItemBatchApprovalCardState
     return changes;
   }
 
+  bool get _hasInvalidEditedQuantity => _editingOperationIds.any((id) {
+    final quantity = int.tryParse(_quantityControllers[id]!.text.trim());
+    return quantity == null || quantity < 1;
+  });
+
+  bool get _hasUnsentDraft => _changes.isNotEmpty || _hasInvalidEditedQuantity;
+
   @override
   Widget build(BuildContext context) => HandDrawnCardShell(
     key: const Key('create-item-batch-approval-card'),
@@ -981,7 +1002,10 @@ class _CreateItemBatchApprovalCardState
             ),
             FilledButton(
               key: const Key('approval-confirm'),
-              onPressed: widget.busy || _selectedOperationIds.isEmpty
+              onPressed:
+                  widget.busy ||
+                      _hasUnsentDraft ||
+                      _selectedOperationIds.isEmpty
                   ? null
                   : () => widget.onDecision(
                       approved: true,

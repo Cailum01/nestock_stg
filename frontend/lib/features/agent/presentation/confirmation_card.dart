@@ -259,6 +259,10 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
   bool get _hasInvalidQuantity =>
       _quantities.any((controller) => !_isValidQuantity(controller.text));
 
+  /// Draft state is intentionally separate from its serialized value: an
+  /// invalid active quantity can otherwise normalize back to the stored value.
+  bool get _hasUnsentDraft => _hasChanges || _hasInvalidQuantity;
+
   String? _normalizedLocation(String value) {
     final location = value.trim();
     return location.isEmpty ? null : location;
@@ -333,7 +337,7 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
             ],
             FilledButton(
               key: const Key('confirmation-confirm'),
-              onPressed: widget.onConfirm,
+              onPressed: _hasUnsentDraft ? null : widget.onConfirm,
               child: const Text('確認'),
             ),
           ],

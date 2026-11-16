@@ -89,7 +89,7 @@ Future<void> _pumpConfirmationFixture(
     matching: find.byType(TextField),
   );
   await tester.enterText(composer, '確認項目');
-  await tester.tap(find.text('送出'));
+  await tester.tap(find.byKey(const Key('paw-send')));
   await tester.pumpAndSettle();
 }
 
@@ -205,6 +205,7 @@ void main() {
     await tester.pumpWidget(
       _card(items: _longItems, textScaler: TextScaler.linear(1.3)),
     );
+    await tester.ensureVisible(find.byKey(const Key('confirmation-edit-0')));
     await tester.tap(find.byKey(const Key('confirmation-edit-0')));
     await tester.pump();
 
@@ -299,6 +300,7 @@ void main() {
           onSubmitChanges: (drafts) => submittedDrafts = drafts,
         ),
       );
+      await tester.ensureVisible(find.byKey(const Key('confirmation-edit-0')));
       await tester.tap(find.byKey(const Key('confirmation-edit-0')));
       await tester.pump();
       final quantity = find.byKey(const Key('confirmation-quantity-0'));
@@ -497,7 +499,7 @@ void main() {
     );
 
     await tester.enterText(input, '家裡還有牛奶嗎？');
-    await tester.tap(find.text('送出'));
+    await tester.tap(find.byKey(const Key('paw-send')));
     await tester.pumpAndSettle();
     expect(find.text('確認加入庫存'), findsNothing);
 
@@ -512,7 +514,7 @@ void main() {
       matching: find.byType(TextField),
     );
     await tester.enterText(fixtureInput, '確認項目');
-    await tester.tap(find.text('送出'));
+    await tester.tap(find.byKey(const Key('paw-send')));
     await tester.pumpAndSettle();
     expect(find.text('確認加入庫存'), findsOneWidget);
     expect(find.text('高纖無糖豆漿'), findsOneWidget);
@@ -533,7 +535,7 @@ void main() {
       matching: find.byType(TextField),
     );
     await tester.enterText(input, '確認項目');
-    await tester.tap(find.text('送出'));
+    await tester.tap(find.byKey(const Key('paw-send')));
     await tester.pumpAndSettle();
 
     expect(find.text('確認加入庫存'), findsOneWidget);
@@ -563,6 +565,7 @@ void main() {
       tester,
       _QueuedSpeechClient(['新名稱', '3', '幫我查一下衛生紙', '客廳櫃']),
     );
+    await tester.ensureVisible(find.byKey(const Key('confirmation-edit-0')));
     await tester.tap(find.byKey(const Key('confirmation-edit-0')));
     await tester.pump();
 
@@ -611,6 +614,7 @@ void main() {
     'unfocused Confirmation editing never reuses a stale speech target',
     (tester) async {
       await _pumpConfirmationFixture(tester, _QueuedSpeechClient(['回到 Noki']));
+      await tester.ensureVisible(find.byKey(const Key('confirmation-edit-0')));
       await tester.tap(find.byKey(const Key('confirmation-edit-0')));
       await tester.pump();
       await _focusField(tester, find.byKey(const Key('confirmation-name-0')));
@@ -640,6 +644,7 @@ void main() {
     'closing the Work Surface preserves the card without routing speech to it',
     (tester) async {
       await _pumpConfirmationFixture(tester, _QueuedSpeechClient(['回到 Noki']));
+      await tester.ensureVisible(find.byKey(const Key('confirmation-edit-0')));
       await tester.tap(find.byKey(const Key('confirmation-edit-0')));
       await tester.pump();
       final name = find.byKey(const Key('confirmation-name-0'));
@@ -659,7 +664,7 @@ void main() {
       );
       expect(composer.controller!.text, '回到 Noki');
 
-      await tester.tap(find.text('顯示互動'));
+      await tester.tap(find.byKey(const Key('paw-expand-interaction')));
       await tester.pumpAndSettle();
       expect(find.text('確認加入庫存'), findsOneWidget);
       expect(tester.widget<TextField>(name).controller!.text, '高纖無糖豆漿');

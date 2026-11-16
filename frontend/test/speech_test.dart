@@ -56,7 +56,11 @@ void main() {
         ),
       );
       final microphone = find.byTooltip('語音輸入');
-      final tooltip = tester.widget<Tooltip>(find.byType(Tooltip));
+      final tooltip = tester.widget<Tooltip>(
+        find.byWidgetPredicate(
+          (widget) => widget is Tooltip && widget.message == '語音輸入',
+        ),
+      );
       expect(tooltip.triggerMode, TooltipTriggerMode.manual);
 
       final gesture = await tester.startGesture(tester.getCenter(microphone));
@@ -109,7 +113,12 @@ void main() {
     expect(find.text('錄音檔過大，請重試。'), findsOneWidget);
     expect(
       tester
-          .widget<FilledButton>(find.widgetWithText(FilledButton, '送出'))
+          .widget<FilledButton>(
+            find.descendant(
+              of: find.byKey(const Key('paw-send')),
+              matching: find.byType(FilledButton),
+            ),
+          )
           .onPressed,
       isNotNull,
     );

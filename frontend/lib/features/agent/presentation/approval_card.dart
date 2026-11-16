@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../domain/agent_view_data.dart';
 import 'confirmation_card.dart';
@@ -8,6 +9,10 @@ typedef ApprovalDecisionCallback = void Function({
   String? selectedOptionId,
   List<String>? approvedOperationIds,
 });
+
+Future<void> _openExternalProductUrl(Uri url) async {
+  await launchUrl(url, mode: LaunchMode.externalApplication);
+}
 
 /// Builds the deterministic text used only when a user submits an edited card.
 /// The Agent, not Flutter, reinterprets the text and issues any replacement card.
@@ -21,7 +26,7 @@ String? buildApprovalEditMessage({
     changes.add('數量改成 ${_quantityText(edited.quantity)}');
   }
   if (original.unit != edited.unit) changes.add('單位改成 ${edited.unit}');
-  if (original.location != edited.location) {
+  if (original.location != edited.location && edited.location != null) {
     changes.add('位置改成 ${edited.location}');
   }
   if (changes.isEmpty) return null;
@@ -48,12 +53,14 @@ class ApprovalCard extends StatelessWidget {
     required this.busy,
     required this.onDecision,
     this.onSubmitChanges,
+    this.onOpenProductUrl,
   });
 
   final ApprovalView approval;
   final bool busy;
   final ApprovalDecisionCallback onDecision;
   final ValueChanged<String>? onSubmitChanges;
+  final Future<void> Function(Uri url)? onOpenProductUrl;
 
   @override
   Widget build(BuildContext context) => switch (approval.presentation) {
@@ -77,6 +84,7 @@ class ApprovalCard extends StatelessWidget {
       approval: approval,
       busy: busy,
       onDecision: onDecision,
+      onOpenProductUrl: onOpenProductUrl ?? _openExternalProductUrl,
     ),
     ApprovalPresentation.singleAction || ApprovalPresentation.batchAction
         when approval.operations.every(
@@ -384,11 +392,13 @@ class _PurchaseOptionsApprovalCard extends StatefulWidget {
     required this.approval,
     required this.busy,
     required this.onDecision,
+    required this.onOpenProductUrl,
   });
 
   final ApprovalView approval;
   final bool busy;
   final ApprovalDecisionCallback onDecision;
+  final Future<void> Function(Uri url) onOpenProductUrl;
 
   @override
   State<_PurchaseOptionsApprovalCard> createState() =>
@@ -422,7 +432,10 @@ class _PurchaseOptionsApprovalCardState
                     contentPadding: EdgeInsets.zero,
                     value: option.id,
                     enabled: !widget.busy,
-                    title: _PurchaseOptionDetails(option: option),
+                    title: _PurchaseOptionDetails(
+                      option: option,
+                      onOpenProductUrl: widget.onOpenProductUrl,
+                    ),
                   ),
               ],
             ),
@@ -456,9 +469,33 @@ class _PurchaseOptionsApprovalCardState
 }
 
 class _PurchaseOptionDetails extends StatelessWidget {
-  const _PurchaseOptionDetails({required this.option});
+  const _PurchaseOptionDetails({
+    required this.option,
+    required this.onOpenProductUrl,
+  });
 
   final ApprovalOptionView option;
+  final Future<void> Function(Uri url) onOpenProductUrl;
+
+  Uri? get _productUrl {
+    final rawUrl = option.values['product_url'];
+    if (rawUrl is! String || rawUrl.trim().isEmpty) return null;
+    final url = Uri.tryParse(rawUrl.trim());
+    if (url == null ||
+        url.host.isEmpty ||
+        (url.scheme != 'http' && url.scheme != 'https')) {
+      return null;
+    }
+    return url;
+  }
+
+  Future<void> _openProductUrl(Uri url) async {
+    try {
+      await onOpenProductUrl(url);
+    } catch (_) {
+      // Launch failures must not affect selection or approval state.
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -466,17 +503,25 @@ class _PurchaseOptionDetails extends StatelessWidget {
       (entry) =>
           entry.key != 'option_id' &&
           entry.key != 'label' &&
+          entry.key != 'product_url' &&
           !entry.key.endsWith('_id') &&
           (entry.value is String || entry.value is num),
     );
     final details = entries
         .map((entry) => '${_optionFieldLabel(entry.key)}：${entry.value}')
         .toList(growable: false);
+    final productUrl = _productUrl;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (option.label != null) Text(option.label!),
         if (details.isNotEmpty) Text(details.join('　')),
+        if (productUrl != null)
+          TextButton(
+            key: Key('purchase-option-link-${option.id}'),
+            onPressed: () => _openProductUrl(productUrl),
+            child: const Text('前往購買'),
+          ),
       ],
     );
   }
@@ -533,20 +578,22 @@ ConfirmationItemView? _confirmationItem(OperationView operation) {
   final quantity = values['quantity'];
   final unit = values['unit'];
   final location = values['location'];
+  final normalizedLocation = location is String && location.trim().isNotEmpty
+      ? location.trim()
+      : null;
   if (name is! String ||
       name.trim().isEmpty ||
       quantity is! num ||
       unit is! String ||
       unit.trim().isEmpty ||
-      location is! String ||
-      location.trim().isEmpty) {
+      (normalizedLocation == null && operation.action != 'create_item')) {
     return null;
   }
   return ConfirmationItemView(
     name: name.trim(),
     quantity: quantity,
     unit: unit.trim(),
-    location: location.trim(),
+    location: normalizedLocation,
   );
 }
 

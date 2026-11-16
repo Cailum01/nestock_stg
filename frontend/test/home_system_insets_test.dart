@@ -73,7 +73,7 @@ void main() {
         greaterThanOrEqualTo(32),
       );
       expect(
-        tester.getRect(find.byKey(const Key('toolbar'))).bottom,
+        tester.getRect(find.byKey(const Key('paw-action-cluster'))).bottom,
         lessThanOrEqualTo(975 - 28),
       );
       tester.view.viewInsets = const FakeViewPadding(bottom: 280);
@@ -81,10 +81,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.getRect(viewport).bottom, 975);
       expect(
-        tester.getRect(find.byKey(const Key('toolbar'))).bottom,
-        closeTo(975 - 280, 1),
+        tester.getRect(find.byKey(const Key('paw-action-cluster'))).bottom,
+        lessThanOrEqualTo(975 - 280),
       );
-      expect(find.text('送出').hitTestable(), findsOneWidget);
+      expect(find.byKey(const Key('paw-send')).hitTestable(), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

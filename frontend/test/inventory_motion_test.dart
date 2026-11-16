@@ -66,7 +66,7 @@ void main() {
           catalog: const DemoCatalog(),
         ),
       );
-      await tester.tap(find.text('庫存'));
+      await tester.tap(find.byKey(const Key('cabinet')));
       await tester.pump(const Duration(milliseconds: 60));
       final clip = tester.getRect(find.byKey(const Key('inventory-room-clip')));
       final room = tester.getRect(find.byKey(const Key('room')));
@@ -75,10 +75,11 @@ void main() {
       await tester.tapAt(Offset(room.right - 2, room.bottom - 2));
       await tester.pumpAndSettle();
       expect(find.text('我的庫存'), findsNothing);
-      await tester.tap(find.text('庫存'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('cabinet')));
       await tester.pumpAndSettle();
       expect(find.text('我的庫存'), findsOneWidget);
-      await tester.tap(find.text('庫存'));
+      await tester.tap(find.byTooltip('關閉庫存'));
       await tester.pump(const Duration(milliseconds: 60));
       expect(
         tester.getRect(find.byKey(const Key('inventory-room-clip'))),
@@ -86,7 +87,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('我的庫存'), findsNothing);
-      await tester.tap(find.text('庫存'));
+      await tester.tap(find.byKey(const Key('cabinet')));
       await tester.pumpAndSettle();
       await tester.tap(
         find.descendant(
@@ -104,9 +105,9 @@ void main() {
         '測試',
       );
       expect(find.text('測試'), findsOneWidget);
-      await tester.tap(find.text('庫存'));
+      await tester.tap(find.byKey(const Key('cabinet')));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('拍照'));
+      await tester.tap(find.byKey(const Key('paw-camera')));
       await tester.pumpAndSettle();
       expect(find.text('我的庫存'), findsNothing);
       expect(testCamera.calls, 1);

@@ -26,7 +26,7 @@ void main() {
         ),
       );
       await tester.enterText(find.byType(TextField), '示範');
-      await tester.tap(find.text('送出'));
+      await tester.tap(find.byKey(const Key('paw-send')));
       await tester.pumpAndSettle();
       expect(find.text(entry.value), findsOneWidget);
       if ([
@@ -55,7 +55,7 @@ void main() {
         cameraCapture: camera,
       ),
     );
-    await tester.tap(find.text('拍照'));
+    await tester.tap(find.byKey(const Key('paw-camera')));
     await tester.pumpAndSettle();
     expect(find.text('無法開啟相機，請稍後再試。'), findsOneWidget);
   });

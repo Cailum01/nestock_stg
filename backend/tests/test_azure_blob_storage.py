@@ -1154,9 +1154,7 @@ async def test_azure_blob_upload_fails_fast_on_hierarchical_namespace(
 
 
 @pytest.mark.anyio
-async def test_azure_blob_unretain_preserves_content_settings(
-    blob_storage, fake_blob_service
-):
+async def test_azure_blob_unretain_preserves_content_settings(blob_storage, fake_blob_service):
     """驗證 PR #155 關鍵要求：
 
     1. 上傳 image/jpeg 媒體至 Azure Blob。

@@ -35,7 +35,7 @@ void main() {
       );
       for (final message in ['第一則', '第二則', '第三則', '第四則']) {
         await tester.enterText(input, message);
-        await tester.tap(find.text('送出'));
+        await tester.tap(find.byKey(const Key('paw-send')));
         await tester.pumpAndSettle();
       }
       expect(find.text('第四則'), findsOneWidget);

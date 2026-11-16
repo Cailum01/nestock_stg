@@ -73,27 +73,27 @@ void main() {
         matching: find.byType(TextField),
       );
       await tester.enterText(input, '照片備註');
-      await tester.tap(find.text('拍照'));
+      await tester.tap(find.byKey(const Key('paw-camera')));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('送出'));
+      await tester.tap(find.byKey(const Key('paw-send')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('message-photo')), findsOneWidget);
       expect(find.text('照片辨識結果'), findsOneWidget);
-      expect(find.text('僅辨識，尚未加入庫存'), findsOneWidget);
+      expect(find.text('尚未加入庫存'), findsOneWidget);
       expect(cart, findsNothing);
       expect(cabinet, findsNothing);
-      expect(
-        tester.getRect(find.byKey(const Key('agent'))).bottom,
-        lessThanOrEqualTo(
-          tester.getRect(find.byKey(const Key('work-surface'))).top + .01,
-        ),
+      final agentRect = tester.getRect(find.byKey(const Key('agent')));
+      final workSurfaceRect = tester.getRect(
+        find.byKey(const Key('work-surface')),
       );
-      expect(find.text('送出').hitTestable(), findsOneWidget);
-      expect(find.text('購物清單').hitTestable(), findsOneWidget);
-      expect(find.text('庫存').hitTestable(), findsOneWidget);
+      // The approved lower-room Noki position stays visible above the main
+      // work content across responsive scene scales.
+      expect(agentRect.center.dy, lessThan(workSurfaceRect.top));
+      expect(agentRect.bottom, lessThanOrEqualTo(workSurfaceRect.bottom));
+      expect(find.byKey(const Key('paw-send')).hitTestable(), findsOneWidget);
       for (var i = 0; i < 3; i++) {
         await tester.enterText(input, '後續訊息 $i');
-        await tester.tap(find.text('送出'));
+        await tester.tap(find.byKey(const Key('paw-send')));
         await tester.pumpAndSettle();
       }
       final scroll = tester.state<ScrollableState>(
@@ -108,7 +108,7 @@ void main() {
       expect(tester.takeException(), isNull);
       tester.view.viewInsets = const FakeViewPadding(bottom: 250);
       await tester.pumpAndSettle();
-      expect(find.text('送出').hitTestable(), findsOneWidget);
+      expect(find.byKey(const Key('paw-send')).hitTestable(), findsOneWidget);
       expect(tester.takeException(), isNull);
       tester.view.resetViewInsets();
       await tester.pumpAndSettle();

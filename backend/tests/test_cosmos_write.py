@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 
 import pytest
 
@@ -1037,8 +1038,6 @@ def test_replace_requires_etag_but_fingerprints_only_canonical_document_values()
 
 
 def _change_event(operation_id="op-1"):
-    from datetime import UTC, datetime
-
     return ChangeEvent(
         event_id=operation_id,
         household_id="home",
@@ -1077,6 +1076,24 @@ def test_change_event_is_created_in_the_operation_batch_and_retry_is_idempotent(
 
     assert run() == WriteStatus.ALREADY_APPLIED
     assert len([key for key in client.documents if key[1] == "change_event:op-1"]) == 1
+
+
+def test_change_event_without_shopping_item_roundtrips_through_cosmos_mapping():
+    event = ChangeEvent(
+        event_id="photo-operation",
+        household_id="home",
+        operation_id="photo-operation",
+        approval_id="approval-photo",
+        transaction_id="txn-photo",
+        item_id="new-item",
+        occurred_at=datetime(2026, 11, 16, 4, 0, tzinfo=UTC),
+        recorded_at=datetime(2026, 11, 16, 4, 0, tzinfo=UTC),
+    )
+
+    document = CosmosDocumentMapper.to_document(event)
+
+    assert document["shopping_item_id"] is None
+    assert CosmosDocumentMapper.from_document(ChangeEvent, document, household_id="home") == event
 
 
 def test_change_event_create_requires_event_id_to_equal_operation_id():

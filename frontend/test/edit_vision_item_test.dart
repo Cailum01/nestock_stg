@@ -23,7 +23,7 @@ void main() {
         ),
       );
       await tester.enterText(find.byType(TextField), '查看照片');
-      await tester.tap(find.text('送出'));
+      await tester.tap(find.byKey(const Key('paw-send')));
       await tester.pumpAndSettle();
       final q = find.byKey(const Key('quantity-0'));
       final loc = find.byKey(const Key('location-0'));

@@ -11,7 +11,7 @@ class VisionResultItems extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('僅辨識，尚未加入庫存', style: Theme.of(context).textTheme.labelMedium),
+        Text('尚未加入庫存', style: Theme.of(context).textTheme.labelMedium),
         if (items is List)
           for (final item in items)
             if (item is Map) _VisionItem(item: item),

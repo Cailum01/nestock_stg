@@ -38,7 +38,16 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
-from app.agent.cards import ONE_CARD_PER_MESSAGE, PURCHASE_TOOL_SCHEMA, PurchaseCards
+from app.agent.cards import (
+    ONE_CARD_PER_MESSAGE,
+    OPEN_CARD_FIRST,
+    OPEN_CARDS_UNKNOWN,
+    PHOTO_CARD_MADE,
+    PURCHASE_TOOL_SCHEMA,
+    PhotoCards,
+    PhotoItem,
+    PurchaseCards,
+)
 from app.core.dependencies import (
     get_approval_service,
     get_cosmos_read_repository,
@@ -51,7 +60,7 @@ from app.models.agent import AgentRequest, AgentResponse, AgentResult, ResultKin
 from app.models.commerce import PurchaseOption
 from app.models.domain import InventoryItem
 from app.models.vision import SceneType, VisionAnalysisResult
-from app.services.approvals import ApprovalRecord, CardNotChangeable
+from app.services.approvals import ApprovalRecord, ApprovalService, CardNotChangeable
 from app.services.commerce.biggo import BigGoCommerceProvider
 from app.services.item_matching import ItemMatch, ItemMatcher, MatchMethod, match_term
 from app.services.provisional_storage.interfaces import MediaStorageService
@@ -78,6 +87,16 @@ CHANGING_CARD = (
     "原卡上沒改到的品項和值照舊放進新卡。不要再問卡上已經有的資訊。原本的卡：{card}"
 )
 """Given to the model with a 送出修改 message (contract section 7, Issue #91)."""
+OPEN_CARD = (
+    "使用者還有沒確認的確認卡，這次的回覆會再把最新的一張顯示出來：{card}。"
+    "先回答使用者這則訊息，再用一句話提醒這張卡還沒確認，可以確認或取消。{more}"
+    "這則訊息不要再出新卡：使用者說又買了東西，請他先確認或取消這張卡；"
+    "使用者要改這張卡上的值，請他在卡上改好，再按「送出修改」。"
+)
+"""Given to the model when an open card is shown again (contract section 8, Issue #91)."""
+OPEN_CARD_MORE = (
+    "總共還有 {count} 張沒處理，這張處理完，下一則訊息會再顯示下一張；提醒時請說還有幾張。"
+)
 CARD_CHANGE_REFUSED = {
     "not_found": "找不到這張確認卡，請再說一次要記錄的內容。",
     "expired": "這張確認卡已經過期，請再說一次要記錄的內容。",
@@ -238,6 +257,10 @@ class _State(TypedDict, total=False):
     pending_approval: dict[str, Any]
     replaces_approval_id: str
     """The card a 送出修改 replaces (section 7); the new card records it."""
+    open_card_shown: bool
+    """An open card is shown again with this reply (section 8); no new card is made."""
+    open_cards_unknown: bool
+    """The open cards could not be listed (section 8); no new card is made."""
 
 
 def load_system_prompt() -> str:
@@ -357,6 +380,27 @@ def _vision_view(
     return model_view, data
 
 
+def _new_photo_items(result: VisionAnalysisResult, matches: list[ItemMatch]) -> list[PhotoItem]:
+    """Photo items for a new-item card (Issue #124).
+
+    Only items with no household item of the same name or alias, seen with confidence
+    (not `low_confidence`) and with a confirmed unit. Others are only reported.
+    """
+    items = []
+    for detected, match in zip(result.detected_items, matches, strict=True):
+        unit = (detected.unit or "").strip()
+        if (
+            match.method is MatchMethod.NONE
+            and detected.confidence >= LOW_CONFIDENCE
+            and detected.unit_confirmed
+            and unit
+        ):
+            items.append(
+                PhotoItem(name=detected.canonical_name, quantity=detected.quantity, unit=unit)
+            )
+    return items
+
+
 def _by_price(options: list[PurchaseOption]) -> list[PurchaseOption]:
     """Cheapest first; options without a price go last in their original order."""
     priced = sorted((o for o in options if o.estimated_price is not None), key=_price)
@@ -427,6 +471,7 @@ class ReadAgent:
         matcher: ItemMatcher | None = None,
         commerce: PurchaseOptionSearch | None = None,
         purchases: PurchaseCards | None = None,
+        photo_cards: PhotoCards | None = None,
     ) -> None:
         self._model = model.bind_tools(
             [*TOOL_SCHEMAS, PURCHASE_TOOL_SCHEMA] if purchases is not None else TOOL_SCHEMAS
@@ -443,6 +488,8 @@ class ReadAgent:
         self._media = media
         self._commerce = commerce
         self._purchases = purchases
+        # Issue #124: new-item cards from photos; off in the app until they can be written.
+        self._photo_cards = photo_cards
         self._matcher = matcher or ItemMatcher(tools.inventory, tools.shopping)
         self._graph = self._build_graph()
 
@@ -465,9 +512,20 @@ class ReadAgent:
                         earlier = update.get("forecasts", state.get("forecasts", []))
                         update["forecasts"] = [*earlier, card]
                 elif call["name"] == "analyze_photo":
-                    content, vision = await self._analyze(state, call.get("args") or {})
+                    # Section 8: no photo card with an open card shown again, nor when
+                    # the open cards could not be listed (unknown is not "none").
+                    carded = (
+                        "pending_approval" in update
+                        or "pending_approval" in state
+                        or bool(state.get("open_cards_unknown"))
+                    )
+                    content, vision, card = await self._analyze(
+                        state, call.get("args") or {}, may_make_card=not carded
+                    )
                     if vision is not None:
                         update["vision"] = vision
+                    if card is not None:
+                        update["pending_approval"] = card
                 elif call["name"] == "search_purchase_options":
                     content, found = await self._search_prices(call.get("args") or {})
                     if found is not None:
@@ -599,12 +657,16 @@ class ReadAgent:
         return json.dumps(row, ensure_ascii=False), card
 
     async def _analyze(
-        self, state: _State, args: dict[str, Any]
-    ) -> tuple[str, dict[str, Any] | None]:
-        """Run A2's recognition on the request's own (already verified) photo."""
+        self, state: _State, args: dict[str, Any], *, may_make_card: bool = True
+    ) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None]:
+        """Run A2's recognition on the request's own (already verified) photo.
+
+        (result for the model, data for the App, new-item card or None). With photo
+        cards on, items the household has no item for get one new-item card (Issue #124).
+        """
         image_ref = state.get("image_ref")
         if not image_ref or self._vision is None:
-            return NO_PHOTO, None
+            return NO_PHOTO, None, None
         household_id = state["household_id"]
         try:
             result = await self._vision.analyze_image(
@@ -612,14 +674,22 @@ class ReadAgent:
             )
         except Exception:  # A2's recognition failed; nothing was read or written
             logger.warning("Photo analysis failed for image_ref=%s", image_ref, exc_info=True)
-            return PHOTO_FAILED, None
+            return PHOTO_FAILED, None, None
         household_items = await self._matcher.household_items(household_id)
         matches = [
             match_term(detected.canonical_name, household_items)
             for detected in result.detected_items
         ]
         model_view, data = _vision_view(result, matches, household_items)
-        return json.dumps(model_view, ensure_ascii=False), data
+        card = None
+        if self._photo_cards is not None and may_make_card:
+            card = await self._photo_cards.propose(household_id, _new_photo_items(result, matches))
+            if card is not None:
+                model_view["new_item_card"] = {
+                    "lines": [operation["description"] for operation in card["operations"]],
+                    "note": PHOTO_CARD_MADE,
+                }
+        return json.dumps(model_view, ensure_ascii=False), data, card
 
     async def _search_prices(self, args: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
         """Run A2's price search. Read only: no price or option is stored."""
@@ -644,6 +714,10 @@ class ReadAgent:
         """Make the purchase card. One card per message; it writes nothing else."""
         if self._purchases is None:
             return f"沒有這個工具：{call['name']}", None
+        if state.get("open_cards_unknown"):
+            return OPEN_CARDS_UNKNOWN, None
+        if state.get("open_card_shown"):
+            return OPEN_CARD_FIRST, None
         if "pending_approval" in update or "pending_approval" in state:
             return ONE_CARD_PER_MESSAGE, None
         return await self._purchases.propose(
@@ -675,6 +749,19 @@ class ReadAgent:
                 return AgentResponse(message=CARD_CHANGE_REFUSED[refused.reason])
             start["replaces_approval_id"] = replacing.approval_id
             messages.append(SystemMessage(CHANGING_CARD.format(card=_card_view(replacing))))
+        elif self._purchases is not None:
+            # Section 8: a card cleared from the screen is still open; show the newest
+            # one again (same approval_id) instead of a reminder the user cannot press.
+            open_cards = await self._purchases.open_cards(request.household_id)
+            if open_cards is None:
+                start["open_cards_unknown"] = True  # unknown is not "none": no new card
+            elif open_cards:
+                shown = open_cards[0]
+                card = ApprovalService.to_pending_approval(shown).model_dump(mode="json")
+                start["pending_approval"] = card
+                start["open_card_shown"] = True
+                more = OPEN_CARD_MORE.format(count=len(open_cards)) if len(open_cards) > 1 else ""
+                messages.append(SystemMessage(OPEN_CARD.format(card=_card_view(shown), more=more)))
         messages.append(HumanMessage(request.message))
         start["messages"] = messages
         try:
@@ -759,6 +846,9 @@ def get_read_agent() -> ReadAgent | None:
         # Built after load_azure_settings() read backend/.env, so BigGo keys there apply.
         commerce=BigGoCommerceProvider(),
         purchases=_purchase_cards(),
+        # Issue #124: photo new-item cards stay off until confirming one can be written
+        # (B1's write for a new item without a Shopping List entry, and A1's handoff).
+        photo_cards=None,
     )
 
 

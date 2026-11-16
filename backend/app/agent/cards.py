@@ -113,6 +113,14 @@ NEEDS_UNIT = "待購清單上沒寫單位，請使用者說買了幾個什麼（
 NEEDS_LOCATION = "這是家裡還沒有的東西，要說放在哪裡，才能新增到庫存。"
 ONE_CARD_PER_MESSAGE = json.dumps({"error": "card_already_made"})
 """A second `complete_purchase` in the same message: the first card stands."""
+OPEN_CARD_FIRST = json.dumps({"error": "open_card_not_answered"})
+"""`complete_purchase` while an earlier open card is shown again (section 8): no new card."""
+OPEN_CARDS_UNKNOWN = json.dumps({"error": "open_cards_unknown"})
+"""`complete_purchase` when the open cards could not be listed (section 8): no new card.
+
+Unknown is not "none": a card could still be open, and a new one would be a second
+card for the same purchase (PR #160 C2 review). The user says it again later.
+"""
 CARD_FAILED = json.dumps({"error": "card_not_made"})
 TOO_MANY_ITEMS = json.dumps({"error": "too_many_items"})
 RECORDS_CHANGED = json.dumps({"error": "records_changed"})
@@ -203,6 +211,85 @@ def new_item_operation(
     )
 
 
+PHOTO_CARD_MADE = (
+    "已出一張新增庫存品項的確認卡（家裡沒有同名或同別名的品項）。請使用者確認或取消；"
+    "如果你判斷其中有家裡已經有的東西（只是名字不同），請提醒使用者可以按取消。"
+)
+"""Told to the model with the photo result when a new-item card was made (Issue #124)."""
+
+
+def photo_item_operation(
+    *, name: str, quantity: int, unit: str, transaction_id: str | None = None
+) -> NewOperation:
+    """One card line from a photo: "add this as a new inventory item" (Issue #124).
+
+    Contract section 10: `create_item` with `name`, `quantity`, `unit` and `location`.
+    A photo gives no location, so `location` is None and the App shows 未填; confirming
+    accepts no location. There is no Shopping List entry, so no `shopping_item_id` and
+    no target versions; `transaction_id` is for the write that confirms it.
+    """
+    return NewOperation(
+        action=CREATE_ITEM,
+        description=f"會新增一個庫存品項：{name} {quantity} {unit}（照片辨識）",
+        values={
+            "name": name,
+            "quantity": quantity,
+            "unit": unit,
+            "location": None,
+            "transaction_id": transaction_id or uuid.uuid4().hex,
+        },
+    )
+
+
+@dataclass(frozen=True)
+class PhotoItem:
+    """A photo item with no household item of the same name or alias (Issue #124)."""
+
+    name: str
+    quantity: int
+    unit: str
+
+
+class PhotoCards:
+    """New-item cards from a photo (Issue #124, contract section 10).
+
+    Off in the running app (`get_read_agent` passes none) until confirming one can be
+    written: B1's write for a new item without a Shopping List entry, and A1 handing
+    the card to it. Until then the Agent only reports what the photo shows.
+    """
+
+    def __init__(self, approvals: ApprovalService) -> None:
+        self._approvals = approvals
+
+    async def propose(self, household_id: str, items: Sequence[PhotoItem]) -> dict[str, Any] | None:
+        """Store one pending card for the items and return it for the App, or None.
+
+        One item is a `single_action` card, several a `batch_action` card. Nothing but
+        the pending card is written; a card that cannot be stored is not shown.
+        """
+        if not items:
+            return None
+        lines = [
+            photo_item_operation(name=item.name, quantity=item.quantity, unit=item.unit)
+            for item in items
+        ]
+        presentation = (
+            ApprovalPresentation.SINGLE_ACTION
+            if len(lines) == 1
+            else ApprovalPresentation.BATCH_ACTION
+        )
+        try:
+            record = await self._approvals.save(
+                self._approvals.prepare(
+                    household_id=household_id, presentation=presentation, operations=lines
+                )
+            )
+        except Exception:  # storage or planning failed; no card was stored
+            logger.warning("Photo new-item card was not stored", exc_info=True)
+            return None
+        return ApprovalService.to_pending_approval(record).model_dump(mode="json")
+
+
 class CardRecordReader(PurchaseRecordReader, Protocol):
     """B1's `CosmosReadRepository`: versioned reads, plus the inventory list for names."""
 
@@ -223,6 +310,22 @@ class PurchaseCards:
     def __init__(self, reader: CardRecordReader, approvals: ApprovalService) -> None:
         self._reader = reader
         self._approvals = approvals
+
+    async def open_cards(self, household_id: str) -> list[ApprovalRecord] | None:
+        """Pending cards the household has not answered, newest first (section 8).
+
+        After 清除對話 or reopening the App a card is gone from the screen but still
+        open here; the next reply shows the newest one again. Confirmed cards waiting
+        for a retry are left out. None when the cards cannot be listed: the message is
+        still answered, but it makes no new card (`OPEN_CARDS_UNKNOWN`).
+        """
+        try:
+            cards = await self._approvals.list_open(household_id=household_id)
+        except Exception:
+            logger.warning("Open cards could not be listed", exc_info=True)
+            return None
+        pending = [card for card in cards if card.status is ApprovalStatus.PENDING]
+        return sorted(pending, key=lambda card: card.created_at, reverse=True)
 
     async def card_to_change(self, household_id: str, approval_id: str) -> ApprovalRecord:
         """The pending card a 送出修改 replaces (contract section 7, Issue #91).

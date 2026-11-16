@@ -49,6 +49,103 @@ class TimeoutUpload implements PhotoUpload {
 
 void main() {
   testWidgets(
+    'composer keeps its original input layout without an attachment',
+    (tester) async {
+      await tester.pumpWidget(
+        NestockApp(
+          agentClient: MockAgentClient(scenario: MockScenario.conversation),
+          catalog: const DemoCatalog(),
+          cameraCapture: FakeCamera(),
+          photoUpload: FakeUpload(),
+        ),
+      );
+
+      final cluster = find.byKey(const Key('paw-action-cluster'));
+      final input = find.descendant(
+        of: find.byKey(const Key('composer')),
+        matching: find.byType(TextField),
+      );
+      expect(
+        find.byKey(const Key('composer-attachment-container')),
+        findsNothing,
+      );
+      expect(find.byKey(const Key('photo-attachment')), findsNothing);
+      expect(tester.getSize(cluster).height, 128);
+      expect(tester.getRect(input).bottom, tester.getRect(cluster).bottom);
+    },
+  );
+
+  testWidgets('pending photo is framed inside the composer attachment area', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      NestockApp(
+        agentClient: MockAgentClient(scenario: MockScenario.conversation),
+        catalog: const DemoCatalog(),
+        cameraCapture: FakeCamera(),
+        photoUpload: FakeUpload(),
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('paw-camera')));
+    await tester.pumpAndSettle();
+
+    final attachmentArea = find.byKey(
+      const Key('composer-attachment-container'),
+    );
+    final photo = find.byKey(const Key('photo-attachment'));
+    final input = find.descendant(
+      of: attachmentArea,
+      matching: find.byType(TextField),
+    );
+    expect(attachmentArea, findsOneWidget);
+    expect(
+      find.descendant(of: attachmentArea, matching: photo),
+      findsOneWidget,
+    );
+    expect(find.text('已附加至下一則訊息'), findsOneWidget);
+    expect(tester.getRect(photo).bottom, lessThan(tester.getRect(input).top));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('attached composer stays usable on a narrow screen', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 568);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      NestockApp(
+        agentClient: MockAgentClient(scenario: MockScenario.conversation),
+        catalog: const DemoCatalog(),
+        cameraCapture: FakeCamera(),
+        photoUpload: FakeUpload(),
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('paw-camera')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const Key('composer-attachment-container')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('paw-camera')).hitTestable(), findsOneWidget);
+    expect(find.byKey(const Key('paw-voice')).hitTestable(), findsOneWidget);
+    expect(
+      find.byKey(const Key('paw-expand-interaction')).hitTestable(),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('paw-send')).hitTestable(), findsOneWidget);
+    tester.view.viewInsets = const FakeViewPadding(bottom: 250);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('paw-send')).hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    tester.view.resetViewInsets();
+  });
+
+  testWidgets(
     'failed upload preserves draft and allows retry without duplicates',
     (tester) async {
       final uploader = PendingUpload();
@@ -65,13 +162,18 @@ void main() {
         matching: find.byType(TextField),
       );
       await tester.enterText(input, '測試');
-      await tester.tap(find.text('拍照'));
+      await tester.tap(find.byKey(const Key('paw-camera')));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('送出'));
+      await tester.tap(find.byKey(const Key('paw-send')));
       await tester.pump();
       expect(
         tester
-            .widget<FilledButton>(find.widgetWithText(FilledButton, '送出'))
+            .widget<FilledButton>(
+              find.descendant(
+                of: find.byKey(const Key('paw-send')),
+                matching: find.byType(FilledButton),
+              ),
+            )
             .onPressed,
         isNull,
       );
@@ -82,7 +184,7 @@ void main() {
       expect(find.byKey(const Key('photo-attachment')), findsOneWidget);
       expect(tester.widget<TextField>(input).controller!.text, '測試');
       uploader.pending = Completer<String>();
-      await tester.tap(find.text('送出'));
+      await tester.tap(find.byKey(const Key('paw-send')));
       await tester.pump();
       expect(uploader.calls, 2);
       const opaqueRef = 'opaque://Keep/Case?token=%2F+unchanged';
@@ -113,15 +215,15 @@ void main() {
       matching: find.byType(TextField),
     );
     await tester.enterText(input, '測試');
-    await tester.tap(find.text('拍照'));
+    await tester.tap(find.byKey(const Key('paw-camera')));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('送出'));
+    await tester.tap(find.byKey(const Key('paw-send')));
     await tester.pumpAndSettle();
 
     expect(find.text('照片上傳失敗，請重試。'), findsOneWidget);
     expect(find.byKey(const Key('photo-attachment')), findsOneWidget);
     expect(tester.widget<TextField>(input).controller!.text, '測試');
-    await tester.tap(find.text('送出'));
+    await tester.tap(find.byKey(const Key('paw-send')));
     await tester.pumpAndSettle();
     expect(uploader.calls, 2);
   });
@@ -144,9 +246,9 @@ void main() {
         matching: find.byType(TextField),
       );
       await tester.enterText(input, text);
-      await tester.tap(find.text('拍照'));
+      await tester.tap(find.byKey(const Key('paw-camera')));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('送出'));
+      await tester.tap(find.byKey(const Key('paw-send')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('photo-attachment')), findsNothing);
       expect(
@@ -183,17 +285,21 @@ void main() {
         matching: find.byType(TextField),
       );
       await tester.enterText(input, '備忘文字');
-      await tester.tap(find.text('拍照'));
+      await tester.tap(find.byKey(const Key('paw-camera')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('photo-attachment')), findsOneWidget);
       expect(tester.widget<TextField>(input).controller!.text, '備忘文字');
-      await tester.tap(find.text('拍照'));
+      await tester.tap(find.byKey(const Key('paw-camera')));
       await tester.pumpAndSettle();
       expect(camera.calls, 2);
       expect(find.byKey(const Key('photo-attachment')), findsOneWidget);
       await tester.tap(find.byTooltip('移除照片'));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('photo-attachment')), findsNothing);
+      expect(
+        find.byKey(const Key('composer-attachment-container')),
+        findsNothing,
+      );
       expect(tester.widget<TextField>(input).controller!.text, '備忘文字');
       expect(tester.takeException(), isNull);
     },

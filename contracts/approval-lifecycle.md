@@ -19,10 +19,10 @@ rules and runs on B1's `CosmosWriteRepository`. With Cosmos configured,
 Agent makes so far is the v8 flow C purchase card (`complete_purchase`, section 11;
 read back by A1's `backend/app/services/purchase_inputs.py` and written through C1's
 `ShoppingWriteBuilder`), including new-item lines for entries not yet in inventory
-(section 10). Changing a card with 送出修改 is built (section 7). Not built yet:
-the chat-box change (section 7), reminders (section 8), and the Agent making the new
-card by itself after a record changed (section 4 point 7); for now the reply asks
-the user to say it again.
+(section 10). Changing a card with 送出修改 is built (section 7), and an open card
+comes back with the next message (section 8). Not built yet: the Agent making the
+new card by itself after a record changed (section 4 point 7); for now the reply
+asks the user to say it again.
 
 ## 1. Sources
 
@@ -115,7 +115,7 @@ Rules for a `confirmed` card that is not yet `completed` (#48; A1 decision):
   cancel and the batch run at the same time, only one succeeds: the batch also
   needs the approval's ETag. If the batch committed first, the cancel is rejected
   and the backend returns the completed outcome.
-- When the user sends the next message, the Agent mentions it (section 8).
+- It is not brought back with the next message (section 8): not built.
 
 Every status change is a conditional update on the record's ETag, so a card can
 leave `pending` only once (#41). Cosmos TTL only removes records that can no
@@ -245,26 +245,47 @@ How the App sends the change (agreed with C2 in Issue #91):
   not count is never mentioned (section 8) and cannot be confirmed (section 4). So
   even if cancelling the old card and withdrawing the new card both fail, the user
   never holds two cards that can be confirmed; the new card is logged and expires.
-- A change typed in the chat box (no `replaces_approval_id`): the Agent is given
-  the household's open cards (the same lookup as section 8) and decides whether the
-  message changes one of them. With one open card it changes that card; with
-  several and no clear match it asks which; otherwise it answers normally.
+- A change typed in the chat box (no `replaces_approval_id`) is not a change. The
+  reply brings the open card back (section 8), and the Agent asks the user to change
+  it on the card and tap 送出修改 (Issue #91, 2026-11-16; this replaces the earlier
+  plan where the Agent judged which open card the message changed).
 
-Built so far (A1): 送出修改 with `replaces_approval_id`. The Agent is given the old
-card's lines (without `transaction_id`) and makes the new card with
-`complete_purchase`; a missing, expired, confirmed or cancelled original gets a reply
-with the reason and no card, and the model is not called; an original that does not end
-up replaced withdraws the new card, and a new card counts only once its original is
-replaced, as described above. Not built yet: the
-chat-box change without `replaces_approval_id`, and the reminders in section 8.
+Built (A1): 送出修改 with `replaces_approval_id`. The Agent is given the old card's
+lines (without `transaction_id`) and makes the new card with `complete_purchase`; a
+missing, expired, confirmed or cancelled original gets a reply with the reason and no
+card, and the model is not called; an original that does not end up replaced withdraws
+the new card, and a new card counts only once its original is replaced, as described
+above. A typed change is answered as in section 8.
 
 ## 8. Reminders
 
-When the user sends the next message, the Agent mentions cards that are still
-`pending`, and `confirmed` cards that can still be retried (section 3). Expired
-cards are not mentioned; this check is also when they are recorded as `expired`.
-A 送出修改 card that does not count (section 7) is not mentioned either.
-There is no background job or push notification (#39).
+The App shows a card only with the reply that brought it. After 清除對話 or reopening
+the App, the card is gone from the screen but still open in the backend. So the
+reminder is the card itself, not a sentence the user cannot act on (Issue #91,
+2026-11-16; C2 confirmed the App side the same day):
+
+- On every `POST /agent/messages` without `replaces_approval_id`, the backend lists
+  the household's open cards (`ApprovalService.list_open`). Expired cards are left
+  out and recorded as `expired` here. A 送出修改 card that does not count (section 7)
+  is left out too.
+- If `pending` cards are left, the reply's `pending_approval` is the newest one again:
+  the same `approval_id`, lines and expiry. The App shows it like any card; confirm,
+  cancel and 送出修改 work as before. The Agent answers the message and says the card
+  is not confirmed yet. With several, it says how many are left; each later message
+  brings back the newest one still open.
+- That message makes no new card. When the user says something else was bought, the
+  Agent asks them to confirm or cancel this card first (`complete_purchase` returns
+  `open_card_not_answered`). A typed change gets the same answer (section 7).
+- `confirmed` cards that can still be retried (section 3) are not shown again: not
+  built.
+- If the open cards cannot be listed, the message is answered without them, but it
+  makes no new card (`complete_purchase` returns `open_cards_unknown`): unknown is
+  not "none", and a new card could be a second card for the same purchase (PR #160
+  C2 review). The user says it again later.
+- A 送出修改 message (with `replaces_approval_id`) skips this lookup; section 7 applies.
+
+Built (A1): `PurchaseCards.open_cards` and `ReadAgent.respond`. There is no background
+job or push notification (#39).
 
 ## 9. Open items
 
@@ -333,6 +354,24 @@ bought and the entry is not linked to an inventory item (`complete_purchase`,
   `item_id` is `resolve_inventory_item_id(operation_id)`. C1's builder creates the
   item, completes the entry, and writes the Transaction and change event in the same
   batch, so a retry never makes a second item.
+
+New-item cards from a photo (Issue #124; built, but off in the running app):
+
+- After A2's recognition and A1's matching (#44), photo items with no household item
+  of the same name or alias (#36 layers ①②), seen with confidence (not
+  `low_confidence`) and with a confirmed unit get one card: `single_action` for one
+  item, `batch_action` for several, every line `create_item`
+  (`backend/app/agent/cards.py`, `PhotoCards`).
+- `values`: `name`, `quantity` and `unit` from the photo, `location` null (the App
+  shows 未填; confirming accepts no location, Issue #124), and `transaction_id`. There
+  is no `shopping_item_id` and no target version.
+- Items the household has, unsure items and items without a confirmed unit are only
+  reported, as before. A photo item-match card (Issue #124 point 2) is not built.
+- As in section 8, a photo makes no card in a message that brings an open card back,
+  or when the open cards cannot be listed; the photo is only reported.
+- Off in `get_read_agent` until confirming can be written: B1's write for a new item
+  without a Shopping List entry (Issue #124 point 1), and A1 handing the card to it.
+  Until then a photo is only reported, so the App never gets a card it cannot write.
 
 ```json
 {

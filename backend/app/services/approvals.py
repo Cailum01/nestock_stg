@@ -738,16 +738,18 @@ class ApprovalService:
         finished = _finished_result(current)
         if finished is not None:
             return finished
-        if current.status is ApprovalStatus.CONFIRMED and await self._has_receipts(current):
-            await self._log_reconciliation_required(current)
-            return ResumeResult(ResumeOutcome.INCONSISTENT, current)
+        if current.status is ApprovalStatus.CONFIRMED:
+            with_receipt = await self._operations_with_receipts(current)
+            if with_receipt:
+                _log_reconciliation_required(current, with_receipt)
+                return ResumeResult(ResumeOutcome.INCONSISTENT, current)
         return ResumeResult(ResumeOutcome.NOT_WRITTEN, current)
 
-    async def _log_reconciliation_required(self, record: ApprovalRecord) -> None:
-        """Receipts exist but the card is not completed: log what to check (§6, Issue #27).
+    async def _operations_with_receipts(self, record: ApprovalRecord) -> list[str]:
+        """Read each approved operation's receipt once (§6, Issue #27).
 
-        Nothing is repaired or retried. B1 reads the receipts and records of these
-        operation IDs; the line names the card and splits its operations by receipt.
+        If a read fails, log the card and its operations for B1 to check, then
+        raise: nothing more is written.
         """
         approved = list(record.approved_operation_ids or ())
         with_receipt: list[str] = []
@@ -761,21 +763,14 @@ class ApprovalService:
         except Exception:
             logger.error(
                 "reconciliation-required: household=%s approval=%s operations=%s; "
-                "receipts could not be listed; nothing more was written.",
+                "receipts could not be read; nothing more was written.",
                 record.household_id,
                 record.approval_id,
                 approved,
                 exc_info=True,
             )
-            return
-        logger.error(
-            "reconciliation-required: household=%s approval=%s with_receipt=%s "
-            "without_receipt=%s; nothing more was written.",
-            record.household_id,
-            record.approval_id,
-            with_receipt,
-            [operation_id for operation_id in approved if operation_id not in with_receipt],
-        )
+            raise
+        return with_receipt
 
     async def _has_receipts(self, record: ApprovalRecord) -> bool:
         for operation_id in record.approved_operation_ids or ():
@@ -835,6 +830,23 @@ def _finished_result(record: ApprovalRecord) -> ResumeResult | None:
     if record.status is ApprovalStatus.EXPIRED:
         return ResumeResult(ResumeOutcome.EXPIRED, record)
     return None
+
+
+def _log_reconciliation_required(record: ApprovalRecord, with_receipt: Sequence[str]) -> None:
+    """Receipts exist but the card is not completed: log what to check (§6, Issue #27).
+
+    Nothing is repaired or retried. B1 reads the receipts and records of these
+    operation IDs; the line names the card and splits its operations by receipt.
+    """
+    approved = list(record.approved_operation_ids or ())
+    logger.error(
+        "reconciliation-required: household=%s approval=%s with_receipt=%s "
+        "without_receipt=%s; nothing more was written.",
+        record.household_id,
+        record.approval_id,
+        list(with_receipt),
+        [operation_id for operation_id in approved if operation_id not in with_receipt],
+    )
 
 
 def _check_card_shape(

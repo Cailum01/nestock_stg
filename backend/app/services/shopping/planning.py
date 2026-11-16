@@ -15,6 +15,7 @@ from app.models.domain import (
     Transaction,
     TransactionReason,
 )
+from app.services.inventory_item_identity import resolve_inventory_item_id
 from app.services.shopping.preview import (
     ShoppingDecisionRequired,
     ShoppingPreviewError,
@@ -53,6 +54,22 @@ class PurchaseInput:
 
 
 @dataclass(frozen=True)
+class AdjustmentInput:
+    """A confirmed new-item stock adjustment with no Shopping row.
+
+    This input must be resolved from A1's stored approval, never from mutable
+    client values. B1's ChangeEvent/persistence contract is not represented here
+    yet because the current shared model requires a Shopping item ID.
+    """
+
+    operation_id: str
+    transaction_id: str
+    approval_id: str
+    new_inventory: NewInventoryTarget
+    quantity: int
+
+
+@dataclass(frozen=True)
 class ShoppingUpdate:
     operation_id: str
     record: ShoppingItem
@@ -79,6 +96,22 @@ class PurchasePlan:
     inventory_updates: tuple[InventoryUpdate, ...]
     transactions: tuple[Transaction, ...]
     inventory_creates: tuple[InventoryCreate, ...] = ()
+
+
+@dataclass(frozen=True)
+class AdjustmentPlan:
+    """Pure domain plan for an approved photo-created inventory item.
+
+    B1 must add the agreed ChangeEvent and atomic persistence mapping before
+    this plan can be connected to an executable write path.
+    """
+
+    household_id: str
+    operation_id: str
+    approval_id: str
+    inventory_create: InventoryCreate
+    transaction: Transaction
+    recorded_at: datetime
 
 
 @dataclass(frozen=True)
@@ -166,6 +199,10 @@ class ShoppingPlanService:
                     (target.unit, "New Inventory unit"),
                 ):
                     _identity(value, label)
+                if target.item_id != resolve_inventory_item_id(purchase.operation_id):
+                    raise ShoppingPreviewError(
+                        "New Inventory ID must come from B1's stable operation resolver."
+                    )
                 if target.location is not None:
                     _identity(target.location, "New Inventory location")
                 if purchase.resolved_inventory_item_id not in (None, target.item_id):
@@ -264,6 +301,70 @@ class ShoppingPlanService:
             inventory_updates=tuple(inventory_updates),
             transactions=tuple(transactions),
             inventory_creates=tuple(inventory_creates),
+        )
+
+    def plan_adjustment(
+        self,
+        *,
+        household_id: str,
+        adjustment: AdjustmentInput,
+        recorded_at: datetime,
+    ) -> AdjustmentPlan:
+        """Plan a no-Shopping new-item adjustment from an approved proposal.
+
+        This only creates immutable domain values. It performs no authorization,
+        ChangeEvent construction, Cosmos writes, or public API integration.
+        """
+        _identity(household_id, "Household")
+        _identity(adjustment.operation_id, "Operation ID")
+        _identity(adjustment.transaction_id, "Transaction ID")
+        _identity(adjustment.approval_id, "Approval ID")
+        _timestamp(recorded_at)
+
+        target = adjustment.new_inventory
+        for value, label in (
+            (target.item_id, "New Inventory ID"),
+            (target.name, "New Inventory name"),
+            (target.unit, "New Inventory unit"),
+        ):
+            _identity(value, label)
+        if target.item_id != resolve_inventory_item_id(adjustment.operation_id):
+            raise ShoppingPreviewError(
+                "New Inventory ID must come from B1's stable operation resolver."
+            )
+        if target.location is not None:
+            _identity(target.location, "New Inventory location")
+        quantity = _quantity(adjustment.quantity, "Adjustment quantity")
+
+        inventory_create = InventoryCreate(
+            operation_id=adjustment.operation_id,
+            record=InventoryItem(
+                item_id=target.item_id,
+                household_id=household_id,
+                name=target.name,
+                quantity=quantity,
+                unit=target.unit,
+                location=target.location,
+                created_at=recorded_at,
+                updated_at=recorded_at,
+            ),
+        )
+        transaction = Transaction(
+            transaction_id=adjustment.transaction_id,
+            household_id=household_id,
+            item_id=target.item_id,
+            operation_id=adjustment.operation_id,
+            quantity_delta=quantity,
+            reason=TransactionReason.ADJUSTMENT,
+            created_at=recorded_at,
+        )
+        return AdjustmentPlan(
+            household_id=household_id,
+            operation_id=adjustment.operation_id,
+            approval_id=adjustment.approval_id,
+            inventory_create=inventory_create,
+            transaction=transaction,
+            recorded_at=recorded_at,
         )
 
     def plan_removal(

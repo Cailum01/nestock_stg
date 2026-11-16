@@ -22,7 +22,7 @@ from app.services.approvals import (
 from app.services.cosmos_read import CosmosDocumentMapper
 from app.services.cosmos_write import CreateDocument, ReplaceDocument, change_event_create
 from app.services.shopping.media import MediaAttachment, MediaRetentionPlanner
-from app.services.shopping.planning import PurchaseInput, ShoppingPlanService
+from app.services.shopping.planning import AdjustmentInput, PurchaseInput, ShoppingPlanService
 from app.services.shopping.preview import ShoppingDecisionRequired, ShoppingPreviewError
 
 
@@ -37,6 +37,7 @@ class RemovalInput:
 class ResolvedShoppingChanges:
     purchases: tuple[PurchaseInput, ...] = ()
     removals: tuple[RemovalInput, ...] = ()
+    adjustments: tuple[AdjustmentInput, ...] = ()
     media_attachments: tuple[MediaAttachment, ...] = ()
 
 
@@ -66,7 +67,7 @@ def _replacement(source, record):
 
 
 class ShoppingWriteBuilder:
-    """Plan C1 purchase/removal writes; never execute or authorize a mutation."""
+    """Plan C1 purchase/removal/adjustment writes; never execute or authorize."""
 
     def __init__(
         self,
@@ -87,7 +88,7 @@ class ShoppingWriteBuilder:
             ApprovalPresentation.SINGLE_ACTION,
             ApprovalPresentation.BATCH_ACTION,
         ):
-            raise ShoppingPreviewError("This builder handles purchase/removal cards only.")
+            raise ShoppingPreviewError("This builder handles resolved domain-change cards only.")
         if record.decided_at is None:
             raise ShoppingPreviewError("A fixed confirmation time is required.")
         selected = record.approved_operation_ids or []
@@ -97,7 +98,7 @@ class ShoppingWriteBuilder:
         if len(stored) != len(record.operations) or not set(selected) <= stored.keys():
             raise ShoppingPreviewError("Selection must belong to the stored card.")
         changes = await self._resolver.resolve(record)
-        inputs = (*changes.purchases, *changes.removals)
+        inputs = (*changes.purchases, *changes.removals, *changes.adjustments)
         ids = [entry.operation_id for entry in inputs]
         if len(set(ids)) != len(ids) or set(ids) != set(selected):
             raise ShoppingPreviewError("Resolved operations must exactly match fixed selection.")
@@ -105,11 +106,44 @@ class ShoppingWriteBuilder:
         changes = ResolvedShoppingChanges(
             purchases=tuple(sorted(changes.purchases, key=lambda row: order[row.operation_id])),
             removals=tuple(sorted(changes.removals, key=lambda row: order[row.operation_id])),
+            adjustments=tuple(sorted(changes.adjustments, key=lambda row: order[row.operation_id])),
             media_attachments=changes.media_attachments,
         )
-        shopping_ids = [entry.shopping.shopping_item_id for entry in inputs]
+        shopping_ids = [
+            entry.shopping.shopping_item_id for entry in (*changes.purchases, *changes.removals)
+        ]
         if len(set(shopping_ids)) != len(shopping_ids):
             raise ShoppingPreviewError("A Shopping target can be changed only once per card.")
+        purchase_transaction_ids = {entry.transaction_id for entry in changes.purchases}
+        purchase_item_ids = {
+            item_id
+            for entry in changes.purchases
+            for item_id in (
+                entry.inventory.item_id if entry.inventory is not None else None,
+                entry.new_inventory.item_id if entry.new_inventory is not None else None,
+            )
+            if item_id is not None
+        }
+
+        for adjustment in changes.adjustments:
+            operation = stored[adjustment.operation_id]
+            values = operation.values
+            target = adjustment.new_inventory
+            if (
+                operation.action != "create_item"
+                or operation.targets
+                or adjustment.approval_id != record.approval_id
+                or adjustment.transaction_id in purchase_transaction_ids
+                or target.item_id in purchase_item_ids
+                or values.get("transaction_id") != adjustment.transaction_id
+                or values.get("name") != target.name
+                or values.get("quantity") != adjustment.quantity
+                or values.get("unit") != target.unit
+                or values.get("location") != target.location
+            ):
+                raise ShoppingPreviewError(
+                    "Adjustment inputs must match the exact stored create_item proposal."
+                )
 
         attachments = {entry.operation_id: entry for entry in changes.media_attachments}
         purchase_ids = {entry.operation_id for entry in changes.purchases}
@@ -129,7 +163,7 @@ class ShoppingWriteBuilder:
                 )
 
         documents = {}
-        for entry in inputs:
+        for entry in (*changes.purchases, *changes.removals):
             expected = {f"shopping_item:{entry.shopping.shopping_item_id}": entry.shopping_etag}
             sources = [(ShoppingItem, entry.shopping, entry.shopping_etag)]
             if isinstance(entry, PurchaseInput) and entry.inventory is not None:
@@ -269,6 +303,42 @@ class ShoppingWriteBuilder:
                 for update in plan.inventory_updates
             ]
             shared.extend(retention_by_id.values())
+        if changes.adjustments:
+            adjustment_ids: set[str] = set()
+            transaction_ids: set[str] = set()
+            item_ids: set[str] = set()
+            for adjustment in changes.adjustments:
+                if (
+                    adjustment.operation_id in adjustment_ids
+                    or adjustment.transaction_id in transaction_ids
+                    or adjustment.new_inventory.item_id in item_ids
+                ):
+                    raise ShoppingPreviewError(
+                        "Adjustment operations, transactions and new items must be unique."
+                    )
+                adjustment_ids.add(adjustment.operation_id)
+                transaction_ids.add(adjustment.transaction_id)
+                item_ids.add(adjustment.new_inventory.item_id)
+                plan = self._plans.plan_adjustment(
+                    household_id=record.household_id,
+                    adjustment=adjustment,
+                    recorded_at=record.decided_at,
+                )
+                doc_id = f"inventory_item:{plan.inventory_create.record.item_id}"
+                if await self._reader.read_item(item_id=doc_id, partition_key=record.household_id):
+                    raise TargetChanged(doc_id)
+                by_id[adjustment.operation_id] = (
+                    CreateDocument(CosmosDocumentMapper.to_document(plan.inventory_create.record)),
+                    CreateDocument(CosmosDocumentMapper.to_document(plan.transaction)),
+                    change_event_create(plan.change_event),
+                )
+                outcomes[adjustment.operation_id] = {
+                    "item_id": plan.inventory_create.record.item_id,
+                    "transaction_id": plan.transaction.transaction_id,
+                    "quantity_added": plan.transaction.quantity_delta,
+                    "inventory_quantity": plan.inventory_create.record.quantity,
+                    "unit": plan.inventory_create.record.unit,
+                }
         for entry in changes.removals:
             removal = self._plans.plan_removal(
                 household_id=record.household_id,

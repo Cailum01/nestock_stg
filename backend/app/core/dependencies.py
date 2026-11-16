@@ -9,7 +9,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from app.services.approvals import ApprovalService
-from app.services.commerce.biggo import BigGoCommerceProvider
+from app.services.commerce import BaseCommerceProvider, FallbackCommerceProvider
 from app.services.cosmos_read import (
     CosmosInventoryService,
     CosmosReadRepository,
@@ -299,21 +299,21 @@ def _reset_vision_service_for_test() -> None:
     _vision_service_resolved = False
 
 
-_commerce_service: BigGoCommerceProvider | None = None
+_commerce_service: BaseCommerceProvider | None = None
 _commerce_service_resolved: bool = False
 _commerce_lock = threading.Lock()
 
 
-def get_commerce_service() -> BigGoCommerceProvider:
-    """FastAPI dependency for BigGoCommerceProvider.
+def get_commerce_service() -> BaseCommerceProvider:
+    """FastAPI dependency for BaseCommerceProvider.
 
-    Thread-safe lazy resolution of BigGoCommerceProvider.
+    Thread-safe lazy resolution of FallbackCommerceProvider.
     """
     global _commerce_service, _commerce_service_resolved
     if not _commerce_service_resolved:
         with _commerce_lock:
             if not _commerce_service_resolved:
-                _commerce_service = BigGoCommerceProvider()
+                _commerce_service = FallbackCommerceProvider()
                 _commerce_service_resolved = True
     return _commerce_service
 
@@ -352,16 +352,22 @@ def _create_approval_service(
     write_repository: CosmosWriteRepository | None,
     document_reader: DocumentQueryClient | None,
 ) -> ApprovalService | None:
-    """Purchase cards are written by C1's `ShoppingWriteBuilder` (Issue #60).
+    """Route stored approval cards to their domain-specific write builders.
 
-    A1's `CardInputResolver` turns the stored card back into C1's purchase inputs
-    through the read repository; C1 reads whole stored documents through the raw
-    reader so storage-only metadata survives its replacements.
+    A1's `CardInputResolver` turns purchase cards back into C1's inputs through the
+    read repository; C1 reads whole stored documents through the raw reader so
+    storage-only metadata survives replacements. New-item cards use A1's resolver
+    and B1's atomic no-Shopping writer.
     """
     if read_repository is None or write_repository is None or document_reader is None:
         return None
-    from app.services.purchase_inputs import CardInputResolver
+    from app.services.card_writes import CardWriteRouter
+    from app.services.photo_item_writes import PhotoItemWriteBuilder
+    from app.services.purchase_inputs import CardInputResolver, PhotoInputResolver
     from app.services.shopping.workflow import ShoppingWriteBuilder
 
-    builder = ShoppingWriteBuilder(document_reader, CardInputResolver(read_repository))
+    builder = CardWriteRouter(
+        purchases=ShoppingWriteBuilder(document_reader, CardInputResolver(read_repository)),
+        photo_items=PhotoItemWriteBuilder(PhotoInputResolver()),
+    )
     return ApprovalService(write_repository, builder)

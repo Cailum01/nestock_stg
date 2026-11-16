@@ -100,8 +100,26 @@ requirements:
   share one `CosmosClient`, created through the common repository factory.
 - C2 must coordinate support for rendering and handling the `pending_approval`
   response before this flow is enabled for users.
-- This boundary does not authorize `create_item`, standalone stock
-  adjustments, generic Agent write tools, or any unapproved value changes.
+- This purchase flow does not authorize standalone `create_item` operations,
+  generic Agent write tools, or any unapproved value changes.
+
+### Requirements for an approved no-Shopping new-item flow
+
+A confirmed `create_item` card with no Shopping target is a separate,
+approval-gated workflow, not a variation of the purchase builder:
+
+- The card's stored values and fixed selection are the only write inputs. The
+  application resolves them through A1's `PhotoInputResolver` and plans each
+  selected line through C1's pure `plan_adjustment`; neither step writes data.
+- B1's `PhotoItemWriteBuilder` maps each line to a new Inventory item, an
+  `adjustment` Transaction, and a `ChangeEvent` whose `shopping_item_id` is null.
+- Each selected line's domain writes, operation receipt, and the completed
+  approval commit in one household-partition transactional batch. Retries reuse
+  the operation and item identities; an unselected line creates no records.
+- `POST /agent/messages` may store the pending approval but never writes domain
+  data. Only `POST /agent/resume` may commit the values covered by that card.
+- Wiring the writer does not enable card generation or frontend handling; A1 and
+  C2 must deliver and coordinate those surfaces before the flow is exposed.
 
 ### Out of scope for Skeleton v1
 
@@ -1076,8 +1094,18 @@ to the latest state, and deletes require explicit handling.
   document id is `change_event:{operation_id}`, so a retry maps to the same
   document and the operation receipt de-duplicates it.
 - Fields: `household_id`, `operation_id`, `approval_id`, `transaction_id`,
-  `shopping_item_id`, `item_id`, `occurred_at` (purchase time) and `recorded_at`
-  (approval decision time). Timestamps are stored as UTC.
+  nullable `shopping_item_id`, `item_id`, `occurred_at` (domain event time) and
+  `recorded_at` (approval decision time). Timestamps are stored as UTC.
+- Per #124 (2026-11-16), a confirmed photo-created Inventory item has no
+  Shopping row, so its `ChangeEvent.shopping_item_id` is `null`, not a synthetic
+  ID. Inventory create, its `adjustment` Transaction, ChangeEvent and operation
+  receipt belong to the same household batch; the separate C1 adjustment plan
+  must not reuse the purchase builder.
+- B1's `PhotoItemWriteBuilder` maps each approved C1 adjustment plan to the
+  Inventory, Transaction and ChangeEvent creates. `ApprovalService` adds the
+  operation receipt and completed approval to that same batch. B1's application
+  composition routes these cards through A1's `CardWriteRouter`; this storage
+  support does not itself enable A1 card generation or C2 presentation.
 - Batch placement for a purchase: the merged inventory update goes in
   `shared_operations`; each purchased item's shopping-item update, Transaction and
   change event go in `operations_by_id[operation_id]`. Replace operations require

@@ -24,6 +24,10 @@ asked A1 to do that part (Issue #60, Issue #27). This module is only that step:
 Not covered yet: removals (A1 has no removal card), the item-match card (Issue #90),
 buying more than listed, and a different unit. C1's plan refuses the last two.
 
+Photo new-item cards (Issue #124, contract section 10) have no Shopping List entry,
+so they are not purchases: `PhotoInputResolver` below turns them into C1's
+`AdjustmentInput` instead, for B1's write of a new item without a Shopping List entry.
+
 Reads only; never writes.
 """
 
@@ -37,7 +41,7 @@ from app.models.domain import InventoryItem, ShoppingItem
 from app.services.approvals import ApprovalRecord, StoredOperation, TargetChanged
 from app.services.cosmos_read import MappedDocument
 from app.services.inventory_item_identity import resolve_inventory_item_id
-from app.services.shopping.planning import NewInventoryTarget, PurchaseInput
+from app.services.shopping.planning import AdjustmentInput, NewInventoryTarget, PurchaseInput
 from app.services.shopping.workflow import ResolvedShoppingChanges
 
 COMPLETE_PURCHASE = "complete_purchase"
@@ -160,6 +164,56 @@ class CardInputResolver:
         )
 
 
+def is_photo_card(record: ApprovalRecord) -> bool:
+    """A photo new-item card (Issue #124): only `create_item` lines, no Shopping List entry."""
+    return bool(record.operations) and all(
+        operation.action == CREATE_ITEM and not operation.values.get("shopping_item_id")
+        for operation in record.operations
+    )
+
+
+class PhotoInputResolver:
+    """C1's `AdjustmentInput` for each confirmed line of a photo new-item card (Issue #124).
+
+    Only the operations in the card's fixed `approved_operation_ids`, in card order.
+    Everything comes from the stored card, never from the App (C1's `AdjustmentInput`
+    rule): `approval_id`; per line its `operation_id`, `transaction_id`, `quantity`,
+    `name`, `unit` and `location` (null for a photo, contract section 10). The new
+    item's `item_id` is B1's `resolve_inventory_item_id(operation_id)`, so a retry gets
+    the same item. The write time is the card's `decided_at`, which the builder takes
+    from the record (Issue #124, 2026-11-16). A photo line carries no record version,
+    so nothing is read.
+    """
+
+    def resolve(self, record: ApprovalRecord) -> tuple[AdjustmentInput, ...]:
+        if not is_photo_card(record):
+            raise UnsupportedAction("Not a photo new-item card.")
+        approved = set(record.approved_operation_ids or ())
+        return tuple(
+            self._adjustment(record, operation)
+            for operation in record.operations
+            if operation.operation_id in approved
+        )
+
+    def _adjustment(self, record: ApprovalRecord, operation: StoredOperation) -> AdjustmentInput:
+        if operation.targets:
+            raise ValueError(f"{operation.operation_id} is a photo line; it has no versions.")
+        values = operation.values
+        item_id = resolve_inventory_item_id(operation.operation_id)
+        return AdjustmentInput(
+            operation_id=operation.operation_id,
+            transaction_id=_text(values, "transaction_id"),
+            approval_id=record.approval_id,
+            new_inventory=NewInventoryTarget(
+                item_id=item_id,
+                name=_text(values, "name"),
+                unit=_text(values, "unit"),
+                location=_optional_text(values, "location"),
+            ),
+            quantity=_count(values, "quantity"),
+        )
+
+
 def _unchanged[RecordT: (ShoppingItem, InventoryItem)](
     operation: StoredOperation, current: MappedDocument[RecordT] | None
 ) -> tuple[RecordT, str]:
@@ -182,6 +236,13 @@ def _text(values: Mapping[str, object], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"The card's {key} must be a non-empty string.")
     return value
+
+
+def _optional_text(values: Mapping[str, object], key: str) -> str | None:
+    """None when the card left it empty (a photo line's `location`), else non-empty text."""
+    if values.get(key) is None:
+        return None
+    return _text(values, key)
 
 
 def _count(values: Mapping[str, object], key: str) -> int:

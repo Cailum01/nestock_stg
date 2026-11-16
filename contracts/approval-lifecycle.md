@@ -15,14 +15,16 @@ during implementation, but the rules below are decided. Public models stay in
 
 Current status: A1's service `backend/app/services/approvals.py` implements these
 rules and runs on B1's `CosmosWriteRepository`. With Cosmos configured,
-`POST /agent/resume` calls it; without Cosmos it returns 503. The only card the
-Agent makes so far is the v8 flow C purchase card (`complete_purchase`, section 11;
+`POST /agent/resume` calls it; without Cosmos it returns 503. The Agent makes two
+kinds of card. One is the v8 flow C purchase card (`complete_purchase`, section 11;
 read back by A1's `backend/app/services/purchase_inputs.py` and written through C1's
 `ShoppingWriteBuilder`), including new-item lines for entries not yet in inventory
-(section 10). Changing a card with 送出修改 is built (section 7). Not built yet:
-the chat-box change (section 7), reminders (section 8), and the Agent making the new
-card by itself after a record changed (section 4 point 7); for now the reply asks
-the user to say it again.
+(section 10). The other is the new-item card from a photo (section 10, Issue #124;
+written through B1's `PhotoItemWriteBuilder`). Changing a card with 送出修改 is built (section 7, and sent as data in
+section 7.1), and an open card comes back with the next message (section 8). A
+purchase day the user says is built but off (section 11). Not built yet: the Agent making the
+new card by itself after a record changed (section 4 point 7); for now the reply
+asks the user to say it again.
 
 ## 1. Sources
 
@@ -115,7 +117,7 @@ Rules for a `confirmed` card that is not yet `completed` (#48; A1 decision):
   cancel and the batch run at the same time, only one succeeds: the batch also
   needs the approval's ETag. If the batch committed first, the cancel is rejected
   and the backend returns the completed outcome.
-- When the user sends the next message, the Agent mentions it (section 8).
+- It is not brought back with the next message (section 8): not built.
 
 Every status change is a conditional update on the record's ETag, so a card can
 leave `pending` only once (#41). Cosmos TTL only removes records that can no
@@ -245,26 +247,123 @@ How the App sends the change (agreed with C2 in Issue #91):
   not count is never mentioned (section 8) and cannot be confirmed (section 4). So
   even if cancelling the old card and withdrawing the new card both fail, the user
   never holds two cards that can be confirmed; the new card is logged and expires.
-- A change typed in the chat box (no `replaces_approval_id`): the Agent is given
-  the household's open cards (the same lookup as section 8) and decides whether the
-  message changes one of them. With one open card it changes that card; with
-  several and no clear match it asks which; otherwise it answers normally.
+- A change typed in the chat box (no `replaces_approval_id`) is not a change. The
+  reply brings the open card back (section 8), and the Agent asks the user to change
+  it on the card and tap 送出修改 (Issue #91, 2026-11-16; this replaces the earlier
+  plan where the Agent judged which open card the message changed).
 
-Built so far (A1): 送出修改 with `replaces_approval_id`. The Agent is given the old
-card's lines (without `transaction_id`) and makes the new card with
-`complete_purchase`; a missing, expired, confirmed or cancelled original gets a reply
-with the reason and no card, and the model is not called; an original that does not end
-up replaced withdraws the new card, and a new card counts only once its original is
-replaced, as described above. Not built yet: the
-chat-box change without `replaces_approval_id`, and the reminders in section 8.
+Built (A1): 送出修改 with `replaces_approval_id`. The Agent is given the old card's
+lines (without `transaction_id`) and makes the new card with `complete_purchase`; a
+missing, expired, confirmed or cancelled original gets a reply with the reason and no
+card, and the model is not called; an original that does not end up replaced withdraws
+the new card, and a new card counts only once its original is replaced, as described
+above. A typed change is answered as in section 8.
+
+### 7.1 送出修改 sent as data (`card_changes`, Issue #162)
+
+Agreed with C2 on 2026-11-16 (Issue #162) so that a changed day or quantity does not
+depend on the model reading a sentence. Built (A1); the App switches to it later,
+and until then the sentence above keeps working.
+
+- The App calls `POST /agent/messages` with `replaces_approval_id` and
+  `card_changes`: one entry per changed line, by the `operation_id` on the card,
+  with only the changed fields. `message` is still required and is only the chat
+  text. `quantity` is a whole number ≥ 1. `purchased_on` is a Taipei date
+  `YYYY-MM-DD`; an explicit `null` sets the line back to today (no day on the card).
+  A field left out, and every line not listed, keeps its value.
+
+```json
+{
+  "household_id": "demo-household",
+  "message": "送出修改",
+  "replaces_approval_id": "a-old",
+  "card_changes": [
+    {"operation_id": "op-1", "quantity": 3},
+    {"operation_id": "op-2", "purchased_on": "2026-11-14"},
+    {"operation_id": "op-3", "purchased_on": null}
+  ]
+}
+```
+
+- A malformed body is refused with 422 before anything runs: `card_changes` without
+  `replaces_approval_id`, an empty list, an entry without `quantity` or
+  `purchased_on`, `quantity` null, not a whole number or below 1, or a
+  `purchased_on` that is not a date.
+- Otherwise the reply is 200. The backend reads the stored original card (it is the
+  authority, not the App), puts every line on a new card with the changes applied,
+  read from the current records, and retires the original as in section 7. The
+  model is not called. On success `pending_approval` is the new card and
+  `results[0].data` is `{"code": "card_changed", "replaced_approval_id": ...}`.
+- A refused change stores nothing. `results[0].data.code` says why, and while the
+  original is still `pending` the reply's `pending_approval` is that original
+  again (same `approval_id`), so it stays on screen:
+
+| `code` | When |
+| --- | --- |
+| `card_not_changeable` | The original is missing, expired, confirmed, completed or cancelled (`reason`), or was not replaced; no card in the reply |
+| `unknown_operation` | An `operation_id` is not on the original (`operation_id`) |
+| `duplicate_operation` | The same `operation_id` is listed twice |
+| `nothing_changed` | Every value is the same as on the original |
+| `purchase_day_off` | A day is changed, or the original has one, while dated purchases are off (section 11) |
+| `future_date` | `purchased_on` is after today in Taipei |
+| `line_refused` | A line cannot go on a new card: it cannot be recorded with the current records, a photo line is given a day, or the line cannot be changed on the card. `lines` has one entry per refused line: its `operation_id` on the original, `shopping_item_id` for a line from the Shopping List, and `reason`. A new card never leaves a line out |
+
+Photo new-item cards (section 10, Issue #124) are changed the same way, only while
+photo cards are on:
+
+- Only `quantity` changes. A photo line has no purchase day, so a `purchased_on`
+  (even `null`) refuses it (`line_refused`), whether or not dated purchases are on.
+- Every line goes on the new card with its `name`, `unit` and `location` (null) as
+  on the original, a changed line with its new `quantity`, a line not listed with its
+  old one. The card keeps its presentation (`single_action` or `batch_action`).
+  Every line gets a new `operation_id` and `transaction_id`, and the card a new
+  `approval_id`; the original is retired as in section 7.
+- Before the new card is stored, each line is checked against the household's items
+  again: a line whose name is now the name or alias of a household item is refused
+  (`line_refused`), so confirming never adds a second item.
+- With photo cards off (no Cosmos, section 10), a photo card cannot be
+  changed on the card: `line_refused`, each line with reason 這一項不能在卡上修改。
+- A photo card is changed only with `card_changes`. The sentence format in section 7
+  is for purchase cards: the Agent's card tool makes purchase cards only.
+
+```json
+{
+  "message": "沒有出新卡：「滑鼠」照片新增的品項沒有購買日期，不能改日期。",
+  "results": [{"kind": "action_result", "data": {"code": "line_refused",
+    "lines": [{"operation_id": "op-1", "reason": "照片新增的品項沒有購買日期，不能改日期。"}]}}],
+  "pending_approval": "（原卡）"
+}
+```
 
 ## 8. Reminders
 
-When the user sends the next message, the Agent mentions cards that are still
-`pending`, and `confirmed` cards that can still be retried (section 3). Expired
-cards are not mentioned; this check is also when they are recorded as `expired`.
-A 送出修改 card that does not count (section 7) is not mentioned either.
-There is no background job or push notification (#39).
+The App shows a card only with the reply that brought it. After 清除對話 or reopening
+the App, the card is gone from the screen but still open in the backend. So the
+reminder is the card itself, not a sentence the user cannot act on (Issue #91,
+2026-11-16; C2 confirmed the App side the same day):
+
+- On every `POST /agent/messages` without `replaces_approval_id`, the backend lists
+  the household's open cards (`ApprovalService.list_open`). Expired cards are left
+  out and recorded as `expired` here. A 送出修改 card that does not count (section 7)
+  is left out too.
+- If `pending` cards are left, the reply's `pending_approval` is the newest one again:
+  the same `approval_id`, lines and expiry. The App shows it like any card; confirm,
+  cancel and 送出修改 work as before. The Agent answers the message and says the card
+  is not confirmed yet. With several, it says how many are left; each later message
+  brings back the newest one still open.
+- That message makes no new card. When the user says something else was bought, the
+  Agent asks them to confirm or cancel this card first (`complete_purchase` returns
+  `open_card_not_answered`). A typed change gets the same answer (section 7).
+- `confirmed` cards that can still be retried (section 3) are not shown again: not
+  built.
+- If the open cards cannot be listed, the message is answered without them, but it
+  makes no new card (`complete_purchase` returns `open_cards_unknown`): unknown is
+  not "none", and a new card could be a second card for the same purchase (PR #160
+  C2 review). The user says it again later.
+- A 送出修改 message (with `replaces_approval_id`) skips this lookup; section 7 applies.
+
+Built (A1): `PurchaseCards.open_cards` and `ReadAgent.respond`. There is no background
+job or push notification (#39).
 
 ## 9. Open items
 
@@ -334,6 +433,40 @@ bought and the entry is not linked to an inventory item (`complete_purchase`,
   item, completes the entry, and writes the Transaction and change event in the same
   batch, so a retry never makes a second item.
 
+New-item cards from a photo (Issue #124; on with Cosmos since PR #172):
+
+- After A2's recognition and A1's matching (#44), photo items with no household item
+  of the same name or alias (#36 layers ①②), seen with confidence (not
+  `low_confidence`) and with a confirmed unit get one card: `single_action` for one
+  item, `batch_action` for several, every line `create_item`
+  (`backend/app/agent/cards.py`, `PhotoCards`).
+- `values`: `name`, `quantity` and `unit` from the photo, `location` null (the App
+  shows 未填; confirming accepts no location, Issue #124), and `transaction_id`. There
+  is no `shopping_item_id` and no target version.
+- Items the household has, unsure items and items without a confirmed unit are only
+  reported, as before. A photo item-match card (Issue #124 point 2) is not built.
+- Confirming (Issue #124, #168): A1's
+  `PhotoInputResolver` (`backend/app/services/purchase_inputs.py`) turns each line in
+  the fixed `approved_operation_ids`, in card order, into C1's `AdjustmentInput`
+  from the stored card only: `approval_id`, `operation_id`, `transaction_id`,
+  `quantity`, and a new item with `name`, `unit`, `location` (null) and `item_id`
+  from B1's `resolve_inventory_item_id(operation_id)`. B1's `PhotoItemWriteBuilder`
+  (`backend/app/services/photo_item_writes.py`, PR #171) plans each line with C1's
+  `plan_adjustment`, using the card's `decided_at` as the time,
+  and writes the item, the `adjustment` Transaction, the change event
+  (`shopping_item_id` null) and the receipts with the completed card in one batch
+  (#42). A1's `CardWriteRouter` (`backend/app/services/card_writes.py`) sends photo
+  cards to that builder and purchase cards to C1's `ShoppingWriteBuilder`, in
+  `get_approval_service`. Without a photo builder it refuses a photo card, so
+  nothing is stored or written. The reply after confirming is 已記錄：<name> +N
+  <unit>（現在 N <unit>） per line, like a purchase.
+- As in section 8, a photo makes no card in a message that brings an open card back,
+  or when the open cards cannot be listed; the photo is only reported.
+- The quantity can be changed on the card with `card_changes` (section 7.1); a new
+  card replaces the old one, and the user confirms again.
+- On in `get_read_agent` whenever cards are (Cosmos): confirming is written by
+  B1's builder above. Without Cosmos a photo is only reported.
+
 ```json
 {
   "approval_id": "demo-approval-4",
@@ -383,12 +516,21 @@ quantity can be changed.
   written (Issue #42 c).
 - A changed value goes back to the Agent as in section 7 (Issue #91).
 - Purchase time (Issue #113): the Transaction's `created_at` is when the purchase
-  happened. No purchase time is on the card yet, so the first `decided_at` is used,
-  and a retry keeps that same time. When the user says a day (昨天買的), the line
-  will carry `purchased_at`, shown only as a date and changed as in section 7; the
-  Agent does not do this yet. `backend/app/services/purchase_time.py` (PR #71) has
-  the rule for turning the day into a time, and `purchase_inputs.py` already reads
-  `purchased_at` when present.
+  happened. Without a day on the line, the first `decided_at` is used, and a retry
+  keeps that same time.
+- A day the user says (昨天買的, A1-50) is built but off in the running app
+  (`PurchaseCards(dated_purchases=...)`). With it on, the model is told today's
+  Taipei date and may give each item `purchased_on` (YYYY-MM-DD). A past day goes on
+  the line as `purchased_at` (12:00 Taipei that day, `purchase_time.py`, PR #71) and
+  in its description (「11/15 買的」); today or no day leaves it off; a future or
+  unreadable day leaves the item off the card. `purchase_inputs.py` passes
+  `purchased_at` on to C1. `NESTOCK_DATED_PURCHASES=1` in the backend's environment
+  (`backend/.env` on your own computer) turns it on for testing; any other value, or
+  none, is off, and the cloud does not set it. It stays off in the cloud until the
+  App shows the day on the purchase card (HITL rule 4; PR #163), the App sends a
+  changed day as `card_changes` (section 7.1), and the live-model test of spoken days
+  passes (`test_purchase_dates.py`, `-m live_eval`, Issue #127). A changed day needs
+  no model: `card_changes` is applied by the backend.
 
 ```json
 {

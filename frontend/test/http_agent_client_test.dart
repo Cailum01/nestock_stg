@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:nestock/features/agent/data/http_agent_client.dart';
 import 'package:nestock/features/agent/data/mock_agent_client.dart';
+import 'package:nestock/features/agent/domain/agent_client.dart';
 import 'package:nestock/features/agent/domain/agent_view_data.dart';
 
 void main() {
@@ -159,6 +160,36 @@ void main() {
         'replaces_approval_id': 'approval-1',
       },
     ]);
+  });
+  test('submits only explicit structured card changes', () async {
+    final client = HttpAgentClient(
+      baseUrl: base,
+      client: MockClient((request) async {
+        expect(request.url.path, '/agent/messages');
+        expect(jsonDecode(request.body), {
+          'household_id': 'demo-household',
+          'message': '送出修改',
+          'replaces_approval_id': 'approval-1',
+          'card_changes': [
+            {'operation_id': 'operation-1', 'quantity': 3},
+            {'operation_id': 'operation-2', 'purchased_on': '2026-11-14'},
+            {'operation_id': 'operation-3', 'purchased_on': null},
+          ],
+        });
+        return http.Response.bytes(
+          utf8.encode(jsonEncode({'message': '已更新', 'results': []})),
+          200,
+        );
+      }),
+    );
+    await client.submitCardChanges(
+      approvalId: 'approval-1',
+      changes: [
+        CardChange(operationId: 'operation-1', quantity: 3),
+        CardChange(operationId: 'operation-2', purchasedOn: '2026-11-14'),
+        CardChange(operationId: 'operation-3', resetPurchasedOn: true),
+      ],
+    );
   });
   test('rejecting an approval omits selection fields', () async {
     final client = HttpAgentClient(

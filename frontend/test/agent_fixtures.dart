@@ -11,6 +11,12 @@ class FixtureAgentClient implements AgentClient {
       reply;
 
   @override
+  Future<AgentReply> submitCardChanges({
+    required String approvalId,
+    required List<CardChange> changes,
+  }) async => reply;
+
+  @override
   Future<AgentReply> resume({
     required String approvalId,
     required bool approved,

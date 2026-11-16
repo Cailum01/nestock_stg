@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nestock/features/agent/domain/agent_view_data.dart';
+import 'package:nestock/features/agent/domain/agent_client.dart';
 import 'package:nestock/features/agent/presentation/approval_card.dart';
+import 'package:nestock/features/agent/presentation/approval_card_config.dart';
 
 void main() {
   Future<void> pumpCard(
@@ -9,7 +11,9 @@ void main() {
     ApprovalView approval, {
     ApprovalDecisionCallback? onDecision,
     ValueChanged<String>? onEdit,
+    ValueChanged<List<CardChange>>? onCardChanges,
     Future<void> Function(Uri url)? onOpenProductUrl,
+    ApprovalCardConfig config = const ApprovalCardConfig(),
   }) {
     return tester.pumpWidget(
       MaterialApp(
@@ -25,7 +29,9 @@ void main() {
                   approvedOperationIds,
                 }) {},
             onSubmitChanges: onEdit,
+            onSubmitCardChanges: onCardChanges,
             onOpenProductUrl: onOpenProductUrl,
+            config: config,
           ),
         ),
       ),
@@ -81,51 +87,65 @@ void main() {
     },
   );
 
-  testWidgets(
-    'create item uses the Confirmation Card and submits deterministic edits',
-    (tester) async {
-      String? editMessage;
-      await pumpCard(
-        tester,
-        const ApprovalView(
-          id: 'approval-create-1',
-          presentation: ApprovalPresentation.singleAction,
-          operations: [
-            OperationView(
-              id: 'operation-create-1',
-              action: 'create_item',
-              description: '會新增一個庫存品項：洗碗精',
-              values: {
-                'name': '洗碗精',
-                'quantity': 1,
-                'unit': '瓶',
-                'location': '廚房櫃子',
-              },
-            ),
-          ],
-        ),
-        onEdit: (message) => editMessage = message,
-      );
+  testWidgets('create item permits only a structured quantity edit', (
+    tester,
+  ) async {
+    List<CardChange>? changes;
+    bool? decision;
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-create-1',
+        presentation: ApprovalPresentation.singleAction,
+        operations: [
+          OperationView(
+            id: 'operation-create-1',
+            action: 'create_item',
+            description: '會新增一個庫存品項：洗碗精',
+            values: {
+              'name': '洗碗精',
+              'quantity': 1,
+              'unit': '瓶',
+              'location': '廚房櫃子',
+            },
+          ),
+        ],
+      ),
+      onCardChanges: (value) => changes = value,
+      onDecision: ({
+        required approved,
+        selectedOptionId,
+        approvedOperationIds,
+      }) => decision = approved,
+    );
 
-      expect(find.text('確認建立庫存品項'), findsOneWidget);
-      expect(find.text('會新增一個庫存品項：洗碗精'), findsOneWidget);
-      expect(find.text('洗碗精'), findsOneWidget);
-      await tester.tap(find.byKey(const Key('confirmation-edit-0')));
-      await tester.pump();
-      await tester.enterText(
-        find.byKey(const Key('confirmation-quantity-0')),
-        '3',
-      );
-      await tester.enterText(find.byKey(const Key('confirmation-unit-0')), '包');
-      await tester.enterText(
-        find.byKey(const Key('confirmation-location-0')),
-        '浴室櫃',
-      );
-      await tester.tap(find.byKey(const Key('confirmation-submit-changes')));
+    expect(find.text('確認建立庫存品項'), findsOneWidget);
+    expect(find.text('會新增一個庫存品項：洗碗精'), findsOneWidget);
+    expect(find.text('洗碗精'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('confirmation-edit-0')));
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('confirmation-quantity-0')),
+      '3',
+    );
+    await tester.pump();
+    expect(find.byKey(const Key('confirmation-unit-0')), findsNothing);
+    expect(find.byKey(const Key('confirmation-location-0')), findsNothing);
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('confirmation-confirm')))
+          .onPressed,
+      isNull,
+    );
+    await tester.tap(find.byKey(const Key('confirmation-cancel')));
+    expect(decision, isFalse);
+    await tester.tap(find.byKey(const Key('confirmation-submit-changes')));
 
-      expect(editMessage, '洗碗精：數量改成 3，單位改成 包，位置改成 浴室櫃');
-    },
-  );
+    expect(changes!.single.toJson(), {
+      'operation_id': 'operation-create-1',
+      'quantity': 3,
+    });
+  });
 
   testWidgets(
     'create item without a location uses a display placeholder and keeps approval decisions unchanged',
@@ -220,7 +240,7 @@ void main() {
   testWidgets('create item preserves a valid location and never submits 未填', (
     tester,
   ) async {
-    String? editMessage;
+    List<CardChange>? changes;
     await pumpCard(
       tester,
       const ApprovalView(
@@ -240,7 +260,7 @@ void main() {
           ),
         ],
       ),
-      onEdit: (message) => editMessage = message,
+      onCardChanges: (value) => changes = value,
     );
 
     expect(find.text('書桌抽屜'), findsOneWidget);
@@ -253,14 +273,16 @@ void main() {
     await tester.pump();
     await tester.tap(find.byKey(const Key('confirmation-submit-changes')));
 
-    expect(editMessage, '滑鼠：數量改成 2');
-    expect(editMessage, isNot(contains('未填')));
+    expect(changes!.single.toJson(), {
+      'operation_id': 'operation-create-valid-location',
+      'quantity': 2,
+    });
   });
 
   testWidgets('blank optional location stays null in an edit request', (
     tester,
   ) async {
-    String? editMessage;
+    List<CardChange>? changes;
     await pumpCard(
       tester,
       const ApprovalView(
@@ -280,7 +302,7 @@ void main() {
           ),
         ],
       ),
-      onEdit: (message) => editMessage = message,
+      onCardChanges: (value) => changes = value,
     );
 
     await tester.tap(find.byKey(const Key('confirmation-edit-0')));
@@ -292,8 +314,10 @@ void main() {
     await tester.pump();
     await tester.tap(find.byKey(const Key('confirmation-submit-changes')));
 
-    expect(editMessage, '滑鼠：數量改成 2');
-    expect(editMessage, isNot(contains('未填')));
+    expect(changes!.single.toJson(), {
+      'operation_id': 'operation-create-blank-edit',
+      'quantity': 2,
+    });
   });
 
   testWidgets(
@@ -339,16 +363,17 @@ void main() {
       );
 
       expect(
-        find.byKey(const Key('generic-batch-approval-card')),
+        find.byKey(const Key('create-item-batch-approval-card')),
         findsOneWidget,
       );
-      expect(find.text('建立庫存品項：滑鼠'), findsOneWidget);
-      expect(find.text('建立庫存品項：鍵盤'), findsOneWidget);
+      expect(find.byKey(const Key('purchase-approval-card')), findsNothing);
+      expect(find.text('滑鼠 1 個'), findsOneWidget);
+      expect(find.text('鍵盤 1 個'), findsOneWidget);
       expect(find.textContaining('opaque-'), findsNothing);
 
       await tester.tap(
         find.byKey(
-          const Key('generic-batch-operation-operation-create-keyboard'),
+          const Key('create-item-operation-operation-create-keyboard'),
         ),
       );
       await tester.tap(find.byKey(const Key('approval-confirm')));
@@ -356,6 +381,48 @@ void main() {
       expect(selectedOperationIds, ['operation-create-mouse']);
     },
   );
+
+  testWidgets('batch create item draft blocks confirmation', (tester) async {
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-create-batch-draft',
+        presentation: ApprovalPresentation.batchAction,
+        operations: [
+          OperationView(
+            id: 'operation-create-draft',
+            action: 'create_item',
+            description: '建立庫存品項：滑鼠',
+            values: {'name': '滑鼠', 'quantity': 1, 'unit': '個'},
+          ),
+        ],
+      ),
+      onCardChanges: (_) {},
+    );
+
+    await tester.tap(
+      find.byKey(const Key('create-item-edit-quantity-operation-create-draft')),
+    );
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('create-item-quantity-operation-create-draft')),
+      '2',
+    );
+    await tester.pump();
+
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<TextButton>(find.byKey(const Key('approval-cancel')))
+          .onPressed,
+      isNotNull,
+    );
+  });
 
   test('edit messages are stable and only include changed fields', () {
     const original = ConfirmationItemView(
@@ -412,7 +479,7 @@ void main() {
   testWidgets(
     'purchase card displays only purchase values and edits quantity',
     (tester) async {
-      String? editMessage;
+      List<CardChange>? changes;
       bool? approvalWasAccepted;
       List<String>? operationIds;
       await pumpCard(
@@ -436,7 +503,7 @@ void main() {
             ),
           ],
         ),
-        onEdit: (message) => editMessage = message,
+        onCardChanges: (value) => changes = value,
         onDecision:
             ({required approved, selectedOptionId, approvedOperationIds}) {
               approvalWasAccepted = approved;
@@ -445,7 +512,15 @@ void main() {
       );
 
       expect(find.byKey(const Key('purchase-approval-card')), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('purchase-approval-card')),
+          matching: find.byKey(const Key('confirmation-border-top')),
+        ),
+        findsOneWidget,
+      );
       expect(find.text('衛生紙 2 包'), findsOneWidget);
+      expect(find.textContaining('購買日期：'), findsNothing);
       expect(find.text('shopping-1'), findsNothing);
       expect(find.text('item-1'), findsNothing);
       expect(find.text('transaction-1'), findsNothing);
@@ -459,16 +534,368 @@ void main() {
         '3',
       );
       await tester.pump();
-      await tester.tap(
-        find.byKey(const Key('purchase-submit-quantity-change')),
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+            .onPressed,
+        isNull,
       );
-      expect(editMessage, '衛生紙：數量改成 3');
+      await tester.tap(find.byKey(const Key('approval-cancel')));
+      expect(approvalWasAccepted, isFalse);
+      await tester.tap(find.byKey(const Key('purchase-submit-card-changes')));
+      expect(changes!.single.toJson(), {
+        'operation_id': 'operation-purchase-1',
+        'quantity': 3,
+      });
 
-      await tester.tap(find.byKey(const Key('approval-confirm')));
-      expect(approvalWasAccepted, isTrue);
       expect(operationIds, isNull);
     },
   );
+
+  testWidgets(
+    'Shopping-backed create item uses the purchase card and structured edits',
+    (tester) async {
+      List<CardChange>? changes;
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-shopping-create-purchase',
+          presentation: ApprovalPresentation.singleAction,
+          operations: [
+            OperationView(
+              id: 'operation-shopping-create-purchase',
+              action: 'create_item',
+              description: '建立庫存品項：衛生紙',
+              values: {
+                'name': '衛生紙',
+                'quantity': 2,
+                'unit': '包',
+                'location': '浴室櫃',
+                'shopping_item_id': 'shopping-first-purchase',
+                'transaction_id': 'transaction-first-purchase',
+                'purchased_at': '2026-11-09T12:00:00+08:00',
+              },
+            ),
+          ],
+        ),
+        onCardChanges: (value) => changes = value,
+      );
+
+      expect(find.byKey(const Key('purchase-approval-card')), findsOneWidget);
+      expect(find.byKey(const Key('confirmation-card-shell')), findsNothing);
+      expect(find.text('衛生紙 2 包'), findsOneWidget);
+      expect(find.text('購買日期：2026/11/09'), findsOneWidget);
+      expect(find.textContaining('shopping-first-purchase'), findsNothing);
+      expect(find.textContaining('transaction-first-purchase'), findsNothing);
+
+      await tester.tap(find.byKey(const Key('purchase-edit-quantity')));
+      await tester.pump();
+      await tester.enterText(
+        find.byKey(const Key('purchase-quantity-field')),
+        '3',
+      );
+      await tester.pump();
+
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+            .onPressed,
+        isNull,
+      );
+      await tester.tap(find.byKey(const Key('purchase-submit-card-changes')));
+      expect(changes!.single.toJson(), {
+        'operation_id': 'operation-shopping-create-purchase',
+        'quantity': 3,
+      });
+    },
+  );
+
+  testWidgets(
+    'mixed complete purchase and Shopping-backed create items use one purchase card',
+    (tester) async {
+      List<String>? selectedIds;
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-mixed-shopping-purchase',
+          presentation: ApprovalPresentation.batchAction,
+          operations: [
+            OperationView(
+              id: 'operation-existing-item',
+              action: 'complete_purchase',
+              description: '洗衣精 +1 瓶',
+              values: {
+                'name': '洗衣精',
+                'purchased_quantity': 1,
+                'purchased_unit': '瓶',
+              },
+            ),
+            OperationView(
+              id: 'operation-first-item',
+              action: 'create_item',
+              description: '建立庫存品項：衛生紙',
+              values: {
+                'name': '衛生紙',
+                'quantity': 2,
+                'unit': '包',
+                'location': '浴室櫃',
+                'shopping_item_id': 'shopping-first-item',
+                'transaction_id': 'transaction-first-item',
+                'purchased_at': '2026-11-09T12:00:00+08:00',
+              },
+            ),
+          ],
+        ),
+        onDecision:
+            ({required approved, selectedOptionId, approvedOperationIds}) {
+              selectedIds = approvedOperationIds;
+            },
+      );
+
+      expect(find.byKey(const Key('purchase-approval-card')), findsOneWidget);
+      expect(
+        find.byKey(const Key('generic-batch-approval-card')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const Key('create-item-batch-approval-card')),
+        findsNothing,
+      );
+      expect(find.text('洗衣精 1 瓶'), findsOneWidget);
+      expect(find.text('衛生紙 2 包'), findsOneWidget);
+      expect(find.text('購買日期：2026/11/09'), findsOneWidget);
+
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const Key('purchase-operation-operation-first-item')),
+          matching: find.byType(Checkbox),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('approval-confirm')));
+
+      expect(selectedIds, ['operation-existing-item']);
+    },
+  );
+
+  testWidgets(
+    'photo create item mixed with a purchase keeps the generic batch fallback',
+    (tester) async {
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-photo-and-purchase',
+          presentation: ApprovalPresentation.batchAction,
+          operations: [
+            OperationView(
+              id: 'operation-photo-item',
+              action: 'create_item',
+              description: '建立庫存品項：滑鼠',
+              values: {'name': '滑鼠', 'quantity': 1, 'unit': '個'},
+            ),
+            OperationView(
+              id: 'operation-purchased-item',
+              action: 'complete_purchase',
+              description: '衛生紙 +2 包',
+              values: {
+                'name': '衛生紙',
+                'purchased_quantity': 2,
+                'purchased_unit': '包',
+              },
+            ),
+          ],
+        ),
+      );
+
+      expect(
+        find.byKey(const Key('generic-batch-approval-card')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('purchase-approval-card')), findsNothing);
+      expect(
+        find.byKey(const Key('create-item-batch-approval-card')),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets('purchase dates retain each supplied timestamp calendar day', (
+    tester,
+  ) async {
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-purchase-dates',
+        presentation: ApprovalPresentation.batchAction,
+        operations: [
+          OperationView(
+            id: 'operation-east',
+            action: 'complete_purchase',
+            description: '衛生紙 +2 包',
+            values: {
+              'name': '衛生紙',
+              'purchased_quantity': 2,
+              'purchased_unit': '包',
+              'purchased_at': '2026-11-09T00:30:00+14:00',
+            },
+          ),
+          OperationView(
+            id: 'operation-west',
+            action: 'complete_purchase',
+            description: '洗衣精 +1 瓶',
+            values: {
+              'name': '洗衣精',
+              'purchased_quantity': 1,
+              'purchased_unit': '瓶',
+              'purchased_at': '2026-11-09T23:30:00-11:00',
+            },
+          ),
+        ],
+      ),
+    );
+
+    expect(find.text('購買日期：2026/11/08'), findsOneWidget);
+    expect(find.text('購買日期：2026/11/10'), findsOneWidget);
+    expect(
+      find.byKey(const Key('purchase-date-operation-east')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('purchase-date-operation-west')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('2026-11-09T'), findsNothing);
+    expect(find.byTooltip('修改購買日期'), findsNothing);
+    expect(find.text('補填購買日期'), findsNothing);
+    expect(find.text('修改購買日期'), findsNothing);
+    expect(find.text('改回今天'), findsNothing);
+  });
+
+  testWidgets('purchase card omits missing and invalid purchase dates', (
+    tester,
+  ) async {
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-purchase-invalid-date',
+        presentation: ApprovalPresentation.batchAction,
+        operations: [
+          OperationView(
+            id: 'operation-missing-date',
+            action: 'complete_purchase',
+            description: '衛生紙 +2 包',
+            values: {
+              'name': '衛生紙',
+              'purchased_quantity': 2,
+              'purchased_unit': '包',
+              'created_at': '2026-11-11T12:00:00+08:00',
+            },
+          ),
+          OperationView(
+            id: 'operation-invalid-date',
+            action: 'complete_purchase',
+            description: '洗衣精 +1 瓶',
+            values: {
+              'name': '洗衣精',
+              'purchased_quantity': 1,
+              'purchased_unit': '瓶',
+              'purchased_at': '2026-02-29T12:00:00+08:00',
+            },
+          ),
+        ],
+      ),
+    );
+
+    expect(find.textContaining('購買日期：'), findsNothing);
+    expect(find.textContaining('purchased_at'), findsNothing);
+    expect(find.textContaining('2026-02-29'), findsNothing);
+  });
+
+  testWidgets(
+    'purchase date reset sends an explicit null, not a text command',
+    (tester) async {
+      List<CardChange>? changes;
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-purchase-reset-date',
+          presentation: ApprovalPresentation.singleAction,
+          operations: [
+            OperationView(
+              id: 'operation-reset-date',
+              action: 'complete_purchase',
+              description: '衛生紙 +2 包',
+              values: {
+                'name': '衛生紙',
+                'purchased_quantity': 2,
+                'purchased_unit': '包',
+                'purchased_at': '2026-11-09T12:00:00+08:00',
+              },
+            ),
+          ],
+        ),
+        onCardChanges: (value) => changes = value,
+        config: const ApprovalCardConfig(datedPurchasesEnabled: true),
+      );
+
+      await tester.tap(find.byKey(const Key('purchase-edit-quantity')));
+      await tester.pump();
+      expect(find.text('修改購買日期'), findsOneWidget);
+      expect(find.text('改回今天'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const Key('purchase-reset-date-operation-reset-date')),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('purchase-submit-card-changes')));
+
+      expect(changes!.single.toJson(), {
+        'operation_id': 'operation-reset-date',
+        'purchased_on': null,
+      });
+    },
+  );
+
+  testWidgets('purchase dates fit a narrow Android viewport without overflow', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(320, 568));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-purchase-narrow-date',
+        presentation: ApprovalPresentation.batchAction,
+        operations: [
+          OperationView(
+            id: 'operation-long-a',
+            action: 'complete_purchase',
+            description: '長名稱衛生紙 +2 包',
+            values: {
+              'name': '特長名稱的衛生紙補貨項目',
+              'purchased_quantity': 2,
+              'purchased_unit': '包',
+              'purchased_at': '2026-11-09T12:00:00+08:00',
+            },
+          ),
+          OperationView(
+            id: 'operation-long-b',
+            action: 'complete_purchase',
+            description: '長名稱洗衣精 +1 瓶',
+            values: {
+              'name': '特長名稱的洗衣精補貨項目',
+              'purchased_quantity': 1,
+              'purchased_unit': '瓶',
+              'purchased_at': '2026-11-10T12:00:00+08:00',
+            },
+          ),
+        ],
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('購買日期：2026/11/09'), findsOneWidget);
+    expect(find.text('購買日期：2026/11/10'), findsOneWidget);
+  });
 
   testWidgets('purchase quantity editor permits only positive integers', (
     tester,
@@ -496,25 +923,28 @@ void main() {
     await tester.tap(find.byKey(const Key('purchase-edit-quantity')));
     await tester.pump();
     final field = find.byKey(const Key('purchase-quantity-field'));
-    expect(
-      find.byKey(const Key('purchase-submit-quantity-change')),
-      findsNothing,
-    );
+    expect(find.byKey(const Key('purchase-submit-card-changes')), findsNothing);
 
     for (final invalidValue in ['0', '-1', '1.5']) {
       await tester.enterText(field, invalidValue);
       await tester.pump();
       expect(
-        find.byKey(const Key('purchase-submit-quantity-change')),
+        find.byKey(const Key('purchase-submit-card-changes')),
         findsNothing,
         reason: '$invalidValue must not produce a replacement request',
+      );
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+            .onPressed,
+        isNull,
       );
     }
 
     await tester.enterText(field, '3');
     await tester.pump();
     expect(
-      find.byKey(const Key('purchase-submit-quantity-change')),
+      find.byKey(const Key('purchase-submit-card-changes')),
       findsOneWidget,
     );
   });
@@ -523,7 +953,7 @@ void main() {
     tester,
   ) async {
     List<String>? operationIds;
-    String? editMessage;
+    List<CardChange>? changes;
     await pumpCard(
       tester,
       const ApprovalView(
@@ -557,7 +987,7 @@ void main() {
         selectedOptionId,
         approvedOperationIds,
       }) => operationIds = approvedOperationIds,
-      onEdit: (message) => editMessage = message,
+      onCardChanges: (value) => changes = value,
     );
 
     expect(
@@ -596,12 +1026,19 @@ void main() {
       '2',
     );
     await tester.pump();
-    await tester.tap(
-      find.byKey(const Key('purchase-submit-quantity-change-operation-b')),
-    );
-    expect(editMessage, '洗衣精：數量改成 2');
+    await tester.tap(find.byKey(const Key('purchase-submit-card-changes')));
+    expect(changes!.single.toJson(), {
+      'operation_id': 'operation-b',
+      'quantity': 2,
+    });
     expect(find.text('衛生紙 2 包'), findsOneWidget);
     expect(find.text('洗衣精 1 瓶'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+          .onPressed,
+      isNull,
+    );
 
     await tester.tap(
       find.descendant(
@@ -610,8 +1047,15 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.tap(find.byKey(const Key('approval-confirm')));
-    expect(operationIds, ['operation-a']);
+    expect(operationIds, isNull);
+    expect(
+      tester
+          .widget<CheckboxListTile>(
+            find.byKey(const Key('purchase-operation-operation-b')),
+          )
+          .value,
+      isFalse,
+    );
 
     await tester.tap(
       find.descendant(
@@ -627,6 +1071,65 @@ void main() {
       isNull,
     );
   });
+
+  testWidgets(
+    'batch purchase blocks all changes while an edited row is invalid',
+    (tester) async {
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-purchase-batch-invalid',
+          presentation: ApprovalPresentation.batchAction,
+          operations: [
+            OperationView(
+              id: 'operation-a',
+              action: 'complete_purchase',
+              description: '衛生紙 +2 包',
+              values: {
+                'name': '衛生紙',
+                'purchased_quantity': 2,
+                'purchased_unit': '包',
+              },
+            ),
+            OperationView(
+              id: 'operation-b',
+              action: 'complete_purchase',
+              description: '洗衣精 +1 瓶',
+              values: {
+                'name': '洗衣精',
+                'purchased_quantity': 1,
+                'purchased_unit': '瓶',
+              },
+            ),
+          ],
+        ),
+        onCardChanges: (_) {},
+      );
+
+      await tester.tap(
+        find.byKey(const Key('purchase-edit-quantity-operation-a')),
+      );
+      await tester.pump();
+      await tester.enterText(
+        find.byKey(const Key('purchase-quantity-field-operation-a')),
+        '3',
+      );
+      await tester.tap(
+        find.byKey(const Key('purchase-edit-quantity-operation-b')),
+      );
+      await tester.pump();
+      await tester.enterText(
+        find.byKey(const Key('purchase-quantity-field-operation-b')),
+        '0',
+      );
+      await tester.pump();
+
+      expect(
+        find.byKey(const Key('purchase-submit-card-changes')),
+        findsNothing,
+      );
+    },
+  );
 
   testWidgets('cancelling a batch purchase does not submit operation IDs', (
     tester,

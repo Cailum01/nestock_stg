@@ -25,6 +25,12 @@ class ControlledAgent implements AgentClient {
   }
 
   @override
+  Future<AgentReply> submitCardChanges({
+    required String approvalId,
+    required List<CardChange> changes,
+  }) => pending.future;
+
+  @override
   Future<AgentReply> resume({
     required String approvalId,
     required bool approved,

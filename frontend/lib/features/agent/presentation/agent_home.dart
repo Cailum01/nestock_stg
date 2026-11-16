@@ -140,9 +140,9 @@ class _AgentHomeState extends State<AgentHome> {
     }
   }
 
-  Future<void> _submitApprovalChanges({
+  Future<void> _submitCardChanges({
     required AgentReply currentReply,
-    required String message,
+    required List<CardChange> changes,
   }) async {
     final approval = currentReply.approval;
     if (_busy || approval == null) return;
@@ -150,14 +150,22 @@ class _AgentHomeState extends State<AgentHome> {
     setState(() {
       _state = AgentState.loading;
       _retry = () =>
-          _submitApprovalChanges(currentReply: currentReply, message: message);
+          _submitCardChanges(currentReply: currentReply, changes: changes);
     });
     try {
-      final reply = await widget.client.send(
-        message,
-        replacesApprovalId: approval.id,
+      final reply = await widget.client.submitCardChanges(
+        approvalId: approval.id,
+        changes: changes,
       );
       if (!mounted || generation != _conversationGeneration) return;
+      final code = _cardChangeResultCode(reply);
+      final returnedCard = reply.approval;
+      final returnsOriginalCard =
+          returnedCard != null && returnedCard.id == approval.id;
+      final returnsReplacementCard =
+          returnedCard != null && returnedCard.id != approval.id;
+      final terminalNoCard =
+          returnedCard == null && code == 'card_not_changeable';
       setState(() {
         _messages.add((
           user: false,
@@ -166,9 +174,22 @@ class _AgentHomeState extends State<AgentHome> {
           photo: null,
           imageRef: null,
         ));
-        if (reply.approval != null) _reply = reply;
+        // A received card-change response is authoritative for which card is
+        // currently actionable. A refusal that includes the original card
+        // keeps it on screen; card_not_changeable deliberately includes none.
+        // Do not make this change for a timeout/network failure below: there
+        // was no authoritative response in those cases.
+        if (returnsReplacementCard || returnsOriginalCard || terminalNoCard) {
+          _reply = reply;
+        } else if (returnedCard == null) {
+          // A response with no pending card can never leave a local action
+          // active, even if an unknown future backend code accompanies it.
+          _reply = reply;
+        }
         _workOpen = true;
-        _state = AgentState.waitingForApproval;
+        _state = reply.approval == null
+            ? AgentState.completed
+            : AgentState.waitingForApproval;
       });
       _showLatestMessage();
     } on TimeoutException {
@@ -180,6 +201,33 @@ class _AgentHomeState extends State<AgentHome> {
         setState(() => _state = AgentState.error);
       }
     }
+  }
+
+  String? _cardChangeResultCode(AgentReply reply) {
+    for (final result in reply.results) {
+      final code = result.data['code'];
+      if (code is String && code.isNotEmpty) return code;
+    }
+    return null;
+  }
+
+  Map<String, String> _cardChangeErrors(AgentReply reply) {
+    final errors = <String, String>{};
+    for (final result in reply.results) {
+      final data = result.data;
+      if (data['code'] != 'line_refused' || data['lines'] is! List) continue;
+      for (final line in data['lines'] as List<dynamic>) {
+        if (line is! Map) continue;
+        final operationId = line['operation_id'];
+        final reason = line['reason'];
+        if (operationId is String &&
+            operationId.isNotEmpty &&
+            reason is String) {
+          errors[operationId] = reason;
+        }
+      }
+    }
+    return errors;
   }
 
   void _clearConversation() {
@@ -653,8 +701,10 @@ class _AgentHomeState extends State<AgentHome> {
                     if (entry.reply!.approval != null &&
                         identical(entry.reply, _reply))
                       ApprovalCard(
+                        key: ValueKey('approval-${entry.reply!.approval!.id}'),
                         approval: entry.reply!.approval!,
                         busy: _busy,
+                        changeErrors: _cardChangeErrors(entry.reply!),
                         onDecision:
                             ({
                               required approved,
@@ -668,9 +718,9 @@ class _AgentHomeState extends State<AgentHome> {
                                 approvedOperationIds: approvedOperationIds,
                               ),
                             ),
-                        onSubmitChanges: (message) => _submitApprovalChanges(
+                        onSubmitCardChanges: (changes) => _submitCardChanges(
                           currentReply: entry.reply!,
-                          message: message,
+                          changes: changes,
                         ),
                       ),
                     if (entry.reply!.mockVisionItems != null)

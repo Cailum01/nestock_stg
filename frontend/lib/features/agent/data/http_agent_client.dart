@@ -23,10 +23,18 @@ class HttpAgentClient implements PhotoAwareAgentClient {
   Future<AgentReply> sendWithPhoto(String message, String imageRef) =>
       _send(message, imageRef);
 
+  @override
+  Future<AgentReply> submitCardChanges({
+    required String approvalId,
+    required List<CardChange> changes,
+  }) =>
+      _send('送出修改', null, replacesApprovalId: approvalId, cardChanges: changes);
+
   Future<AgentReply> _send(
     String message,
     String? imageRef, {
     String? replacesApprovalId,
+    List<CardChange>? cardChanges,
   }) async {
     final response = await client
         .post(
@@ -37,6 +45,9 @@ class HttpAgentClient implements PhotoAwareAgentClient {
             'message': message,
             'image_ref': ?imageRef,
             'replaces_approval_id': ?replacesApprovalId,
+            'card_changes': ?cardChanges
+                ?.map((change) => change.toJson())
+                .toList(growable: false),
           }),
         )
         .timeout(timeout);

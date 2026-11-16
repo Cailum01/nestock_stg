@@ -56,7 +56,7 @@ class PurchaseInput:
 
 @dataclass(frozen=True)
 class AdjustmentInput:
-    """A confirmed new-item stock adjustment with no Shopping row.
+    """A confirmed standalone stock addition with no Shopping row.
 
     This input must be resolved from A1's stored approval, never from mutable
     client values. Every identity and value comes from the stored approval card;
@@ -101,7 +101,7 @@ class PurchasePlan:
 
 @dataclass(frozen=True)
 class AdjustmentPlan:
-    """Pure domain plan for an approved photo-created inventory item.
+    """Pure domain plan for any approved standalone new inventory item.
 
     The returned domain records are grouped per operation by the batch builder;
     ApprovalService and B1's repository still own authorization and persistence.
@@ -312,7 +312,7 @@ class ShoppingPlanService:
         adjustment: AdjustmentInput,
         recorded_at: datetime,
     ) -> AdjustmentPlan:
-        """Plan a no-Shopping new-item adjustment from an approved proposal.
+        """Plan a standalone incoming-stock addition from an approved proposal.
 
         This only creates immutable domain values. It performs no authorization,
         ChangeEvent construction, Cosmos writes, or public API integration.

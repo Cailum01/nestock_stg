@@ -113,6 +113,25 @@ Inventory, creates a purchase Transaction, or reverses earlier effects.
 
 ## Plans and new targets (#90)
 
+### Standalone stock additions (#168)
+
+`AdjustmentInput` and `plan_adjustment` cover any confirmed new-item stock
+addition without a Shopping row, including `add_stock` and photo-created items.
+The stored card supplies the exact name, positive actual quantity, unit and
+location (including a confirmed absent location). C1 records incoming stock as
+one `adjustment` Transaction with a positive `quantity_delta`; this describes an
+initial confirmed quantity and does not change an existing Inventory item. The
+matching ChangeEvent uses `event_id = operation_id`, links the approval,
+transaction and new `item_id`, leaves `shopping_item_id` null, and uses the
+stored approval `decided_at` for both `occurred_at` and `recorded_at`.
+
+`ShoppingWriteBuilder` already sends the Inventory create, Transaction and event
+through one operation batch. The caller must resolve inputs from the stored
+approval; the builder checks every value against that card and checks that the
+stable operation-derived item ID is absent in the household. It neither creates
+a Shopping row nor acts as the approval or persistence layer. Uncertain matches
+must be resolved before C1 receives an adjustment input.
+
 `ShoppingPreviewService` provides display-only previews for existing targets and
 removal. `ShoppingPlanService.plan_purchase` accepts selected `PurchaseInput`s:
 

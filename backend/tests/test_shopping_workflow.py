@@ -160,7 +160,7 @@ def setup_adjustment(*, save=True, quantity=2):
     resolver, clock = StoredInputResolver(), Clock()
     builder = ShoppingWriteBuilder(container, resolver)
     service = ApprovalService(repo, builder, clock=clock)
-    transaction_id = "photo-transaction-1"
+    transaction_id = "standalone-stock-transaction-1"
     card = service.prepare(
         household_id=HOME,
         presentation=ApprovalPresentation.SINGLE_ACTION,
@@ -263,7 +263,7 @@ def test_new_inventory_and_existing_purchase_commit_together_with_stable_time_an
     assert len(receipts(h)) == 2
 
 
-def test_photo_adjustment_creates_inventory_transaction_and_nullable_event_atomically():
+def test_standalone_stock_addition_creates_inventory_transaction_and_event_atomically():
     h = setup_adjustment()
     operation_id = h.card.operations[0].operation_id
     adjustment = h.resolver.inputs[operation_id]
@@ -273,7 +273,7 @@ def test_photo_adjustment_creates_inventory_transaction_and_nullable_event_atomi
     assert result.outcome == ResumeOutcome.COMPLETED
     item_id = resolve_inventory_item_id(operation_id)
     inventory = h.container.get(f"inventory_item:{item_id}")
-    transaction = h.container.get("transaction:photo-transaction-1")
+    transaction = h.container.get("transaction:standalone-stock-transaction-1")
     event = h.container.get(f"change_event:{operation_id}")
     assert inventory["quantity"] == adjustment.quantity and inventory["location"] is None
     assert transaction["item_id"] == item_id
@@ -292,7 +292,7 @@ def test_photo_adjustment_creates_inventory_transaction_and_nullable_event_atomi
     assert len(h.container.batches) == before
 
 
-def test_photo_adjustment_must_match_the_stored_card_values():
+def test_standalone_stock_addition_must_match_the_stored_card_values():
     h = setup_adjustment(save=False, quantity=2)
     operation_id = h.card.operations[0].operation_id
     h.resolver.inputs[operation_id] = replace(h.resolver.inputs[operation_id], quantity=3)

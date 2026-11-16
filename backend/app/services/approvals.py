@@ -469,7 +469,7 @@ class ApprovalService:
         )
 
     async def list_open(self, *, household_id: str) -> list[ApprovalRecord]:
-        """Cards the Agent mentions on the next message (PR #47 section 8).
+        """Open cards: the newest pending one comes back with the next message (section 8).
 
         Expired cards are left out and recorded as `expired` here. A 送出修改 card that
         does not count (`counts`) is left out too; so is one whose original cannot be

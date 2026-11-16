@@ -158,6 +158,14 @@ class _AgentHomeState extends State<AgentHome> {
         changes: changes,
       );
       if (!mounted || generation != _conversationGeneration) return;
+      final code = _cardChangeResultCode(reply);
+      final returnedCard = reply.approval;
+      final returnsOriginalCard =
+          returnedCard != null && returnedCard.id == approval.id;
+      final returnsReplacementCard =
+          returnedCard != null && returnedCard.id != approval.id;
+      final terminalNoCard =
+          returnedCard == null && code == 'card_not_changeable';
       setState(() {
         _messages.add((
           user: false,
@@ -166,7 +174,18 @@ class _AgentHomeState extends State<AgentHome> {
           photo: null,
           imageRef: null,
         ));
-        if (reply.approval != null) _reply = reply;
+        // A received card-change response is authoritative for which card is
+        // currently actionable. A refusal that includes the original card
+        // keeps it on screen; card_not_changeable deliberately includes none.
+        // Do not make this change for a timeout/network failure below: there
+        // was no authoritative response in those cases.
+        if (returnsReplacementCard || returnsOriginalCard || terminalNoCard) {
+          _reply = reply;
+        } else if (returnedCard == null) {
+          // A response with no pending card can never leave a local action
+          // active, even if an unknown future backend code accompanies it.
+          _reply = reply;
+        }
         _workOpen = true;
         _state = reply.approval == null
             ? AgentState.completed
@@ -182,6 +201,14 @@ class _AgentHomeState extends State<AgentHome> {
         setState(() => _state = AgentState.error);
       }
     }
+  }
+
+  String? _cardChangeResultCode(AgentReply reply) {
+    for (final result in reply.results) {
+      final code = result.data['code'];
+      if (code is String && code.isNotEmpty) return code;
+    }
+    return null;
   }
 
   Map<String, String> _cardChangeErrors(AgentReply reply) {

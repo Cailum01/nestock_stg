@@ -5,10 +5,12 @@ import 'package:nestock/features/agent/domain/agent_client.dart';
 import 'package:nestock/features/agent/domain/agent_view_data.dart';
 import 'package:nestock/shared/data/demo_catalog.dart';
 
-class _ApprovalEditClient implements AgentClient {
-  _ApprovalEditClient({required this.replacement});
+enum _CardChangeResponse { replacement, originalRefusal, notChangeable }
 
-  final bool replacement;
+class _ApprovalEditClient implements AgentClient {
+  _ApprovalEditClient({required this.response});
+
+  final _CardChangeResponse response;
   final List<(String message, String? replacesApprovalId)> sends = [];
   final List<(String approvalId, List<CardChange> changes)> cardChanges = [];
 
@@ -22,7 +24,9 @@ class _ApprovalEditClient implements AgentClient {
         description: '舊卡：會新增一個庫存品項：衛生紙',
       );
     }
-    if (!replacement) return const AgentReply(message: '請補充更多資訊。');
+    if (response != _CardChangeResponse.replacement) {
+      return const AgentReply(message: '請補充更多資訊。');
+    }
     return _reply(
       approvalId: 'approval-new',
       operationId: 'operation-new',
@@ -36,8 +40,41 @@ class _ApprovalEditClient implements AgentClient {
     required List<CardChange> changes,
   }) async {
     cardChanges.add((approvalId, changes));
-    if (!replacement) {
-      return const AgentReply(message: '請補充更多資訊。');
+    switch (response) {
+      case _CardChangeResponse.originalRefusal:
+        return AgentReply(
+          message: '這一項不能在卡上修改。',
+          results: const [
+            AgentResultView(
+              kind: ResultKind.actionResult,
+              summary: '修改未套用。',
+              data: {
+                'code': 'line_refused',
+                'lines': [
+                  {'operation_id': 'operation-old', 'reason': '這一項不能在卡上修改。'},
+                ],
+              },
+            ),
+          ],
+          approval: _reply(
+            approvalId: 'approval-old',
+            operationId: 'operation-old',
+            description: '舊卡：會新增一個庫存品項：衛生紙',
+          ).approval,
+        );
+      case _CardChangeResponse.notChangeable:
+        return const AgentReply(
+          message: '此確認卡已無法修改。',
+          results: [
+            AgentResultView(
+              kind: ResultKind.actionResult,
+              summary: '此確認卡已無法修改。',
+              data: {'code': 'card_not_changeable'},
+            ),
+          ],
+        );
+      case _CardChangeResponse.replacement:
+        break;
     }
     return _reply(
       approvalId: 'approval-new',
@@ -103,10 +140,12 @@ Future<void> _openApproval(
 }
 
 void main() {
-  testWidgets('edit response without a pending approval keeps the old card', (
+  testWidgets('refusal with the original pending card keeps it actionable', (
     tester,
   ) async {
-    final client = _ApprovalEditClient(replacement: false);
+    final client = _ApprovalEditClient(
+      response: _CardChangeResponse.originalRefusal,
+    );
 
     await _openApproval(tester, client);
 
@@ -117,14 +156,36 @@ void main() {
       'quantity': 3,
     });
     expect(find.text('舊卡：會新增一個庫存品項：衛生紙'), findsOneWidget);
-    expect(find.text('請補充更多資訊。'), findsOneWidget);
+    expect(find.text('這一項不能在卡上修改。'), findsNWidgets(2));
+    expect(
+      find.byKey(const Key('confirmation-card-change-error')),
+      findsOneWidget,
+    );
     expect(find.byKey(const Key('confirmation-card-shell')), findsOneWidget);
+  });
+
+  testWidgets('card_not_changeable without a card removes old actions', (
+    tester,
+  ) async {
+    final client = _ApprovalEditClient(
+      response: _CardChangeResponse.notChangeable,
+    );
+
+    await _openApproval(tester, client);
+
+    expect(find.text('此確認卡已無法修改。'), findsNWidgets(2));
+    expect(find.text('舊卡：會新增一個庫存品項：衛生紙'), findsNothing);
+    expect(find.byKey(const Key('confirmation-card-shell')), findsNothing);
+    expect(find.byKey(const Key('approval-confirm')), findsNothing);
+    expect(find.byKey(const Key('approval-cancel')), findsNothing);
   });
 
   testWidgets('edit response with a pending approval replaces the old card', (
     tester,
   ) async {
-    final client = _ApprovalEditClient(replacement: true);
+    final client = _ApprovalEditClient(
+      response: _CardChangeResponse.replacement,
+    );
 
     await _openApproval(tester, client);
 

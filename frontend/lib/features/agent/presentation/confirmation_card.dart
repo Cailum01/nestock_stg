@@ -60,6 +60,7 @@ class ConfirmationCard extends StatefulWidget {
     this.onDraftFocusChanged,
     this.allowExclusion = true,
     this.editableFields,
+    this.changeError,
   });
 
   final List<ConfirmationItemView> items;
@@ -75,6 +76,7 @@ class ConfirmationCard extends StatefulWidget {
   /// Null retains the legacy all-field editor; supplied sets constrain cards
   /// whose backend contract only accepts certain changes.
   final Set<ConfirmationDraftField>? editableFields;
+  final String? changeError;
 
   @override
   State<ConfirmationCard> createState() => _ConfirmationCardState();
@@ -296,6 +298,12 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
             index: index,
             allowExclusion: widget.allowExclusion,
             editableFields: widget.editableFields,
+          ),
+        if (widget.changeError != null)
+          Text(
+            widget.changeError!,
+            key: const Key('confirmation-card-change-error'),
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
           ),
         if (widget.items.isEmpty)
           for (final entry in widget.details.entries)

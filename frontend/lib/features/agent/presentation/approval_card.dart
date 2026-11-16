@@ -129,6 +129,7 @@ class ApprovalCard extends StatelessWidget {
         onDecision: onDecision,
         onSubmitChanges: onSubmitChanges,
         onSubmitCardChanges: onSubmitCardChanges,
+        changeErrors: changeErrors,
       ),
     _ => _GenericApprovalCard(
       approval: approval,
@@ -318,6 +319,12 @@ class _PurchaseApprovalCardState extends State<_PurchaseApprovalCard> {
     return changes;
   }
 
+  bool get _hasInvalidEditedQuantity => _editingOperationIds.any((id) {
+    final value = _quantityControllers[id]!.text.trim();
+    final quantity = int.tryParse(value);
+    return quantity == null || quantity < 1;
+  });
+
   Future<void> _pickPurchaseDay(_PurchaseValues item) async {
     final initialText = _effectivePurchasedOn(item);
     final initialDate = initialText != null && _isValidPurchaseDay(initialText)
@@ -457,7 +464,7 @@ class _PurchaseApprovalCardState extends State<_PurchaseApprovalCard> {
                   ),
           if (!_isBatch && _editingOperationIds.isNotEmpty)
             _quantityEditor(_items.single),
-          if (_changes.isNotEmpty && !widget.busy)
+          if (_changes.isNotEmpty && !_hasInvalidEditedQuantity && !widget.busy)
             Align(
               alignment: Alignment.centerRight,
               child: OutlinedButton(
@@ -687,6 +694,7 @@ class _SingleActionApprovalCard extends StatelessWidget {
     required this.onDecision,
     required this.onSubmitChanges,
     required this.onSubmitCardChanges,
+    required this.changeErrors,
   });
 
   final ApprovalView approval;
@@ -694,6 +702,7 @@ class _SingleActionApprovalCard extends StatelessWidget {
   final ApprovalDecisionCallback onDecision;
   final ValueChanged<String>? onSubmitChanges;
   final ValueChanged<List<CardChange>>? onSubmitCardChanges;
+  final Map<String, String> changeErrors;
 
   @override
   Widget build(BuildContext context) {
@@ -704,6 +713,7 @@ class _SingleActionApprovalCard extends StatelessWidget {
       description: operation.description,
       items: item == null ? const [] : [item],
       details: item == null ? operation.values : const {},
+      changeError: changeErrors[operation.id],
       allowExclusion: false,
       onCancel: busy ? null : () => onDecision(approved: false),
       onConfirm: busy ? null : () => onDecision(approved: true),

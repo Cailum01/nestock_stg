@@ -575,45 +575,46 @@ void main() {
     expect(find.textContaining('2026-02-29'), findsNothing);
   });
 
-  testWidgets('purchase date reset sends an explicit null, not a text command', (
-    tester,
-  ) async {
-    List<CardChange>? changes;
-    await pumpCard(
-      tester,
-      const ApprovalView(
-        id: 'approval-purchase-reset-date',
-        presentation: ApprovalPresentation.singleAction,
-        operations: [
-          OperationView(
-            id: 'operation-reset-date',
-            action: 'complete_purchase',
-            description: '衛生紙 +2 包',
-            values: {
-              'name': '衛生紙',
-              'purchased_quantity': 2,
-              'purchased_unit': '包',
-              'purchased_at': '2026-11-09T12:00:00+08:00',
-            },
-          ),
-        ],
-      ),
-      onCardChanges: (value) => changes = value,
-    );
+  testWidgets(
+    'purchase date reset sends an explicit null, not a text command',
+    (tester) async {
+      List<CardChange>? changes;
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-purchase-reset-date',
+          presentation: ApprovalPresentation.singleAction,
+          operations: [
+            OperationView(
+              id: 'operation-reset-date',
+              action: 'complete_purchase',
+              description: '衛生紙 +2 包',
+              values: {
+                'name': '衛生紙',
+                'purchased_quantity': 2,
+                'purchased_unit': '包',
+                'purchased_at': '2026-11-09T12:00:00+08:00',
+              },
+            ),
+          ],
+        ),
+        onCardChanges: (value) => changes = value,
+      );
 
-    await tester.tap(find.byKey(const Key('purchase-edit-quantity')));
-    await tester.pump();
-    await tester.tap(
-      find.byKey(const Key('purchase-reset-date-operation-reset-date')),
-    );
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('purchase-submit-card-changes')));
+      await tester.tap(find.byKey(const Key('purchase-edit-quantity')));
+      await tester.pump();
+      await tester.tap(
+        find.byKey(const Key('purchase-reset-date-operation-reset-date')),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('purchase-submit-card-changes')));
 
-    expect(changes!.single.toJson(), {
-      'operation_id': 'operation-reset-date',
-      'purchased_on': null,
-    });
-  });
+      expect(changes!.single.toJson(), {
+        'operation_id': 'operation-reset-date',
+        'purchased_on': null,
+      });
+    },
+  );
 
   testWidgets('purchase dates fit a narrow Android viewport without overflow', (
     tester,
@@ -812,6 +813,65 @@ void main() {
       isNull,
     );
   });
+
+  testWidgets(
+    'batch purchase blocks all changes while an edited row is invalid',
+    (tester) async {
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-purchase-batch-invalid',
+          presentation: ApprovalPresentation.batchAction,
+          operations: [
+            OperationView(
+              id: 'operation-a',
+              action: 'complete_purchase',
+              description: '衛生紙 +2 包',
+              values: {
+                'name': '衛生紙',
+                'purchased_quantity': 2,
+                'purchased_unit': '包',
+              },
+            ),
+            OperationView(
+              id: 'operation-b',
+              action: 'complete_purchase',
+              description: '洗衣精 +1 瓶',
+              values: {
+                'name': '洗衣精',
+                'purchased_quantity': 1,
+                'purchased_unit': '瓶',
+              },
+            ),
+          ],
+        ),
+        onCardChanges: (_) {},
+      );
+
+      await tester.tap(
+        find.byKey(const Key('purchase-edit-quantity-operation-a')),
+      );
+      await tester.pump();
+      await tester.enterText(
+        find.byKey(const Key('purchase-quantity-field-operation-a')),
+        '3',
+      );
+      await tester.tap(
+        find.byKey(const Key('purchase-edit-quantity-operation-b')),
+      );
+      await tester.pump();
+      await tester.enterText(
+        find.byKey(const Key('purchase-quantity-field-operation-b')),
+        '0',
+      );
+      await tester.pump();
+
+      expect(
+        find.byKey(const Key('purchase-submit-card-changes')),
+        findsNothing,
+      );
+    },
+  );
 
   testWidgets('cancelling a batch purchase does not submit operation IDs', (
     tester,

@@ -15,11 +15,12 @@ during implementation, but the rules below are decided. Public models stay in
 
 Current status: A1's service `backend/app/services/approvals.py` implements these
 rules and runs on B1's `CosmosWriteRepository`. With Cosmos configured,
-`POST /agent/resume` calls it; without Cosmos it returns 503. The only card the
-Agent makes so far is the v8 flow C purchase card (`complete_purchase`, section 11;
+`POST /agent/resume` calls it; without Cosmos it returns 503. The Agent makes two
+kinds of card. One is the v8 flow C purchase card (`complete_purchase`, section 11;
 read back by A1's `backend/app/services/purchase_inputs.py` and written through C1's
 `ShoppingWriteBuilder`), including new-item lines for entries not yet in inventory
-(section 10). Changing a card with 送出修改 is built (section 7, and sent as data in
+(section 10). The other is the new-item card from a photo (section 10, Issue #124;
+written through B1's `PhotoItemWriteBuilder`). Changing a card with 送出修改 is built (section 7, and sent as data in
 section 7.1), and an open card comes back with the next message (section 8). A
 purchase day the user says is built but off (section 11). Not built yet: the Agent making the
 new card by itself after a record changed (section 4 point 7); for now the reply
@@ -432,7 +433,7 @@ bought and the entry is not linked to an inventory item (`complete_purchase`,
   item, completes the entry, and writes the Transaction and change event in the same
   batch, so a retry never makes a second item.
 
-New-item cards from a photo (Issue #124; built, but off in the running app):
+New-item cards from a photo (Issue #124; on with Cosmos since PR #172):
 
 - After A2's recognition and A1's matching (#44), photo items with no household item
   of the same name or alias (#36 layers ①②), seen with confidence (not

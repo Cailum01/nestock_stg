@@ -167,6 +167,14 @@ CHANGE_LINE_REFUSED = "沒有出新卡："
 CHANGE_RECORDS_MOVED = "庫存或待購清單剛剛被改過，請再改一次。"
 ONE_CARD_PER_MESSAGE = json.dumps({"error": "card_already_made"})
 """A second `complete_purchase` in the same message: the first card stands."""
+OPEN_CARD_FIRST = json.dumps({"error": "open_card_not_answered"})
+"""`complete_purchase` while an earlier open card is shown again (section 8): no new card."""
+OPEN_CARDS_UNKNOWN = json.dumps({"error": "open_cards_unknown"})
+"""`complete_purchase` when the open cards could not be listed (section 8): no new card.
+
+Unknown is not "none": a card could still be open, and a new one would be a second
+card for the same purchase (PR #160 C2 review). The user says it again later.
+"""
 CARD_FAILED = json.dumps({"error": "card_not_made"})
 TOO_MANY_ITEMS = json.dumps({"error": "too_many_items"})
 RECORDS_CHANGED = json.dumps({"error": "records_changed"})
@@ -329,6 +337,22 @@ class PurchaseCards:
         if not self._dated:
             return None
         return TODAY_NOTE.format(today=taipei_today(self._clock()).isoformat())
+
+    async def open_cards(self, household_id: str) -> list[ApprovalRecord] | None:
+        """Pending cards the household has not answered, newest first (section 8).
+
+        After 清除對話 or reopening the App a card is gone from the screen but still
+        open here; the next reply shows the newest one again. Confirmed cards waiting
+        for a retry are left out. None when the cards cannot be listed: the message is
+        still answered, but it makes no new card (`OPEN_CARDS_UNKNOWN`).
+        """
+        try:
+            cards = await self._approvals.list_open(household_id=household_id)
+        except Exception:
+            logger.warning("Open cards could not be listed", exc_info=True)
+            return None
+        pending = [card for card in cards if card.status is ApprovalStatus.PENDING]
+        return sorted(pending, key=lambda card: card.created_at, reverse=True)
 
     async def card_to_change(self, household_id: str, approval_id: str) -> ApprovalRecord:
         """The pending card a 送出修改 replaces (contract section 7, Issue #91).

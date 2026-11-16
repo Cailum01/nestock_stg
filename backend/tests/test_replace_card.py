@@ -317,12 +317,13 @@ def test_after_both_cancels_fail_the_new_card_is_never_listed_or_confirmed(monke
     assert status(container, new_id) == ("pending", None)  # left behind, as in the review
     assert _cards(container)[new_id]["replaces_approval_id"] == old.approval_id
 
-    # The next message: the lookup reminders and typed changes use lists only the old card.
+    # The next message: the lookup behind section 8 lists only the old card, so the old
+    # card is shown again and the hidden new card never is.
     model = ScriptedModel(AIMessage(content="好的"))
     later = run(
         agent(model, reader, approvals).respond(AgentRequest(household_id=HOME, message="嗨"))
     )
-    assert later.pending_approval is None
+    assert later.pending_approval.approval_id == old.approval_id
     assert _listed(approvals) == [old.approval_id]
 
     # Confirming the hidden card writes nothing; it is closed instead.

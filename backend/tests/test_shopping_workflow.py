@@ -22,7 +22,7 @@ from app.services.approvals import (
 from app.services.cosmos_read import CosmosDocumentMapper
 from app.services.cosmos_write import CosmosWriteRepository, ReplaceDocument
 from app.services.inventory_item_identity import resolve_inventory_item_id
-from app.services.shopping.planning import NewInventoryTarget, PurchaseInput
+from app.services.shopping.planning import AdjustmentInput, NewInventoryTarget, PurchaseInput
 from app.services.shopping.preview import ShoppingPreviewError
 from app.services.shopping.workflow import (
     RemovalInput,
@@ -54,6 +54,7 @@ class StoredInputResolver:
         return ResolvedShoppingChanges(
             purchases=tuple(row for row in selected if isinstance(row, PurchaseInput)),
             removals=tuple(row for row in selected if isinstance(row, RemovalInput)),
+            adjustments=tuple(row for row in selected if isinstance(row, AdjustmentInput)),
         )
 
 
@@ -153,6 +154,53 @@ def setup(kinds=("existing",), *, save=True):
     )
 
 
+def setup_adjustment(*, save=True, quantity=2):
+    container = FakeCosmosContainer()
+    repo = CosmosWriteRepository(container, query_client=container)
+    resolver, clock = StoredInputResolver(), Clock()
+    builder = ShoppingWriteBuilder(container, resolver)
+    service = ApprovalService(repo, builder, clock=clock)
+    transaction_id = "photo-transaction-1"
+    card = service.prepare(
+        household_id=HOME,
+        presentation=ApprovalPresentation.SINGLE_ACTION,
+        operations=[
+            NewOperation(
+                action="create_item",
+                description="建立庫存新品項：咖啡豆",
+                values={
+                    "transaction_id": transaction_id,
+                    "name": "咖啡豆",
+                    "quantity": quantity,
+                    "unit": "包",
+                    "location": None,
+                },
+            )
+        ],
+    )
+    operation = card.operations[0]
+    resolver.inputs[operation.operation_id] = AdjustmentInput(
+        operation_id=operation.operation_id,
+        transaction_id=transaction_id,
+        approval_id=card.approval_id,
+        new_inventory=NewInventoryTarget(
+            resolve_inventory_item_id(operation.operation_id), "咖啡豆", "包", None
+        ),
+        quantity=quantity,
+    )
+    if save:
+        run(service.save(card))
+    return SimpleNamespace(
+        service=service,
+        container=container,
+        repo=repo,
+        resolver=resolver,
+        clock=clock,
+        builder=builder,
+        card=card,
+    )
+
+
 def request(h, *, approve=True, selected=None, household=HOME):
     return ResumeRequest(
         household_id=household,
@@ -213,6 +261,47 @@ def test_new_inventory_and_existing_purchase_commit_together_with_stable_time_an
     assert run(h.service.resume(request(h))).outcome == ResumeOutcome.ALREADY_COMPLETED
     assert len(h.container.of_type("inventory_item")) == 2
     assert len(receipts(h)) == 2
+
+
+def test_photo_adjustment_creates_inventory_transaction_and_nullable_event_atomically():
+    h = setup_adjustment()
+    operation_id = h.card.operations[0].operation_id
+    adjustment = h.resolver.inputs[operation_id]
+
+    result = run(h.service.resume(request(h)))
+
+    assert result.outcome == ResumeOutcome.COMPLETED
+    item_id = resolve_inventory_item_id(operation_id)
+    inventory = h.container.get(f"inventory_item:{item_id}")
+    transaction = h.container.get("transaction:photo-transaction-1")
+    event = h.container.get(f"change_event:{operation_id}")
+    assert inventory["quantity"] == adjustment.quantity and inventory["location"] is None
+    assert transaction["item_id"] == item_id
+    assert transaction["operation_id"] == operation_id
+    assert transaction["reason"] == "adjustment"
+    assert event["shopping_item_id"] is None
+    assert event["approval_id"] == h.card.approval_id
+    assert event["transaction_id"] == transaction["transaction_id"]
+    assert event["occurred_at"] == event["recorded_at"] == transaction["created_at"]
+    assert len(receipts(h)) == 1
+    batch = h.container.batches[-1]
+    assert len(batch) == 5  # receipt + Inventory + Transaction + event + completed approval
+    assert batch[-1].document["status"] == "completed"
+    before = len(h.container.batches)
+    assert run(h.service.resume(request(h))).outcome == ResumeOutcome.ALREADY_COMPLETED
+    assert len(h.container.batches) == before
+
+
+def test_photo_adjustment_must_match_the_stored_card_values():
+    h = setup_adjustment(save=False, quantity=2)
+    operation_id = h.card.operations[0].operation_id
+    h.resolver.inputs[operation_id] = replace(h.resolver.inputs[operation_id], quantity=3)
+
+    with pytest.raises(ShoppingPreviewError, match="stored create_item proposal"):
+        run(h.service.save(h.card))
+
+    assert not h.container.of_type("pending_approval")
+    assert not h.container.of_type("inventory_item")
 
 
 @pytest.mark.parametrize("kind", ["existing", "new", "remove"])

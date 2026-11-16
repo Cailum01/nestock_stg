@@ -391,8 +391,15 @@ def test_photo_new_item_adjustment_plans_stock_and_transaction_without_shopping(
     assert result.transaction.quantity_delta == 1
     assert result.transaction.reason == TransactionReason.ADJUSTMENT
     assert result.transaction.created_at == RECORDED
-    # Rebuilding the same approved proposal is deterministic; no Shopping row,
-    # ChangeEvent, authorization, or persistence operation is produced here.
+    assert result.change_event.event_id == source.operation_id
+    assert result.change_event.operation_id == source.operation_id
+    assert result.change_event.approval_id == source.approval_id
+    assert result.change_event.transaction_id == source.transaction_id
+    assert result.change_event.shopping_item_id is None
+    assert result.change_event.item_id == result.inventory_create.record.item_id
+    assert result.change_event.occurred_at == result.change_event.recorded_at == RECORDED
+    # Rebuilding the same approved proposal is deterministic; this plan does
+    # not authorize or execute the persistence operation.
     assert (
         ShoppingPlanService().plan_adjustment(
             household_id=HOUSEHOLD,

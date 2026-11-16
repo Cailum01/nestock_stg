@@ -172,8 +172,9 @@ not evidence that historical-date entry is wired through the Agent/App.
 Its `build(ApprovalRecord)` returns `DomainWritePlan`, without executing a write.
 `reader` uses B1's household-scoped point-read shape. The injected A1
 `ShoppingInputResolver.resolve(record)` returns `ResolvedShoppingChanges` with
-`purchases` and/or `RemovalInput`s. This is an internal typed handoff, not a final
-public wire schema. It supports single-action and batch-action cards only.
+`purchases`, `RemovalInput`s and/or no-Shopping `AdjustmentInput`s. This is an
+internal typed handoff, not a final public wire schema. It supports single-action
+and batch-action cards only.
 
 A1's `CardInputResolver` validates the supported stored card action and binds its
 actual quantity, unit, linked target, transaction ID and optional purchase time to
@@ -184,7 +185,11 @@ count-only planning; it authorizes nothing.
 
 C1 additionally verifies the exact selected ID set, unique Shopping targets,
 card-bound source ETags, household, current source snapshots and absence of a new
-target. Deleted targets stop. Resolver ordering is canonicalized to card order.
+target. A photo `create_item` adjustment must match the stored card's action,
+transaction ID, name, quantity, unit and location; its new item ID must be the B1
+operation resolver output and absent from the household partition. No fake
+Shopping row or Shopping ID is introduced. Deleted targets stop. Resolver ordering
+is canonicalized to card order.
 All source replacements preserve storage-only metadata while stripping Cosmos
 system properties. The final ETag/create conditions close the race after reads.
 
@@ -192,6 +197,11 @@ B1's mapping is used unchanged:
 
 - Per operation: Shopping conditional replacement, Transaction create and
   `change_event_create`; a new Inventory create is in its originating operation.
+- Photo adjustment: Inventory create, `adjustment` Transaction create and a
+  `ChangeEvent` with `shopping_item_id = null` are grouped under the same
+  operation ID. `event_id` equals `operation_id`; Transaction and ChangeEvent use
+  the card's stored `decided_at`. B1's repository adds the operation receipt and
+  A1 appends the completed approval in that same household batch.
 - Shared: one conditional Inventory replacement per distinct existing target.
 - Removal: conditional Shopping tombstone only; no Inventory, Transaction or
   purchase event is manufactured.

@@ -326,6 +326,24 @@ def test_nothing_fits_means_no_card(item, reason):
     assert container.of_type("pending_approval") == []
 
 
+def test_a_list_unit_other_than_the_inventory_unit_makes_no_card():
+    """The list says 串, the stock is counted in 包: the Agent layer leaves it off (A1-69)."""
+    container, reader, approvals = setup(inventory(), shopping(unit="串"))
+    model = ScriptedModel(
+        purchase_reply({"shopping_item_id": "tissue-1", "quantity": 1}, call_id="call-1"),
+        AIMessage(content="好"),
+    )
+
+    response = ask(agent(model, reader, approvals))
+
+    assert response.pending_approval is None
+    assert json.loads(tool_results(model)[-1]) == {
+        "card": None,
+        "not_on_card": [{"shopping_item_id": "tissue-1", "reason": OTHER_UNIT}],
+    }
+    assert container.of_type("pending_approval") == []
+
+
 @pytest.mark.parametrize(
     "items",
     [

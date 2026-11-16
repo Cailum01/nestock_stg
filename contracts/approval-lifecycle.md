@@ -19,8 +19,9 @@ rules and runs on B1's `CosmosWriteRepository`. With Cosmos configured,
 Agent makes so far is the v8 flow C purchase card (`complete_purchase`, section 11;
 read back by A1's `backend/app/services/purchase_inputs.py` and written through C1's
 `ShoppingWriteBuilder`), including new-item lines for entries not yet in inventory
-(section 10). Changing a card with 送出修改 is built (section 7), and an open card
-comes back with the next message (section 8). Not built yet: the Agent making the
+(section 10). Changing a card with 送出修改 is built (section 7, and sent as data in
+section 7.1), and an open card comes back with the next message (section 8). A
+purchase day the user says is built but off (section 11). Not built yet: the Agent making the
 new card by itself after a record changed (section 4 point 7); for now the reply
 asks the user to say it again.
 
@@ -257,6 +258,55 @@ card, and the model is not called; an original that does not end up replaced wit
 the new card, and a new card counts only once its original is replaced, as described
 above. A typed change is answered as in section 8.
 
+### 7.1 送出修改 sent as data (`card_changes`, Issue #162)
+
+Agreed with C2 on 2026-11-16 (Issue #162) so that a changed day or quantity does not
+depend on the model reading a sentence. Built (A1); the App switches to it later,
+and until then the sentence above keeps working.
+
+- The App calls `POST /agent/messages` with `replaces_approval_id` and
+  `card_changes`: one entry per changed line, by the `operation_id` on the card,
+  with only the changed fields. `message` is still required and is only the chat
+  text. `quantity` is a whole number ≥ 1. `purchased_on` is a Taipei date
+  `YYYY-MM-DD`; an explicit `null` sets the line back to today (no day on the card).
+  A field left out, and every line not listed, keeps its value.
+
+```json
+{
+  "household_id": "demo-household",
+  "message": "送出修改",
+  "replaces_approval_id": "a-old",
+  "card_changes": [
+    {"operation_id": "op-1", "quantity": 3},
+    {"operation_id": "op-2", "purchased_on": "2026-11-14"},
+    {"operation_id": "op-3", "purchased_on": null}
+  ]
+}
+```
+
+- A malformed body is refused with 422 before anything runs: `card_changes` without
+  `replaces_approval_id`, an empty list, an entry without `quantity` or
+  `purchased_on`, `quantity` null, not a whole number or below 1, or a
+  `purchased_on` that is not a date.
+- Otherwise the reply is 200. The backend reads the stored original card (it is the
+  authority, not the App), puts every line on a new card with the changes applied,
+  read from the current records, and retires the original as in section 7. The
+  model is not called. On success `pending_approval` is the new card and
+  `results[0].data` is `{"code": "card_changed", "replaced_approval_id": ...}`.
+- A refused change stores nothing. `results[0].data.code` says why, and while the
+  original is still `pending` the reply's `pending_approval` is that original
+  again (same `approval_id`), so it stays on screen:
+
+| `code` | When |
+| --- | --- |
+| `card_not_changeable` | The original is missing, expired, confirmed, completed or cancelled (`reason`), or was not replaced; no card in the reply |
+| `unknown_operation` | An `operation_id` is not on the original (`operation_id`) |
+| `duplicate_operation` | The same `operation_id` is listed twice |
+| `nothing_changed` | Every value is the same as on the original |
+| `purchase_day_off` | A day is changed, or the original has one, while dated purchases are off (section 11) |
+| `future_date` | `purchased_on` is after today in Taipei |
+| `line_refused` | A line cannot be recorded with the current records (`lines`: `shopping_item_id` and `reason`); a new card never leaves a line out |
+
 ## 8. Reminders
 
 The App shows a card only with the reply that brought it. After 清除對話 or reopening
@@ -422,12 +472,21 @@ quantity can be changed.
   written (Issue #42 c).
 - A changed value goes back to the Agent as in section 7 (Issue #91).
 - Purchase time (Issue #113): the Transaction's `created_at` is when the purchase
-  happened. No purchase time is on the card yet, so the first `decided_at` is used,
-  and a retry keeps that same time. When the user says a day (昨天買的), the line
-  will carry `purchased_at`, shown only as a date and changed as in section 7; the
-  Agent does not do this yet. `backend/app/services/purchase_time.py` (PR #71) has
-  the rule for turning the day into a time, and `purchase_inputs.py` already reads
-  `purchased_at` when present.
+  happened. Without a day on the line, the first `decided_at` is used, and a retry
+  keeps that same time.
+- A day the user says (昨天買的, A1-50) is built but off in the running app
+  (`PurchaseCards(dated_purchases=...)`). With it on, the model is told today's
+  Taipei date and may give each item `purchased_on` (YYYY-MM-DD). A past day goes on
+  the line as `purchased_at` (12:00 Taipei that day, `purchase_time.py`, PR #71) and
+  in its description (「11/15 買的」); today or no day leaves it off; a future or
+  unreadable day leaves the item off the card. `purchase_inputs.py` passes
+  `purchased_at` on to C1. `NESTOCK_DATED_PURCHASES=1` in the backend's environment
+  (`backend/.env` on your own computer) turns it on for testing; any other value, or
+  none, is off, and the cloud does not set it. It stays off in the cloud until the
+  App shows the day on the purchase card (HITL rule 4; PR #163), the App sends a
+  changed day as `card_changes` (section 7.1), and the live-model test of spoken days
+  passes (`test_purchase_dates.py`, `-m live_eval`, Issue #127). A changed day needs
+  no model: `card_changes` is applied by the backend.
 
 ```json
 {

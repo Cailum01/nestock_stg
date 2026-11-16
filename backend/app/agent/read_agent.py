@@ -28,7 +28,9 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import os
 import re
+from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Awaitable, Callable, Protocol, TypedDict
@@ -39,11 +41,13 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
 from app.agent.cards import (
+    CARD_CHANGED,
     ONE_CARD_PER_MESSAGE,
     OPEN_CARD_FIRST,
     OPEN_CARDS_UNKNOWN,
     PHOTO_CARD_MADE,
     PURCHASE_TOOL_SCHEMA,
+    CardChangeRefused,
     PhotoCards,
     PhotoItem,
     PurchaseCards,
@@ -70,6 +74,7 @@ from app.tools.queries import QueryTools
 PROMPT_PATH = Path(__file__).resolve().parents[3] / "prompts" / "agent_system.md"
 MAX_STEPS = 8  # graph steps per message; stops endless tool loops
 MAX_PURCHASE_OPTIONS = 5
+DATED_PURCHASES_VAR = "NESTOCK_DATED_PURCHASES"  # "1": purchase day on (section 11)
 PRICE_NOT_SUPPORTED = json.dumps({"error": "price_search_not_available"})
 PRICE_FAILED = json.dumps({"error": "price_search_failed"})
 """Tool result when A2's price search raises: the Agent still answers (no 502)."""
@@ -288,6 +293,21 @@ def _match_view(match: ItemMatch) -> dict[str, Any]:
     return view
 
 
+def _change_refused(
+    code: str, message: str, *, card: dict[str, Any] | None = None, **details: Any
+) -> AgentResponse:
+    """A refused 送出修改 sent as data: 200, the code in `results[0].data` (Issue #162)."""
+    return AgentResponse(
+        message=message,
+        results=[
+            AgentResult(
+                kind=ResultKind.ACTION_RESULT, summary=message, data={"code": code, **details}
+            )
+        ],
+        pending_approval=card,
+    )
+
+
 def _card_view(record: ApprovalRecord) -> str:
     """The card being changed, as the model needs it: lines and their shown values."""
     lines = [
@@ -474,7 +494,7 @@ class ReadAgent:
         photo_cards: PhotoCards | None = None,
     ) -> None:
         self._model = model.bind_tools(
-            [*TOOL_SCHEMAS, PURCHASE_TOOL_SCHEMA] if purchases is not None else TOOL_SCHEMAS
+            [*TOOL_SCHEMAS, purchases.tool_schema] if purchases is not None else TOOL_SCHEMAS
         )
         self._handlers: dict[str, Callable[[str], Awaitable[list[Any]]]] = {
             "list_inventory": tools.list_inventory,
@@ -726,8 +746,54 @@ class ReadAgent:
             replaces_approval_id=state.get("replaces_approval_id"),
         )
 
+    async def _change_card(self, request: AgentRequest) -> AgentResponse:
+        """送出修改 sent as data (Issue #162, contract section 7): no model call.
+
+        The reply is 200 either way. A refused change carries `results[0].data.code`
+        and, while the old card is still pending, that card again, so it stays on
+        screen; nothing new is stored.
+        """
+        household_id = request.household_id
+        if self._purchases is None:
+            return _change_refused("card_not_changeable", CARD_CHANGE_UNAVAILABLE)
+        try:
+            old = await self._purchases.card_to_change(household_id, request.replaces_approval_id)
+        except CardNotChangeable as refused:
+            return _change_refused(
+                "card_not_changeable", CARD_CHANGE_REFUSED[refused.reason], reason=refused.reason
+            )
+        try:
+            card = await self._purchases.change_card(old, request.card_changes or [])
+        except CardChangeRefused as refused:
+            shown = ApprovalService.to_pending_approval(old).model_dump(mode="json")
+            return _change_refused(refused.code, refused.message, card=shown, **refused.details)
+        not_replaced = await self._purchases.retire(
+            household_id, old.approval_id, card["approval_id"]
+        )
+        if not_replaced is not None:
+            return _change_refused(
+                "card_not_changeable",
+                CARD_CHANGE_REFUSED.get(not_replaced, CARD_CHANGE_NOT_DONE),
+                reason=not_replaced,
+            )
+        return AgentResponse(
+            message=CARD_CHANGED,
+            results=[
+                AgentResult(
+                    kind=ResultKind.ACTION_RESULT,
+                    summary=CARD_CHANGED,
+                    data={"code": "card_changed", "replaced_approval_id": old.approval_id},
+                )
+            ],
+            pending_approval=card,
+        )
+
     async def respond(self, request: AgentRequest) -> AgentResponse:
+        if request.card_changes is not None:
+            return await self._change_card(request)
         messages: list[AnyMessage] = [SystemMessage(self._system_prompt)]
+        if self._purchases is not None and (today := self._purchases.date_note()):
+            messages.append(SystemMessage(today))  # dated purchases only (A1-50); off
         start: _State = {"household_id": request.household_id}
         if request.image_ref and self.reads_photos:
             # D-5: the photo must belong to this household before anything reads it.
@@ -858,4 +924,15 @@ def _purchase_cards() -> PurchaseCards | None:
     reader = get_cosmos_read_repository()
     if approvals is None or reader is None:
         return None
-    return PurchaseCards(reader, approvals)
+    # Read after the services above loaded backend/.env, so a line there applies.
+    return PurchaseCards(reader, approvals, dated_purchases=dated_purchases_on())
+
+
+def dated_purchases_on(environment: Mapping[str, str] | None = None) -> bool:
+    """`NESTOCK_DATED_PURCHASES=1` turns the purchase day on (contract section 11).
+
+    For testing on your own computer; the cloud does not set it, so it stays off there.
+    Any other value, or none, is off.
+    """
+    env = os.environ if environment is None else environment
+    return env.get(DATED_PURCHASES_VAR, "").strip() == "1"

@@ -920,10 +920,18 @@ def get_read_agent() -> ReadAgent | None:
         # Built after load_azure_settings() read backend/.env, so BigGo keys there apply.
         commerce=BigGoCommerceProvider(),
         purchases=_purchase_cards(),
-        # Issue #124: photo new-item cards stay off until confirming one can be written
-        # (B1's write for a new item without a Shopping List entry, and A1's handoff).
-        photo_cards=None,
+        # Issue #124: photo new-item cards, written on confirm by B1's no-Shopping
+        # writer through A1's `CardWriteRouter` (`get_approval_service`, PR #171).
+        photo_cards=_photo_cards(),
     )
+
+
+def _photo_cards() -> PhotoCards | None:
+    """Photo new-item cards need approval storage, like purchase cards: Cosmos only."""
+    approvals = get_approval_service()
+    if approvals is None:
+        return None
+    return PhotoCards(approvals)
 
 
 def _purchase_cards() -> PurchaseCards | None:

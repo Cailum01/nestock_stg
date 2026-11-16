@@ -100,6 +100,7 @@ def test_confirm_creates_new_inventory_transaction_and_unlinked_change_event_ato
     result = confirm(service, card)
 
     assert result.outcome is ResumeOutcome.COMPLETED
+    assert result.record is not None
     (domain_batch,) = [
         batch
         for batch in container.batches
@@ -120,6 +121,15 @@ def test_confirm_creates_new_inventory_transaction_and_unlinked_change_event_ato
     assert inventory[0]["name"] == "羅技 G400s 有線電競滑鼠"
     assert inventory[0]["quantity"] == transaction[0]["quantity_delta"] == 3
     assert transaction[0]["reason"] == "adjustment"
+    assert result.record.outcome == {
+        card.operation_ids[0]: {
+            "item_id": inventory[0]["item_id"],
+            "transaction_id": transaction[0]["transaction_id"],
+            "quantity_added": transaction[0]["quantity_delta"],
+            "inventory_quantity": inventory[0]["quantity"],
+            "unit": inventory[0]["unit"],
+        }
+    }
     assert event[0]["shopping_item_id"] is None
     assert event[0]["item_id"] == inventory[0]["item_id"]
     assert event[0]["operation_id"] == card.operation_ids[0]

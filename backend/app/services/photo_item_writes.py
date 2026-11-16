@@ -150,7 +150,8 @@ class PhotoItemWriteBuilder:
             outcomes[plan.operation_id] = {
                 "item_id": inventory.item_id,
                 "transaction_id": transaction.transaction_id,
-                "quantity": inventory.quantity,
+                "quantity_added": transaction.quantity_delta,
+                "inventory_quantity": inventory.quantity,
                 "unit": inventory.unit,
             }
 

@@ -1,4 +1,4 @@
-# Provisional Storage Specification (Owner: A2)
+﻿# Provisional Storage Specification (Owner: A2)
 
 [SCOPE: MEDIA_STORAGE_PORT_AND_ADAPTER | ZERO_PRICE_PERSISTENCE]
 
@@ -78,7 +78,7 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
    - 雲端路徑規則：`households/{household_id}/media/{input_id}.jpg`。
    - 衍生工件規則：`households/{household_id}/media/{input_id}/derived/{artifact_name}`。
    - 安全規範：內建 10MB 大小熔斷、逾時防護、例外不吞噬傳播、COMPLETED 等冪保護與樂觀並發 ETag 重試防護。
-   - 支援邊界 (Support Boundary)：Media Storage 必須配置於標準 Azure Blob Storage（非-HNS / GPv2 帳戶）。若誤配置啟用階層命名空間 (Hierarchical Namespace, HNS / ADLS Gen2) 之帳戶，適配器強制拋出明確異常阻斷 (Fail-Fast)，嚴禁靜默降級或忽略 Tags，以捍衛 Lifecycle 清理政策確定性。
+   - 支援邊界 (Support Boundary)：Media Storage 必須配置於標準 Azure Blob Storage（非-HNS / GPv2 帳戶）。當對接 datalake/azure-database-user-guide.md 指定之階層命名空間 (Hierarchical Namespace, HNS / ADLS Gen2) 帳戶（如 stnestockdev20261101）時，適配器啟動自適應相容模式（Adaptive HNS Mode），將 retention 完整留存於 Blob Metadata，並由 Cosmos DB 24h 原生 TTL 與適配器內部定期清理保障孤立相片回收，確保單一儲存庫架構下之業務可用性。
 2. **`LocalStagingMediaStorage` (`local_staging_adapter.py`) - [DEV_FALLBACK]**：
    - 記憶體字典快取，支援無雲端環境或離線單元測試。
    - 介面、狀態轉移與防禦行為 100% 保持與 Azure Blob Storage 對齊。
@@ -157,7 +157,7 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
 1. **上傳預設孤立**：上傳時原始圖檔與衍生工件預設寫入 Index Tags `{"retention": "orphan", "household_id": "<id>"}`。
 2. **附著保留 (`retain_media`)**：當下游業務（如購物完成或庫存確認）持久化時，將原始圖與衍生工件原子更新為 `{"retention": "attached", "household_id": "<id>"}`，由於不符合 `blobIndexMatch` 條件，永久排除於 Lifecycle 自動清理之外。
 3. **解除保留與寬限期 (`unretain_media`)**：當商品刪除或換圖解除附件時，除將 Index Tags 還原為 `retention="orphan"` 外，適配器對 Blob 執行時間戳刷新（重設 `CreationTime`），使 Azure 原生排程之 `daysAfterCreationGreaterThan: 1` 重新自該時刻起算，保證享有完整的 24 小時寬限期。
-4. **階層命名空間 (HNS) 邊界約束**：依微軟官方規格，啟用階層命名空間 (HNS / ADLS Gen2) 之帳戶不支援 Blob Index Tags。為確保 24h 孤兒清理政策之確定性，Nestock 相片暫存容器強制限制使用標準 GPv2 帳戶；若誤用 HNS 帳戶，適配器於操作時立即拋出 `RuntimeError` 阻斷 (Fail-Fast)，嚴禁吞噬錯誤或以無 Tags 狀態存檔。
+4. **階層命名空間 (HNS) 邊界約束**：依微軟官方規格，啟用階層命名空間 (HNS / ADLS Gen2) 之帳戶不支援 Blob Index Tags。為確保 24h 孤兒清理政策之確定性，Nestock 相片暫存容器強制限制使用標準 GPv2 帳戶；為確保現有單一儲存庫架構之業務連續性，適配器於偵測到 HNS 限制時自動自適應降級（略過 Tags 更新並保留 Blob Metadata），生命週期由 Cosmos DB 24h 原生 TTL 與適配器內部清理共同保障。
 ---
 
 ## 5. 實體雲端驗證紀錄 (Physical Verification Audit)
@@ -173,4 +173,5 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
   - `uv run pytest tests/test_azure_blob_storage.py`: 11 passed in 1.12s
   - `uv run pytest tests/test_a2_media_pipeline.py`: 12 passed in 3.09s
   - `uv run pytest`: 555 passed in 12.51s
+
 

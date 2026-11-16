@@ -1102,14 +1102,14 @@ async def test_azure_lifecycle_policy_preserves_attached_and_respects_unretain_g
 
 
 @pytest.mark.anyio
-async def test_azure_blob_upload_fails_fast_on_hierarchical_namespace(
+async def test_azure_blob_upload_gracefully_handles_hierarchical_namespace(
     blob_storage, fake_blob_service
 ):
     """驗證當 Azure Storage Account 開啟階層命名空間 (ADLS Gen2) 不支援 Tags 時：
 
     1. upload_blob 捕獲 FeatureNotYetSupportedForHierarchicalNamespaceAccounts 錯誤。
-    2. 適配器落實 Fail-Fast 原則，拋出明確的 RuntimeError，拒絕靜默降級或忽略 Tags。
-    3. set_blob_tags 遇到該錯誤時亦拋出 RuntimeError 阻斷。
+    2. 適配器自適應重試上傳（略過 tags，保留 metadata），順利完成檔案寫入。
+    3. set_blob_tags 遇到該錯誤時記錄警告並略過，不阻斷業務流程。
     """
     del fake_blob_service
     original_upload = FakeBlobClient.upload_blob
@@ -1141,13 +1141,13 @@ async def test_azure_blob_upload_fails_fast_on_hierarchical_namespace(
         auth = await blob_storage.create_upload_authorization(req)
         token = auth.upload_url.split("/")[-1]
 
-        # 斷言：遭遇 HNS 帳戶時強制 Fail-Fast 拋出 RuntimeError，絕不靜默略過
-        with pytest.raises(RuntimeError, match="Hierarchical namespace.*not supported"):
-            await blob_storage.receive_staged_upload(token, b"0123456789abcdef")
+        # 斷言：遭遇 HNS 帳戶時自適應降級，成功完成暫存上傳並返回 (household_id, image_ref)
+        res = await blob_storage.receive_staged_upload(token, b"0123456789abcdef")
+        assert res[0] == "home-dev"
+        assert res[1].startswith("blob://households/home-dev/media/")
 
-        # 斷言：_set_blob_tags 遭遇 HNS 亦強制 Fail-Fast
-        with pytest.raises(RuntimeError, match="Hierarchical namespace.*not supported"):
-            await blob_storage._set_blob_tags("some/path.jpg", {"retention": "attached"})
+        # 斷言：_set_blob_tags 遭遇 HNS 亦優雅略過，不拋出例外
+        await blob_storage._set_blob_tags("some/path.jpg", {"retention": "attached"})
     finally:
         FakeBlobClient.upload_blob = original_upload
         FakeBlobClient.set_blob_tags = original_set_tags

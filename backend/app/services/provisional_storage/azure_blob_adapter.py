@@ -104,15 +104,15 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
             await self._call_client(blob_client.upload_blob, data, **kwargs)
         except Exception as exc:
             if "FeatureNotYetSupportedForHierarchicalNamespaceAccounts" in str(exc):
-                logger.error(
-                    "Azure Storage account has Hierarchical Namespace (HNS/ADLS Gen2) enabled, "
-                    "which does not support Blob Index Tags for Lifecycle Policy: %s",
+                logger.warning(
+                    "Azure Storage account has Hierarchical Namespace (HNS/ADLS Gen2) enabled; "
+                    "Blob Index Tags are not supported. "
+                    "Uploading without tags (metadata preserved): %s",
                     exc,
                 )
-                raise RuntimeError(
-                    "Hierarchical namespace (HNS/ADLS Gen2) accounts are not supported for media. "
-                    "A standard GPv2 Azure Blob Storage account supporting tags is required."
-                ) from exc
+                kwargs.pop("tags", None)
+                await self._call_client(blob_client.upload_blob, data, **kwargs)
+                return
             raise
 
     @staticmethod
@@ -198,15 +198,12 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
                 await self._call_client(tags_func, tags=tags)
         except Exception as exc:
             if "FeatureNotYetSupportedForHierarchicalNamespaceAccounts" in str(exc):
-                logger.error(
-                    "Azure Storage account has Hierarchical Namespace (HNS/ADLS Gen2) enabled, "
-                    "which does not support Blob Index Tags: %s",
+                logger.warning(
+                    "Azure Storage account has Hierarchical Namespace (HNS/ADLS Gen2) enabled; "
+                    "skipping Blob Index Tags update: %s",
                     exc,
                 )
-                raise RuntimeError(
-                    "Hierarchical namespace (HNS/ADLS Gen2) accounts are not supported for media. "
-                    "A standard GPv2 Azure Blob Storage account supporting tags is required."
-                ) from exc
+                return
             logger.error("Blob tags update failed for %s: %s", blob_path, exc)
             raise
 

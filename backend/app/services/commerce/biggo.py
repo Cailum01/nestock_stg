@@ -9,6 +9,7 @@ from urllib.parse import quote
 import httpx
 
 from app.models.commerce import PurchaseOption
+from app.services.commerce.demo_data import get_static_demo_options
 from app.services.normalizer import ItemNormalizer
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,34 @@ class BigGoCommerceProvider:
     - [INVARIANT-A2-4: FAULT_TOLERANT_DEGRADATION] Degrades safely to demo dataset on
       upstream timeout or HTTP errors, avoiding unhandled 500 exceptions (v8 Section 6).
     """
+
+    BAIT_KEYWORDS: tuple[str, ...] = (
+        "首購",
+        "試用",
+        "體驗",
+        "加價購",
+        "樣品",
+        "贈品",
+        "抽獎",
+        "盲盒",
+    )
+    ACCESSORY_KEYWORDS: tuple[str, ...] = (
+        "袋蓋",
+        "密封蓋",
+        "封口蓋",
+        "保鮮蓋",
+        "密封夾",
+        "封口夾",
+        "保鮮夾",
+        "分裝袋",
+        "分裝盒",
+        "收納盒",
+        "量勺",
+        "量杯",
+        "壓頭",
+        "噴頭",
+    )
+    MIN_PRICE_FLOOR: float = 35.0
 
     def __init__(
         self,
@@ -144,21 +173,31 @@ class BigGoCommerceProvider:
 
         # BigGo returns products under 'list' or 'results'
         raw_results = data.get("list") or data.get("results") or []
-        return self._normalize_results(raw_results, limit)
+        return self._normalize_results(raw_results, limit, keyword=clean_keyword)
 
     def _normalize_results(
         self,
         raw_items: list[dict[str, Any]],
         limit: int,
+        keyword: str = "",
     ) -> list[PurchaseOption]:
         """Apply ItemNormalizer to raw provider items to build PurchaseOption DTOs,
         and sort options by estimated_price ascending (cheapest first)."""
         options: list[PurchaseOption] = []
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        for idx, item in enumerate(raw_items, 1):
+        for item in raw_items:
             raw_title = str(item.get("title", "")).strip()
             if not raw_title:
+                continue
+
+            # Bait defense: filter out promotional bait/sample/first-order loss leaders
+            if any(bait in raw_title for bait in self.BAIT_KEYWORDS):
+                continue
+
+            # Accessory defense: filter out accessories/parts (e.g. 麵粉袋蓋)
+            # when searching for core items
+            if any(acc in raw_title for acc in self.ACCESSORY_KEYWORDS if acc not in keyword):
                 continue
 
             clean_title = self.normalizer.strip_marketing_noise(raw_title)
@@ -184,6 +223,10 @@ class BigGoCommerceProvider:
                 except (ValueError, TypeError):
                     price_val = None
 
+            # Price floor defense: filter out extreme loss leaders / bait under NT$ 20
+            if price_val is not None and price_val < self.MIN_PRICE_FLOOR:
+                continue
+
             # Resolve external product URL (purl, url, or affurl)
             product_url = str(item.get("purl") or item.get("url") or "").strip()
             if not product_url.startswith("http") and item.get("affurl"):
@@ -202,7 +245,7 @@ class BigGoCommerceProvider:
 
             options.append(
                 PurchaseOption(
-                    option_id=f"opt-biggo-{idx}",
+                    option_id="opt-biggo-placeholder",
                     title=clean_title or raw_title,
                     raw_title=raw_title,
                     store=store_name,
@@ -223,129 +266,19 @@ class BigGoCommerceProvider:
         unpriced_options = [opt for opt in options if opt.estimated_price is None]
         sorted_options = priced_options + unpriced_options
 
-        return sorted_options[:limit]
+        final_options = sorted_options[:limit]
+        for opt_idx, opt in enumerate(final_options, 1):
+            final_options[opt_idx - 1] = opt.model_copy(
+                update={"option_id": f"opt-biggo-{opt_idx}"}
+            )
+
+        return final_options
 
     def _get_demo_fallback_options(
         self,
         keyword: str,
         limit: int,
     ) -> list[PurchaseOption]:
-        """Provide deterministic demo recommendations matching household scenarios."""
-        options: list[PurchaseOption] = []
-        now_iso = datetime.now(timezone.utc).isoformat()
-
-        if "衛生紙" in keyword:
-            url_1 = f"https://biggo.com.tw/s/?q={quote('舒潔 頂級三層抽取衛生紙', safe='')}"
-            options.append(
-                PurchaseOption(
-                    option_id="demo-opt-1",
-                    title="舒潔 頂級三層抽取衛生紙",
-                    raw_title="舒潔 頂級三層抽取衛生紙 100抽x24包",
-                    store="momo購物網",
-                    source="demo",
-                    estimated_price=389.0,
-                    product_url=url_1,
-                    unit_spec="100抽x24包",
-                    image_url="https://img.biggo.com.tw/demo_tissue.jpg",
-                    updated_at=now_iso,
-                )
-            )
-            url_2 = f"https://biggo.com.tw/s/?q={quote('五月花 蓬厚柔抽取式衛生紙', safe='')}"
-            options.append(
-                PurchaseOption(
-                    option_id="demo-opt-2",
-                    title="五月花 蓬厚柔抽取式衛生紙",
-                    raw_title="五月花 蓬厚柔抽取式衛生紙 100抽x24包",
-                    store="PChome 24h",
-                    source="demo",
-                    estimated_price=339.0,
-                    product_url=url_2,
-                    unit_spec="100抽x24包",
-                    updated_at=now_iso,
-                )
-            )
-            url_5 = f"https://biggo.com.tw/s/?q={quote('蒲公英 環保抽取式衛生紙', safe='')}"
-            options.append(
-                PurchaseOption(
-                    option_id="demo-opt-3",
-                    title="蒲公英 環保抽取式衛生紙",
-                    raw_title="蒲公英 環保抽取式衛生紙 100抽x24包",
-                    store="蝦皮商城",
-                    source="demo",
-                    estimated_price=299.0,
-                    product_url=url_5,
-                    unit_spec="100抽x24包",
-                    updated_at=now_iso,
-                )
-            )
-        elif "牛奶" in keyword or "鮮奶" in keyword or "乳" in keyword:
-            url_3 = f"https://biggo.com.tw/s/?q={quote('光泉 全脂鮮乳', safe='')}"
-            options.append(
-                PurchaseOption(
-                    option_id="demo-opt-1",
-                    title="光泉 全脂鮮乳",
-                    raw_title="光泉 全脂鮮乳 936ml x 2瓶",
-                    store="家樂福線上購物",
-                    source="demo",
-                    estimated_price=185.0,
-                    product_url=url_3,
-                    unit_spec="936ml x 2瓶",
-                    updated_at=now_iso,
-                )
-            )
-            url_4 = f"https://biggo.com.tw/s/?q={quote('義美 全脂鮮乳', safe='')}"
-            options.append(
-                PurchaseOption(
-                    option_id="demo-opt-2",
-                    title="義美 全脂鮮乳",
-                    raw_title="義美 全脂鮮乳 1000ml",
-                    store="momo購物網",
-                    source="demo",
-                    estimated_price=98.0,
-                    product_url=url_4,
-                    unit_spec="1000ml",
-                    updated_at=now_iso,
-                )
-            )
-            url_6 = f"https://biggo.com.tw/s/?q={quote('瑞穗 全脂鮮乳', safe='')}"
-            options.append(
-                PurchaseOption(
-                    option_id="demo-opt-3",
-                    title="瑞穗 全脂鮮乳",
-                    raw_title="瑞穗 全脂鮮乳 930ml",
-                    store="全聯線上購",
-                    source="demo",
-                    estimated_price=92.0,
-                    product_url=url_6,
-                    unit_spec="930ml",
-                    updated_at=now_iso,
-                )
-            )
-        elif "醬油" in keyword:
-            url_7 = f"https://biggo.com.tw/s/?q={quote('金蘭 純釀造醬油', safe='')}"
-            options.append(
-                PurchaseOption(
-                    option_id="demo-opt-1",
-                    title="金蘭 純釀造醬油",
-                    raw_title="金蘭 純釀造醬油 590ml",
-                    store="全聯線上購",
-                    source="demo",
-                    estimated_price=65.0,
-                    product_url=url_7,
-                    unit_spec="590ml",
-                    updated_at=now_iso,
-                )
-            )
-        else:
-            # 若非預置之 demo 關鍵字，誠實回傳空清單，不捏造假資料
-            return []
-
-        # Demo 資料集亦保持依價格由低到高排序
-        priced_options = sorted(
-            [opt for opt in options if opt.estimated_price is not None],
-            key=lambda opt: opt.estimated_price,  # type: ignore[arg-type, return-value]
-        )
-        unpriced_options = [opt for opt in options if opt.estimated_price is None]
-        sorted_options = priced_options + unpriced_options
-
-        return sorted_options[:limit]
+        """Provide deterministic demo recommendations matching household scenarios.
+        Delegated to shared SSOT demo_data.get_static_demo_options."""
+        return get_static_demo_options(keyword, limit=limit)

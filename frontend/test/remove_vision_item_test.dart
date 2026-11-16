@@ -21,7 +21,7 @@ void main() {
         ),
       );
       await tester.enterText(find.byType(TextField), '查看照片');
-      await tester.tap(find.text('送出'));
+      await tester.tap(find.byKey(const Key('paw-send')));
       await tester.pumpAndSettle();
       expect(find.text('辨識到 3 件物品'), findsOneWidget);
       final firstCard = find.byKey(const Key('vision-item-0'));

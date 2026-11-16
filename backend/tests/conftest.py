@@ -5,9 +5,12 @@ import sys
 import types
 import uuid
 
-# Windows AppLocker defensive fallback:
-# If C-extension _uuid_utils.pyd is blocked by Windows AppLocker policy,
-# bridge to Python 3.14 standard library uuid module.
+# Keep tests offline: never load a developer's local backend/.env at import time.
+os.environ.setdefault("NESTOCK_SKIP_DOTENV", "1")
+
+# Windows AppLocker / WDAC defensive fallback:
+# If C-extension _uuid_utils.pyd is blocked or missing,
+# bridge to Python standard library uuid module.
 try:
     import uuid_utils  # noqa: F401
 except ImportError:
@@ -23,6 +26,7 @@ except ImportError:
         "RESERVED_MICROSOFT",
         "RESERVED_NCS",
         "RFC_4122",
+        "SafeUUID",
         "UUID",
         "getnode",
         "uuid1",
@@ -38,7 +42,32 @@ except ImportError:
     mod._uuid4_int = lambda *args, **kwargs: uuid.uuid4().int
     mod._uuid7_int = lambda *args, **kwargs: getattr(uuid, "uuid7", uuid.uuid4)().int
     mod.reseed = lambda *args, **kwargs: None
-    sys.modules["uuid_utils._uuid_utils"] = mod
 
-# Keep tests offline: never load a developer's local backend/.env at import time.
-os.environ.setdefault("NESTOCK_SKIP_DOTENV", "1")
+    # Register both C-extension backend and top-level module wrappers
+    sys.modules["uuid_utils"] = mod  # type: ignore[assignment]
+    sys.modules["uuid_utils._uuid_utils"] = mod
+    sys.modules["uuid_utils.compat"] = mod  # type: ignore[assignment]
+
+# Windows defensive fallback for zoneinfo when tzdata package is missing:
+try:
+    import zoneinfo
+
+    try:
+        zoneinfo.ZoneInfo("Asia/Taipei")
+    except (zoneinfo.ZoneInfoNotFoundError, ModuleNotFoundError):
+        _orig_zoneinfo = zoneinfo.ZoneInfo
+
+        class _FallbackZoneInfo:
+            def __new__(cls, key: str):
+                try:
+                    return _orig_zoneinfo(key)
+                except (zoneinfo.ZoneInfoNotFoundError, ModuleNotFoundError):
+                    if key in ("Asia/Taipei", "ROC"):
+                        from datetime import timedelta, timezone
+
+                        return timezone(timedelta(hours=8), name=key)
+                    raise
+
+        zoneinfo.ZoneInfo = _FallbackZoneInfo  # type: ignore[misc]
+except ImportError:
+    pass

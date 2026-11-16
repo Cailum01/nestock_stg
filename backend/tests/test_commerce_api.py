@@ -138,3 +138,20 @@ def test_commerce_options_ignores_client_limit_tampering(client: TestClient) -> 
         assert len(data["options"]) == 3
     finally:
         app.dependency_overrides.clear()
+
+
+def test_commerce_options_service_unavailable(client: TestClient) -> None:
+    """When commerce service raises unhandled exception, endpoint returns status unavailable."""
+    mock_provider = AsyncMock(spec=BigGoCommerceProvider)
+    mock_provider.search_options.side_effect = RuntimeError("Upstream connection timed out")
+    app.dependency_overrides[get_commerce_service] = lambda: mock_provider
+    try:
+        response = client.get("/api/commerce/options", params={"keyword": "衛生紙"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == CommerceSearchStatus.UNAVAILABLE
+        assert data["code"] == "COMMERCE_SEARCH_FAILED"
+        assert data["message"] == "外部比價服務暫時無法取得資料"
+        assert data["options"] == []
+    finally:
+        app.dependency_overrides.clear()

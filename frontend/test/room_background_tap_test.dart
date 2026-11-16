@@ -17,7 +17,7 @@ void main() {
       ),
     );
     await tester.enterText(find.byType(TextField), '查看照片');
-    await tester.tap(find.text('送出'));
+    await tester.tap(find.byKey(const Key('paw-send')));
     await tester.pumpAndSettle();
     final quantity = find.byKey(const Key('quantity-0'));
     await tester.ensureVisible(quantity);
@@ -27,7 +27,7 @@ void main() {
     await tester.tapAt(Offset(room.center.dx, room.top + room.height * .05));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('work-surface')).hitTestable(), findsNothing);
-    await tester.tap(find.text('顯示互動'));
+    await tester.tap(find.byKey(const Key('paw-expand-interaction')));
     await tester.pumpAndSettle();
     expect(tester.widget<TextField>(quantity).controller!.text, '5');
     expect(tester.takeException(), isNull);

@@ -75,7 +75,7 @@ Future<void> _openApproval(
     matching: find.byType(TextField),
   );
   await tester.enterText(input, '衛生紙買回來了');
-  await tester.tap(find.text('送出'));
+  await tester.tap(find.byKey(const Key('paw-send')));
   await tester.pumpAndSettle();
   await tester.tap(find.byKey(const Key('confirmation-edit-0')));
   await tester.pump();

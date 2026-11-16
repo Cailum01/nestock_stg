@@ -64,9 +64,10 @@ class HomeScene extends StatelessWidget {
       final cartWidth = cartHeight * (1071 / 1118);
       final originalCharacterSize =
           math.min(width * .34, height * .31).clamp(44.0, 150.0) * 1.4;
-      final characterSize = originalCharacterSize * .9;
-      final characterLeft = width * .08;
-      final characterBottom =
+      final characterSize = originalCharacterSize * .9 * 1.15;
+      final characterLeft = (width - characterSize) / 2;
+      final characterBottom = height * .12 - characterSize / 2;
+      final bubbleBottom =
           height * .075 + math.min(width * .5, height * .4) * .12;
       final bubbleWidth = width * .38;
       return Container(
@@ -76,6 +77,8 @@ class HomeScene extends StatelessWidget {
           borderRadius: BorderRadius.circular(20),
         ),
         child: Stack(
+          key: const Key('room-scene-stack'),
+          clipBehavior: Clip.none,
           children: [
             Positioned.fill(
               child: GestureDetector(
@@ -87,7 +90,7 @@ class HomeScene extends StatelessWidget {
             if (workSurfaceOpen)
               Positioned(
                 left: width * .08,
-                top: 0,
+                top: 20,
                 height: height * .28,
                 width: width * .84,
                 child: LayoutBuilder(
@@ -105,7 +108,7 @@ class HomeScene extends StatelessWidget {
                             label: '窩有小幫手',
                             child: IgnorePointer(
                               child: Image.asset(
-                                'assets/images/agent/noki_sit.png',
+                                'assets/images/agent/noki_original.png',
                                 key: const Key('agent'),
                                 width: size,
                                 height: size,
@@ -194,59 +197,66 @@ class HomeScene extends StatelessWidget {
                   ),
                 ),
               ),
+              Align(
+                key: const Key('cabinet-layer'),
+                alignment: RoomAnchors.cabinet,
+                child: Transform.translate(
+                  offset: const Offset(0, 20),
+                  child: SizedBox(
+                    width: cabinetWidth,
+                    height: cabinetHeight,
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: Image.asset(
+                            'assets/images/objects/storage_cabinet.png',
+                            fit: BoxFit.contain,
+                            excludeFromSemantics: true,
+                          ),
+                        ),
+                        Positioned(
+                          left:
+                              (cabinetWidth - imageWidth) / 2 +
+                              imageWidth * .10,
+                          top:
+                              (cabinetHeight - imageHeight) / 2 +
+                              imageHeight * .09,
+                          width: imageWidth * .80,
+                          height: imageHeight * .75,
+                          child: Semantics(
+                            label: '庫存櫃',
+                            button: true,
+                            child: Material(
+                              color: Colors.transparent,
+                              child: InkWell(
+                                key: const Key('cabinet'),
+                                onTap: onInventory,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
               Positioned(
+                key: const Key('beanbag-layer'),
                 left: width * .01,
-                bottom: height * .065,
+                bottom: height * .065 + 70,
                 child: IgnorePointer(
                   child: Image.asset(
                     'assets/images/objects/beanbag.png',
-                    width: math.min(width * .5, height * .4),
+                    key: const Key('beanbag'),
+                    width: math.min(width * .5, height * .4) * .9,
                     fit: BoxFit.contain,
                     excludeFromSemantics: true,
                   ),
                 ),
               ),
-              Align(
-                alignment: RoomAnchors.cabinet,
-                child: SizedBox(
-                  width: cabinetWidth,
-                  height: cabinetHeight,
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: Image.asset(
-                          'assets/images/objects/storage_cabinet.png',
-                          fit: BoxFit.contain,
-                          excludeFromSemantics: true,
-                        ),
-                      ),
-                      Positioned(
-                        left:
-                            (cabinetWidth - imageWidth) / 2 + imageWidth * .10,
-                        top:
-                            (cabinetHeight - imageHeight) / 2 +
-                            imageHeight * .09,
-                        width: imageWidth * .80,
-                        height: imageHeight * .75,
-                        child: Semantics(
-                          label: '庫存櫃',
-                          button: true,
-                          child: Material(
-                            color: Colors.transparent,
-                            child: InkWell(
-                              key: const Key('cabinet'),
-                              onTap: onInventory,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
               Positioned(
                 right: width * .0125,
-                top: height * .43,
+                top: height * .43 + 20,
                 child: Semantics(
                   label: '購物車',
                   button: true,
@@ -267,7 +277,7 @@ class HomeScene extends StatelessWidget {
               ),
               Positioned(
                 left: characterLeft,
-                bottom: characterBottom,
+                bottom: characterBottom + 10,
                 child: SizedBox(
                   key: const Key('agent'),
                   width: characterSize,
@@ -276,7 +286,7 @@ class HomeScene extends StatelessWidget {
                     label: '窩有小幫手',
                     child: IgnorePointer(
                       child: Image.asset(
-                        'assets/images/agent/noki_sit.png',
+                        'assets/images/agent/noki_original.png',
                         fit: BoxFit.contain,
                         excludeFromSemantics: true,
                       ),
@@ -289,7 +299,7 @@ class HomeScene extends StatelessWidget {
                   width * .10 + originalCharacterSize * .42,
                   width - bubbleWidth,
                 ),
-                bottom: characterBottom + originalCharacterSize * .83,
+                bottom: bubbleBottom + originalCharacterSize * .83 - 20,
                 child: SizedBox(
                   key: const Key('speech'),
                   width: bubbleWidth,

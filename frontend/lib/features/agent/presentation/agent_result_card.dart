@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../domain/agent_view_data.dart';
+import 'hand_drawn_card_shell.dart';
 import 'vision_result_items.dart';
 
 /// Extend with typed renderers after the result payload contract is agreed.
@@ -8,44 +9,50 @@ class AgentResultCard extends StatelessWidget {
   const AgentResultCard({super.key, required this.result});
   final AgentResultView result;
   @override
-  Widget build(BuildContext context) => Card(
-    child: ListTile(
-      leading: Icon(switch (result.kind) {
-        ResultKind.inventory => Icons.inventory_2_outlined,
-        ResultKind.vision => Icons.photo_outlined,
-        ResultKind.forecast => Icons.insights_outlined,
-        ResultKind.purchaseOptions => Icons.shopping_bag_outlined,
-        ResultKind.actionResult => Icons.info_outline,
-      }),
-      title: Text(switch (result.kind) {
-        ResultKind.inventory => '庫存',
-        ResultKind.vision => '照片辨識',
-        ResultKind.forecast => '庫存預估',
-        ResultKind.purchaseOptions => '購買選項',
-        ResultKind.actionResult => '操作結果',
-      }, style: Theme.of(context).textTheme.labelLarge),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(result.summary),
-          if (result.kind == ResultKind.vision)
-            VisionResultItems(data: result.data),
-          if (result.kind == ResultKind.inventory &&
-              result.data['items'] is List)
-            for (final item in result.data['items'] as List)
-              if (item is Map && item['name'] is String)
-                Text(
-                  [
-                        item['name'],
-                        item['quantity'],
-                        item['unit'],
-                        item['location'],
-                      ]
-                      .where((v) => v != null && v.toString().isNotEmpty)
-                      .join(' '),
-                ),
-        ],
+  Widget build(BuildContext context) {
+    if (result.kind == ResultKind.vision) {
+      return HandDrawnCardShell(
+        key: const Key('vision-result-card'),
+        child: VisionResultItems(data: result.data),
+      );
+    }
+    return Card(
+      child: ListTile(
+        leading: Icon(switch (result.kind) {
+          ResultKind.inventory => Icons.inventory_2_outlined,
+          ResultKind.vision => Icons.photo_outlined,
+          ResultKind.forecast => Icons.insights_outlined,
+          ResultKind.purchaseOptions => Icons.shopping_bag_outlined,
+          ResultKind.actionResult => Icons.info_outline,
+        }),
+        title: Text(switch (result.kind) {
+          ResultKind.inventory => '庫存',
+          ResultKind.vision => '照片辨識',
+          ResultKind.forecast => '庫存預估',
+          ResultKind.purchaseOptions => '購買選項',
+          ResultKind.actionResult => '操作結果',
+        }, style: Theme.of(context).textTheme.labelLarge),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(result.summary),
+            if (result.kind == ResultKind.inventory &&
+                result.data['items'] is List)
+              for (final item in result.data['items'] as List)
+                if (item is Map && item['name'] is String)
+                  Text(
+                    [
+                          item['name'],
+                          item['quantity'],
+                          item['unit'],
+                          item['location'],
+                        ]
+                        .where((v) => v != null && v.toString().isNotEmpty)
+                        .join(' '),
+                  ),
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 }

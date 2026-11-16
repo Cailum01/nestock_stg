@@ -998,6 +998,27 @@ def test_partial_receipts_stop_writing():
     assert not storage.batches
 
 
+def test_partial_receipts_log_the_card_and_operations_to_check(caplog):
+    service, storage, _, _, _ = setup()
+    record = make_batch(service, names=("豆漿", "衛生紙"))
+    storage.fail_next_batch = RuntimeError("Cosmos unavailable")
+    confirm(service, record, approved_operation_ids=record.operation_ids)
+    storage.receipts[(HOME, record.operation_ids[0])] = {"operation_id": record.operation_ids[0]}
+
+    with caplog.at_level("ERROR", logger="app.services.approvals"):
+        result = confirm(service, record, approved_operation_ids=record.operation_ids)
+
+    assert result.outcome is ResumeOutcome.INCONSISTENT
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    line = errors[0].getMessage()
+    assert "reconciliation-required" in line
+    assert f"household={HOME}" in line and f"approval={record.approval_id}" in line
+    assert f"with_receipt=['{record.operation_ids[0]}']" in line
+    assert f"without_receipt=['{record.operation_ids[1]}']" in line
+    assert storage.batch_attempts == 1  # logging repairs nothing and tries nothing new
+
+
 def test_timeout_on_the_confirm_step_can_be_retried():
     service, storage, _, _, etag = setup()
     record = make_single(service, etag)

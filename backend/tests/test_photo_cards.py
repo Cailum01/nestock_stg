@@ -9,8 +9,10 @@ one can be written, so the Agent there still only reports what the photo shows.
 import asyncio
 from datetime import UTC, datetime
 
+import pytest
 from langchain_core.messages import AIMessage
 from test_purchase_cards import FakeCosmosContainer, setup
+from test_purchase_cards import inventory as _purchase_inventory
 from test_read_agent import (
     HOUSEHOLD,
     PHOTO,
@@ -25,9 +27,17 @@ from test_read_agent import (
     _StubVision,
 )
 
-from app.agent.cards import PHOTO_CARD_MADE, PhotoCards, PurchaseCards
+from app.agent.cards import (
+    CARD_CHANGED,
+    CHANGE_NOT_THIS_CARD,
+    CHANGE_NOT_THIS_LINE,
+    PHOTO_CARD_MADE,
+    PhotoCards,
+    PhotoItem,
+    PurchaseCards,
+)
 from app.agent.read_agent import ReadAgent, load_system_prompt
-from app.models.agent import ApprovalPresentation, ResultKind
+from app.models.agent import AgentRequest, ApprovalPresentation, ResultKind
 from app.services.approvals import ApprovalService, DomainWritePlan
 from app.services.cosmos_read import CosmosInventoryService, CosmosShoppingService
 from app.services.cosmos_write import CosmosWriteRepository
@@ -237,3 +247,176 @@ def test_no_photo_card_when_the_open_cards_cannot_be_listed(monkeypatch):
     assert _stored(container) == []
     assert "new_item_card" not in _seen_by_model(model)
     assert [result.kind for result in response.results] == [ResultKind.VISION]
+
+
+# ----- 送出修改 on a photo card (Issue #124 C2 question, contract section 7.1) -------
+
+
+def _photo_card_to_change(*names, photo_cards=True):
+    """A stored photo card for `names` (1 個 each); a household with only tissue."""
+    container, reader, _ = setup()
+    approvals = ApprovalService(
+        CosmosWriteRepository(container, query_client=container),
+        _PlanEveryLine(),
+        clock=lambda: T0,
+    )
+    cards = PhotoCards(approvals)
+    old = asyncio.run(cards.propose(HOUSEHOLD, [PhotoItem(name, 1, "個") for name in names]))
+    model = ScriptedModel()  # any model call would fail: there are no replies
+    agent = ReadAgent(
+        model,
+        QueryTools(CosmosInventoryService(reader), CosmosShoppingService(reader)),
+        load_system_prompt(),
+        purchases=PurchaseCards(reader, approvals),
+        photo_cards=cards if photo_cards else None,
+    )
+    return container, agent, model, old
+
+
+def _send_change(agent, model, old, *changes):
+    request = AgentRequest(
+        household_id=HOUSEHOLD,
+        message="送出修改",
+        replaces_approval_id=old["approval_id"],
+        card_changes=list(changes),
+    )
+    response = asyncio.run(agent.respond(request))
+    assert model.seen == []
+    return response
+
+
+def _ops(card):
+    return card["operations"]
+
+
+def test_a_photo_card_quantity_change_makes_a_new_card_without_the_model():
+    container, agent, model, old = _photo_card_to_change("滑鼠")
+    (line,) = _ops(old)
+
+    response = _send_change(
+        agent, model, old, {"operation_id": line["operation_id"], "quantity": 3}
+    )
+
+    assert response.message == CARD_CHANGED
+    assert response.results[0].data == {
+        "code": "card_changed",
+        "replaced_approval_id": old["approval_id"],
+    }
+    new = response.pending_approval
+    assert new.presentation is ApprovalPresentation.SINGLE_ACTION
+    (new_line,) = new.operations
+    assert new_line.action == "create_item"
+    assert new_line.description == "會新增一個庫存品項：滑鼠 3 個（照片辨識）"
+    assert {k: v for k, v in new_line.values.items() if k != "transaction_id"} == {
+        "name": "滑鼠",
+        "quantity": 3,
+        "unit": "個",
+        "location": None,
+    }
+    # New identity for the new card; the old card is retired as replaced (section 7).
+    assert new.approval_id != old["approval_id"]
+    assert new_line.operation_id != line["operation_id"]
+    assert new_line.values["transaction_id"] != line["values"]["transaction_id"]
+    assert _stored(container) == [
+        (old["approval_id"], "cancelled"),
+        (new.approval_id, "pending"),
+    ]
+    stored = container.get(f"pending_approval:{new.approval_id}", HOUSEHOLD)
+    assert stored["replaces_approval_id"] == old["approval_id"]
+
+
+def test_photo_lines_left_out_of_the_change_keep_their_values():
+    _, agent, model, old = _photo_card_to_change("滑鼠", "鍵盤")
+    mouse, keyboard = _ops(old)
+
+    new = _send_change(
+        agent, model, old, {"operation_id": keyboard["operation_id"], "quantity": 2}
+    ).pending_approval
+
+    assert new.presentation is ApprovalPresentation.BATCH_ACTION
+    assert [(op.values["name"], op.values["quantity"]) for op in new.operations] == [
+        ("滑鼠", 1),
+        ("鍵盤", 2),
+    ]
+    assert all(op.values["location"] is None for op in new.operations)
+    assert all("shopping_item_id" not in op.values for op in new.operations)
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ([{"operation_id": "nope", "quantity": 2}], "unknown_operation"),
+        ([{"operation_id": "LINE", "quantity": 2}] * 2, "duplicate_operation"),
+        ([{"operation_id": "LINE", "quantity": 1}], "nothing_changed"),
+        ([{"operation_id": "LINE", "purchased_on": "2026-11-14"}], "line_refused"),
+        ([{"operation_id": "LINE", "quantity": 2, "purchased_on": None}], "line_refused"),
+    ],
+)
+def test_a_refused_photo_change_stores_nothing_and_shows_the_old_card_again(changes, expected):
+    container, agent, model, old = _photo_card_to_change("滑鼠")
+    (line,) = _ops(old)
+    said = [
+        {**c, "operation_id": line["operation_id"]} if c["operation_id"] == "LINE" else c
+        for c in changes
+    ]
+
+    response = _send_change(agent, model, old, *said)
+
+    assert response.results[0].data["code"] == expected
+    assert response.pending_approval.model_dump(mode="json") == old
+    assert _stored(container) == [(old["approval_id"], "pending")]
+
+
+def test_a_photo_line_has_no_day_to_change():
+    _, agent, model, old = _photo_card_to_change("滑鼠")
+    (line,) = _ops(old)
+
+    response = _send_change(
+        agent, model, old, {"operation_id": line["operation_id"], "purchased_on": "2026-11-14"}
+    )
+
+    assert response.message == "沒有出新卡：「滑鼠」照片新增的品項沒有購買日期，不能改日期。"
+    assert response.results[0].data["lines"] == [
+        {"operation_id": line["operation_id"], "reason": "照片新增的品項沒有購買日期，不能改日期。"}
+    ]
+
+
+@pytest.mark.parametrize("aliases", [None, ["滑鼠"]])
+def test_a_photo_line_the_household_has_by_now_is_refused(aliases):
+    """Someone added the item after the card was made: confirming would add a second."""
+    name = "滑鼠" if aliases is None else "無線滑鼠"
+    container, agent, model, old = _photo_card_to_change("滑鼠", "鍵盤")
+    mouse, _ = _ops(old)
+    container.put(_purchase_inventory(item_id="mouse", name=name, unit="個", aliases=aliases))
+
+    response = _send_change(
+        agent, model, old, {"operation_id": mouse["operation_id"], "quantity": 2}
+    )
+
+    assert response.results[0].data["code"] == "line_refused"
+    assert response.results[0].data["lines"] == [
+        {
+            "operation_id": mouse["operation_id"],
+            "reason": f"家裡現在已經有「{name}」，不會再新增一個。",
+        }
+    ]
+    assert response.pending_approval.model_dump(mode="json") == old
+    assert _stored(container) == [(old["approval_id"], "pending")]
+
+
+def test_with_photo_cards_off_a_photo_card_cannot_be_changed():
+    """Off in the running app until photo items can be written: nothing to change there."""
+    container, agent, model, old = _photo_card_to_change("滑鼠", photo_cards=False)
+    (line,) = _ops(old)
+
+    response = _send_change(
+        agent, model, old, {"operation_id": line["operation_id"], "quantity": 2}
+    )
+
+    assert response.message == CHANGE_NOT_THIS_CARD
+    assert response.results[0].data == {
+        "code": "line_refused",
+        "lines": [{"operation_id": line["operation_id"], "reason": CHANGE_NOT_THIS_LINE}],
+    }
+    assert response.pending_approval.model_dump(mode="json") == old
+    assert _stored(container) == [(old["approval_id"], "pending")]

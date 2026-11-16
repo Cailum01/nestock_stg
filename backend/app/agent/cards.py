@@ -164,7 +164,10 @@ CHANGE_NOTHING = "卡上的值都沒有改，沒有出新卡。"
 CHANGE_DAY_OFF = "現在還不能改購買日期，沒有出新卡。"
 CHANGE_FUTURE_DAY = "購買日期不能在今天之後，沒有出新卡。"
 CHANGE_NOT_THIS_CARD = "這張卡不能在卡上修改，沒有出新卡。"
+CHANGE_NOT_THIS_LINE = "這一項不能在卡上修改。"
 CHANGE_LINE_REFUSED = "沒有出新卡："
+CHANGE_PHOTO_NO_DAY = "照片新增的品項沒有購買日期，不能改日期。"
+CHANGE_PHOTO_HAVE_NOW = "家裡現在已經有「{names}」，不會再新增一個。"
 CHANGE_RECORDS_MOVED = "庫存或待購清單剛剛被改過，請再改一次。"
 ONE_CARD_PER_MESSAGE = json.dumps({"error": "card_already_made"})
 """A second `complete_purchase` in the same message: the first card stands."""
@@ -349,6 +352,88 @@ class PhotoCards:
         except Exception:  # storage or planning failed; no card was stored
             logger.warning("Photo new-item card was not stored", exc_info=True)
             return None
+        return ApprovalService.to_pending_approval(record).model_dump(mode="json")
+
+    @staticmethod
+    def made(record: ApprovalRecord) -> bool:
+        """Whether `record` is a photo new-item card: only `create_item` lines, no list entry."""
+        return bool(record.operations) and all(
+            op.action == CREATE_ITEM and not op.values.get("shopping_item_id")
+            for op in record.operations
+        )
+
+    async def change_card(
+        self,
+        old: ApprovalRecord,
+        changes: Sequence[CardChange],
+        household_items: Sequence[InventoryItem],
+    ) -> dict[str, Any]:
+        """The new card for a 送出修改 on a photo card, sent as data (Issue #124, #162).
+
+        Only `quantity` can change: a photo line has no purchase day. Every line goes on
+        the new card with its name, unit and empty location, changed lines with their new
+        quantity; each line gets a new `operation_id` and `transaction_id`, and the card
+        records the one it replaces (section 7). A line whose name or alias the household
+        has by now is refused, so confirming never adds a second item. Raises
+        `CardChangeRefused` and stores nothing when a change does not fit; the caller
+        retires `old` once the new card is stored.
+        """
+        by_id = {op.operation_id: op for op in old.operations}
+        changed: dict[str, CardChange] = {}
+        for change in changes:
+            if change.operation_id not in by_id:
+                raise CardChangeRefused(
+                    "unknown_operation", CHANGE_UNKNOWN_LINE, operation_id=change.operation_id
+                )
+            if change.operation_id in changed:
+                raise CardChangeRefused(
+                    "duplicate_operation", CHANGE_DUPLICATE_LINE, operation_id=change.operation_id
+                )
+            changed[change.operation_id] = change
+        dated = [by_id[c.operation_id] for c in changes if "purchased_on" in c.model_fields_set]
+        if dated:
+            _refuse_lines([(op, CHANGE_PHOTO_NO_DAY) for op in dated])
+        items = []
+        for op in old.operations:
+            change = changed.get(op.operation_id)
+            quantity = _whole(op.values.get("quantity"))
+            if change is not None and change.quantity is not None:
+                quantity = change.quantity
+            items.append(
+                PhotoItem(
+                    name=str(op.values.get("name")),
+                    quantity=quantity,
+                    unit=str(op.values.get("unit")),
+                )
+            )
+        if all(
+            item.quantity == _whole(op.values.get("quantity"))
+            for item, op in zip(items, old.operations, strict=True)
+        ):
+            raise CardChangeRefused("nothing_changed", CHANGE_NOTHING)
+        have = []
+        for item, op in zip(items, old.operations, strict=True):
+            same = match_term(item.name, list(household_items))
+            if same.items:
+                names = "、".join(i.name for i in same.items)
+                have.append((op, CHANGE_PHOTO_HAVE_NOW.format(names=names)))
+        if have:
+            _refuse_lines(have)
+        lines = [
+            photo_item_operation(name=item.name, quantity=item.quantity, unit=item.unit)
+            for item in items
+        ]
+        try:
+            record = await self._approvals.save(
+                self._approvals.prepare(
+                    household_id=old.household_id,
+                    presentation=old.presentation,
+                    operations=lines,
+                    replaces_approval_id=old.approval_id,
+                )
+            )
+        except Exception as error:  # storage failed; no card was stored
+            raise RuntimeError("The changed photo card was not stored.") from error
         return ApprovalService.to_pending_approval(record).model_dump(mode="json")
 
 
@@ -556,8 +641,13 @@ class PurchaseCards:
                         "future_date", CHANGE_FUTURE_DAY, operation_id=change.operation_id
                     )
         before = [_line_as_said(op) for op in old.operations]
-        if any(item is None for item in before):
-            raise CardChangeRefused("line_refused", CHANGE_NOT_THIS_CARD)
+        not_here = [op for op, item in zip(old.operations, before, strict=True) if item is None]
+        if not_here:
+            raise CardChangeRefused(
+                "line_refused",
+                CHANGE_NOT_THIS_CARD,
+                lines=[_refused(op, CHANGE_NOT_THIS_LINE) for op in not_here],
+            )
         if not self._dated and any("purchased_on" in item for item in before if item):
             raise CardChangeRefused("purchase_day_off", CHANGE_DAY_OFF)
         after = [
@@ -571,18 +661,8 @@ class PurchaseCards:
             old.household_id, _requested_items(after, dated=self._dated)
         )
         if left_out:
-            names = {
-                str(op.values.get("shopping_item_id")): str(op.values.get("name") or "")
-                for op in old.operations
-            }
-            refused = [
-                f"「{names.get(row['shopping_item_id']) or row['shopping_item_id']}」"
-                f"{row['reason']}"
-                for row in left_out
-            ]
-            raise CardChangeRefused(
-                "line_refused", CHANGE_LINE_REFUSED + "".join(refused), lines=left_out
-            )
+            by_entry = {str(op.values.get("shopping_item_id")): op for op in old.operations}
+            _refuse_lines([(by_entry[row["shopping_item_id"]], row["reason"]) for row in left_out])
         record, error = await self._store(old.household_id, lines, old.approval_id)
         if record is None:
             if error == CARD_FAILED:
@@ -764,6 +844,29 @@ class CardChangeRefused(Exception):
         self.code = code
         self.message = message
         self.details = details
+
+
+def _refused(op: Any, reason: str) -> dict[str, Any]:
+    """One refused line for `results[0].data.lines`: its `operation_id` on the card, the
+    list entry for list lines (contract section 7.1), and why."""
+    row: dict[str, Any] = {"operation_id": op.operation_id}
+    if op.values.get("shopping_item_id"):
+        row["shopping_item_id"] = op.values.get("shopping_item_id")
+    row["reason"] = reason
+    return row
+
+
+def _refuse_lines(refused: Sequence[tuple[Any, str]]) -> None:
+    """Raise `line_refused` naming each refused line with its reason; nothing is stored."""
+    message = "".join(
+        f"「{op.values.get('name') or op.values.get('shopping_item_id')}」{reason}"
+        for op, reason in refused
+    )
+    raise CardChangeRefused(
+        "line_refused",
+        CHANGE_LINE_REFUSED + message,
+        lines=[_refused(op, reason) for op, reason in refused],
+    )
 
 
 def _whole(value: Any) -> Any:

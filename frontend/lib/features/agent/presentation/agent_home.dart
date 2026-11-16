@@ -24,6 +24,8 @@ import '../../speech/speech_client.dart';
 
 /// Matches the opaque outer edge of the room artwork when it is letterboxed.
 const _roomBackgroundBase = Color(0xFFEAEDF5);
+const _composerFadeHeight = 96.0;
+const _composerPanelHeight = 144.0;
 
 /// The uploaded reference stays attached to its session-only photo message.
 class PhotoMessageImage extends StatelessWidget {
@@ -394,6 +396,183 @@ class _AgentHomeState extends State<AgentHome> {
     );
   }
 
+  Widget _clusterActionButton({
+    required Key key,
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback? onPressed,
+  }) => Tooltip(
+    message: tooltip,
+    child: Semantics(
+      button: true,
+      enabled: onPressed != null,
+      label: tooltip,
+      child: SizedBox(
+        key: key,
+        width: 48,
+        height: 48,
+        child: Material(
+          color: const Color(0xFFC2CDEE),
+          shape: const CircleBorder(),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onPressed,
+            customBorder: const CircleBorder(),
+            child: Icon(icon, color: const Color(0xFF252D4A)),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  Widget _voiceClusterButton({required bool enabled}) => Tooltip(
+    message: '語音輸入',
+    triggerMode: TooltipTriggerMode.manual,
+    child: Semantics(
+      button: true,
+      enabled: enabled,
+      label: '語音輸入',
+      child: SizedBox(
+        key: const Key('paw-voice'),
+        width: 48,
+        height: 48,
+        child: Material(
+          color: enabled ? const Color(0xFFC2CDEE) : const Color(0xFFD9DEF0),
+          shape: const CircleBorder(),
+          clipBehavior: Clip.antiAlias,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            // Keep these recognizers installed while recording. Removing them
+            // during the state update from _startRecording would cancel the
+            // active gesture while this widget is rebuilding.
+            onTapDown: (_) => _startRecording(),
+            onTapUp: (_) => _stopRecording(),
+            onTapCancel: _stopRecording,
+            child: Icon(
+              _recording ? Icons.mic : Icons.mic_none,
+              color: const Color(0xFF252D4A),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  Widget _composerInputArea({required bool enabled}) {
+    final textField = TextField(
+      controller: _input,
+      onTap: () {
+        _closeInventory();
+        _closeShopping();
+      },
+      enabled: enabled,
+      decoration: const InputDecoration(
+        hintText: '告訴Noki...',
+        border: OutlineInputBorder(),
+        isDense: true,
+      ),
+      onSubmitted: (_) => _send(),
+    );
+    final photo = _photo;
+    if (photo == null) return textField;
+
+    return DecoratedBox(
+      key: const Key('composer-attachment-container'),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFCF6),
+        border: Border.all(color: const Color(0xFF40599C)),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(6, 6, 4, 4),
+            child: Row(
+              children: [
+                Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.memory(
+                        photo,
+                        key: const Key('photo-attachment'),
+                        width: 56,
+                        height: 56,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                    Positioned(
+                      right: -5,
+                      top: -5,
+                      child: Tooltip(
+                        message: '移除照片',
+                        child: Semantics(
+                          button: true,
+                          label: '移除照片',
+                          child: SizedBox(
+                            width: 28,
+                            height: 28,
+                            child: Material(
+                              color: const Color(0xFF40599C),
+                              shape: const CircleBorder(),
+                              clipBehavior: Clip.antiAlias,
+                              child: InkWell(
+                                onTap: _uploading
+                                    ? null
+                                    : () => setState(() => _photo = null),
+                                customBorder: const CircleBorder(),
+                                child: const Icon(
+                                  Icons.close,
+                                  size: 18,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    '已附加至下一則訊息',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: Color(0xFF252D4A), fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: Color(0xFFBBC4D8)),
+          SizedBox(
+            height: 52,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: TextField(
+                controller: _input,
+                onTap: () {
+                  _closeInventory();
+                  _closeShopping();
+                },
+                enabled: enabled,
+                decoration: const InputDecoration(
+                  hintText: '告訴Noki...',
+                  border: InputBorder.none,
+                  isDense: true,
+                ),
+                onSubmitted: (_) => _send(),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showLatestMessage() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_interactionScroll.hasClients) return;
@@ -571,17 +750,21 @@ class _AgentHomeState extends State<AgentHome> {
               ),
               body: SafeArea(
                 child: Column(
+                  key: const Key('home-layout-column'),
                   children: [
                     Expanded(
+                      key: const Key('scene-layer'),
                       child: LayoutBuilder(
                         builder: (context, constraints) => SingleChildScrollView(
                           key: const Key('scene-scroll'),
                           controller: _sceneScroll,
+                          clipBehavior: Clip.none,
                           child: Column(
                             children: [
                               SizedBox(
                                 height: constraints.maxHeight,
                                 child: Stack(
+                                  clipBehavior: Clip.none,
                                   children: [
                                     Positioned.fill(
                                       child: HomeScene(
@@ -598,29 +781,6 @@ class _AgentHomeState extends State<AgentHome> {
                                         message: _busy ? '思考中...' : '歡迎回家',
                                       ),
                                     ),
-                                    Positioned(
-                                      left: 8,
-                                      bottom: 4,
-                                      child: Text(
-                                        '示範模式 · 資料不會儲存',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .labelSmall,
-                                      ),
-                                    ),
-                                    if (_messages.isNotEmpty &&
-                                        !_workOpen &&
-                                        !_inventoryOpen &&
-                                        !_shoppingOpen)
-                                      Positioned(
-                                        right: 8,
-                                        bottom: 4,
-                                        child: TextButton(
-                                          onPressed: () =>
-                                              setState(() => _workOpen = true),
-                                          child: const Text('顯示互動'),
-                                        ),
-                                      ),
                                     if (_messages.isNotEmpty)
                                       Positioned.fill(
                                         key: const Key('room-work-layer'),
@@ -824,112 +984,136 @@ class _AgentHomeState extends State<AgentHome> {
                       ),
                     Padding(
                       key: const Key('composer'),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: Stack(
+                        clipBehavior: Clip.none,
                         children: [
-                          if (_photo != null)
-                            Align(
-                              alignment: Alignment.centerLeft,
-                              child: Stack(
-                                children: [
-                                  Padding(
-                                    padding: const EdgeInsets.all(4),
-                                    child: Image.memory(
-                                      _photo!,
-                                      key: const Key('photo-attachment'),
-                                      width: 64,
-                                      height: 64,
-                                      fit: BoxFit.cover,
-                                    ),
+                          Positioned(
+                            key: const Key('composer-background-fade-layer'),
+                            left: -8,
+                            right: -8,
+                            bottom: 0,
+                            height: _composerPanelHeight + _composerFadeHeight,
+                            child: const IgnorePointer(
+                              child: DecoratedBox(
+                                key: Key('composer-background-fade'),
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                    colors: [
+                                      Color(0x00EAEDF5),
+                                      Color(0xB3EAEDF5),
+                                      _roomBackgroundBase,
+                                    ],
+                                    stops: [0, .62, 1],
                                   ),
-                                  Positioned(
-                                    right: 0,
-                                    top: 0,
-                                    child: IconButton(
-                                      tooltip: '移除照片',
-                                      onPressed: _uploading
-                                          ? null
-                                          : () => setState(() => _photo = null),
-                                      icon: const Icon(Icons.cancel),
-                                      visualDensity: VisualDensity.compact,
-                                    ),
-                                  ),
-                                ],
+                                ),
                               ),
                             ),
-                          Row(
+                          ),
+                          Column(
+                            mainAxisSize: MainAxisSize.min,
                             children: [
-                              Expanded(
-                                child: TextField(
-                                  controller: _input,
-                                  onTap: () {
-                                    _closeInventory();
-                                    _closeShopping();
-                                  },
-                                  enabled:
-                                      !_busy && !_uploading && approval == null,
-                                  decoration: const InputDecoration(
-                                    hintText: '告訴Noki...',
-                                    border: OutlineInputBorder(),
-                                    isDense: true,
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 16),
+                                child: SizedBox(
+                                  key: const Key('paw-action-cluster'),
+                                  height: 128,
+                                  child: Stack(
+                                    children: [
+                                      Positioned(
+                                        left: 0,
+                                        right: 132,
+                                        bottom: 0,
+                                        top: _photo == null ? null : 0,
+                                        child: _composerInputArea(
+                                          enabled:
+                                              !_busy &&
+                                              !_uploading &&
+                                              approval == null,
+                                        ),
+                                      ),
+                                      Positioned(
+                                        right: 0,
+                                        top: 7,
+                                        child: _clusterActionButton(
+                                          key: const Key('paw-camera'),
+                                          tooltip: '拍照',
+                                          icon: Icons.camera_alt_outlined,
+                                          onPressed: _uploading
+                                              ? null
+                                              : _openPhoto,
+                                        ),
+                                      ),
+                                      Positioned(
+                                        right: 56,
+                                        top: 23,
+                                        child: _voiceClusterButton(
+                                          enabled:
+                                              !_speechBusy &&
+                                              !_busy &&
+                                              !_uploading,
+                                        ),
+                                      ),
+                                      Positioned(
+                                        right: 74,
+                                        bottom: 4,
+                                        child: _clusterActionButton(
+                                          key: const Key(
+                                            'paw-expand-interaction',
+                                          ),
+                                          tooltip: '顯示互動',
+                                          icon: Icons.expand_less,
+                                          onPressed:
+                                              _messages.isEmpty ||
+                                                  _workOpen ||
+                                                  _inventoryOpen ||
+                                                  _shoppingOpen
+                                              ? null
+                                              : () => setState(
+                                                  () => _workOpen = true,
+                                                ),
+                                        ),
+                                      ),
+                                      Positioned(
+                                        right: 0,
+                                        bottom: 0,
+                                        child: Tooltip(
+                                          message: '送出',
+                                          child: SizedBox(
+                                            key: const Key('paw-send'),
+                                            width: 64,
+                                            height: 64,
+                                            child: FilledButton(
+                                              onPressed:
+                                                  _busy ||
+                                                      _uploading ||
+                                                      _speechBusy ||
+                                                      approval != null
+                                                  ? null
+                                                  : _send,
+                                              style: FilledButton.styleFrom(
+                                                backgroundColor: const Color(
+                                                  0xFF40599C,
+                                                ),
+                                                foregroundColor: Colors.white,
+                                                shape: const CircleBorder(),
+                                                padding: EdgeInsets.zero,
+                                              ),
+                                              child: const Icon(Icons.send),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                  onSubmitted: (_) => _send(),
                                 ),
-                              ),
-                              GestureDetector(
-                                onTapDown: (_) => _startRecording(),
-                                onTapUp: (_) => _stopRecording(),
-                                onTapCancel: _stopRecording,
-                                child: Tooltip(
-                                  message: '語音輸入',
-                                  triggerMode: TooltipTriggerMode.manual,
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(12),
-                                    child: Icon(
-                                      _recording ? Icons.mic : Icons.mic_none,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              FilledButton(
-                                onPressed:
-                                    _busy ||
-                                        _uploading ||
-                                        _speechBusy ||
-                                        approval != null
-                                    ? null
-                                    : _send,
-                                child: const Text('送出'),
                               ),
                             ],
                           ),
                         ],
                       ),
-                    ),
-                    Row(
-                      key: const Key('toolbar'),
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        TextButton.icon(
-                          onPressed: _uploading ? null : _openPhoto,
-                          icon: const Icon(Icons.camera_alt_outlined),
-                          label: const Text('拍照'),
-                        ),
-                        TextButton(
-                          onPressed: () => _openInventory(),
-                          child: const Text('庫存'),
-                        ),
-                        TextButton(
-                          onPressed: () {
-                            _openShopping();
-                          },
-                          child: const Text('購物清單'),
-                        ),
-                      ],
                     ),
                   ],
                 ),

@@ -62,7 +62,7 @@ void main() {
     );
     for (final message in ['家裡還有牛奶嗎？', '再說一次']) {
       await tester.enterText(input, message);
-      await tester.tap(find.text('送出'));
+      await tester.tap(find.byKey(const Key('paw-send')));
       await tester.pumpAndSettle();
       expect(find.text('辨識到 3 件物品'), findsNothing);
       expect(find.byKey(const Key('vision-item-0')), findsNothing);
@@ -87,7 +87,7 @@ void main() {
         matching: find.byType(TextField),
       );
       await tester.enterText(input, '查看照片');
-      await tester.tap(find.text('送出'));
+      await tester.tap(find.byKey(const Key('paw-send')));
       await tester.pumpAndSettle();
       final surface = find.byKey(const Key('work-surface'));
       final status = find.byKey(const Key('speech'));
@@ -141,10 +141,10 @@ void main() {
       expect(panel.bottom, lessThanOrEqualTo(room.bottom));
       expect(input.hitTestable(), findsOneWidget);
       expect(find.byTooltip('語音輸入').hitTestable(), findsOneWidget);
-      expect(find.byKey(const Key('toolbar')).hitTestable(), findsOneWidget);
+      expect(find.byKey(const Key('paw-send')).hitTestable(), findsOneWidget);
       await tester.tap(find.byTooltip('關閉'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('顯示互動'));
+      await tester.tap(find.byKey(const Key('paw-expand-interaction')));
       await tester.pumpAndSettle();
       expect(surface.hitTestable(), findsOneWidget);
       expect(find.text('辨識到 3 件物品'), findsOneWidget);
@@ -158,7 +158,7 @@ void main() {
       NestockApp(agentClient: client, catalog: const DemoCatalog()),
     );
     await tester.enterText(find.byType(TextField), '等待中');
-    await tester.tap(find.text('送出'));
+    await tester.tap(find.byKey(const Key('paw-send')));
     await tester.pump();
     expect(find.text('思考中...'), findsOneWidget);
     await tester.tap(find.text('清除對話'));
@@ -186,14 +186,14 @@ void main() {
       matching: find.byType(TextField),
     );
     await tester.enterText(input, '照片');
-    await tester.tap(find.text('送出'));
+    await tester.tap(find.byKey(const Key('paw-send')));
     await tester.pumpAndSettle();
     final quantity = find.byKey(const Key('quantity-0'));
     await tester.ensureVisible(quantity);
     await tester.enterText(quantity, '5');
     for (final message in ['後續一', '後續二', '後續三']) {
       await tester.enterText(input, message);
-      await tester.tap(find.text('送出'));
+      await tester.tap(find.byKey(const Key('paw-send')));
       await tester.pumpAndSettle();
     }
     final scroll = tester.state<ScrollableState>(

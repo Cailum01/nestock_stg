@@ -9,6 +9,7 @@ void main() {
     ApprovalView approval, {
     ApprovalDecisionCallback? onDecision,
     ValueChanged<String>? onEdit,
+    Future<void> Function(Uri url)? onOpenProductUrl,
   }) {
     return tester.pumpWidget(
       MaterialApp(
@@ -24,6 +25,7 @@ void main() {
                   approvedOperationIds,
                 }) {},
             onSubmitChanges: onEdit,
+            onOpenProductUrl: onOpenProductUrl,
           ),
         ),
       ),
@@ -122,6 +124,236 @@ void main() {
       await tester.tap(find.byKey(const Key('confirmation-submit-changes')));
 
       expect(editMessage, '洗碗精：數量改成 3，單位改成 包，位置改成 浴室櫃');
+    },
+  );
+
+  testWidgets(
+    'create item without a location uses a display placeholder and keeps approval decisions unchanged',
+    (tester) async {
+      final decisions = <bool>[];
+      List<String>? operationIds;
+      const approval = ApprovalView(
+        id: 'approval-create-no-location',
+        presentation: ApprovalPresentation.singleAction,
+        operations: [
+          OperationView(
+            id: 'operation-create-no-location',
+            action: 'create_item',
+            description: '會新增一個庫存品項：滑鼠',
+            values: {
+              'name': '滑鼠',
+              'quantity': 1,
+              'unit': '個',
+              'location': null,
+              'transaction_id': 'opaque-transaction-id',
+            },
+          ),
+        ],
+      );
+
+      await pumpCard(
+        tester,
+        approval,
+        onDecision:
+            ({required approved, selectedOptionId, approvedOperationIds}) {
+              decisions.add(approved);
+              operationIds = approvedOperationIds;
+            },
+      );
+
+      expect(find.byKey(const Key('confirmation-card-shell')), findsOneWidget);
+      expect(find.text('未填'), findsOneWidget);
+      expect(find.text('opaque-transaction-id'), findsNothing);
+      expect(find.textContaining('transaction_id'), findsNothing);
+
+      await tester.tap(find.byKey(const Key('confirmation-confirm')));
+      expect(decisions, [true]);
+      expect(operationIds, isNull);
+
+      await pumpCard(
+        tester,
+        approval,
+        onDecision:
+            ({required approved, selectedOptionId, approvedOperationIds}) {
+              decisions.add(approved);
+            },
+      );
+      await tester.tap(find.byKey(const Key('confirmation-cancel')));
+      expect(decisions, [true, false]);
+    },
+  );
+
+  testWidgets('missing or blank create-item location displays 未填', (
+    tester,
+  ) async {
+    for (final locationValues in <Map<String, dynamic>>[
+      const {},
+      const {'location': ''},
+      const {'location': '  '},
+    ]) {
+      await pumpCard(
+        tester,
+        ApprovalView(
+          id: 'approval-create-location-${locationValues.length}',
+          presentation: ApprovalPresentation.singleAction,
+          operations: [
+            OperationView(
+              id: 'operation-create-location-${locationValues.length}',
+              action: 'create_item',
+              description: '會新增一個庫存品項：滑鼠',
+              values: {
+                'name': '滑鼠',
+                'quantity': 1,
+                'unit': '個',
+                ...locationValues,
+              },
+            ),
+          ],
+        ),
+      );
+
+      expect(find.byKey(const Key('confirmation-card-shell')), findsOneWidget);
+      expect(find.text('未填'), findsOneWidget);
+    }
+  });
+
+  testWidgets('create item preserves a valid location and never submits 未填', (
+    tester,
+  ) async {
+    String? editMessage;
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-create-valid-location',
+        presentation: ApprovalPresentation.singleAction,
+        operations: [
+          OperationView(
+            id: 'operation-create-valid-location',
+            action: 'create_item',
+            description: '會新增一個庫存品項：滑鼠',
+            values: {
+              'name': '滑鼠',
+              'quantity': 1,
+              'unit': '個',
+              'location': '書桌抽屜',
+            },
+          ),
+        ],
+      ),
+      onEdit: (message) => editMessage = message,
+    );
+
+    expect(find.text('書桌抽屜'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('confirmation-edit-0')));
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('confirmation-quantity-0')),
+      '2',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('confirmation-submit-changes')));
+
+    expect(editMessage, '滑鼠：數量改成 2');
+    expect(editMessage, isNot(contains('未填')));
+  });
+
+  testWidgets('blank optional location stays null in an edit request', (
+    tester,
+  ) async {
+    String? editMessage;
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-create-blank-edit',
+        presentation: ApprovalPresentation.singleAction,
+        operations: [
+          OperationView(
+            id: 'operation-create-blank-edit',
+            action: 'create_item',
+            description: '會新增一個庫存品項：滑鼠',
+            values: {
+              'name': '滑鼠',
+              'quantity': 1,
+              'unit': '個',
+              'location': null,
+            },
+          ),
+        ],
+      ),
+      onEdit: (message) => editMessage = message,
+    );
+
+    await tester.tap(find.byKey(const Key('confirmation-edit-0')));
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const Key('confirmation-quantity-0')),
+      '2',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('confirmation-submit-changes')));
+
+    expect(editMessage, '滑鼠：數量改成 2');
+    expect(editMessage, isNot(contains('未填')));
+  });
+
+  testWidgets(
+    'batch create items keep selection and submit selected operation IDs',
+    (tester) async {
+      List<String>? selectedOperationIds;
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-create-batch',
+          presentation: ApprovalPresentation.batchAction,
+          operations: [
+            OperationView(
+              id: 'operation-create-mouse',
+              action: 'create_item',
+              description: '建立庫存品項：滑鼠',
+              values: {
+                'name': '滑鼠',
+                'quantity': 1,
+                'unit': '個',
+                'location': null,
+                'transaction_id': 'opaque-mouse-transaction',
+              },
+            ),
+            OperationView(
+              id: 'operation-create-keyboard',
+              action: 'create_item',
+              description: '建立庫存品項：鍵盤',
+              values: {
+                'name': '鍵盤',
+                'quantity': 1,
+                'unit': '個',
+                'location': null,
+                'transaction_id': 'opaque-keyboard-transaction',
+              },
+            ),
+          ],
+        ),
+        onDecision:
+            ({required approved, selectedOptionId, approvedOperationIds}) {
+              selectedOperationIds = approvedOperationIds;
+            },
+      );
+
+      expect(
+        find.byKey(const Key('generic-batch-approval-card')),
+        findsOneWidget,
+      );
+      expect(find.text('建立庫存品項：滑鼠'), findsOneWidget);
+      expect(find.text('建立庫存品項：鍵盤'), findsOneWidget);
+      expect(find.textContaining('opaque-'), findsNothing);
+
+      await tester.tap(
+        find.byKey(
+          const Key('generic-batch-operation-operation-create-keyboard'),
+        ),
+      );
+      await tester.tap(find.byKey(const Key('approval-confirm')));
+
+      expect(selectedOperationIds, ['operation-create-mouse']);
     },
   );
 
@@ -539,6 +771,7 @@ void main() {
     expect(find.textContaining('109'), findsOneWidget);
     expect(find.text('option-1'), findsNothing);
     expect(find.text('hidden'), findsNothing);
+    expect(find.text('前往購買'), findsNothing);
     expect(
       tester
           .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
@@ -549,5 +782,73 @@ void main() {
     await tester.pump();
     await tester.tap(find.byKey(const Key('approval-confirm')));
     expect(selectedOption, 'option-1');
+  });
+
+  testWidgets('purchase option opens product URL without selecting it', (
+    tester,
+  ) async {
+    Uri? openedUrl;
+    String? selectedOption;
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-options-link',
+        presentation: ApprovalPresentation.purchaseOptions,
+        operations: [
+          OperationView(
+            id: 'operation-options-link',
+            action: 'choose_purchase_option',
+            description: '選購項目',
+          ),
+        ],
+        options: [
+          ApprovalOptionView(
+            id: 'option-link',
+            values: {
+              'store': '線上商店',
+              'estimated_price': 99,
+              'source': '推薦',
+              'product_url': 'https://shop.example.test/product/1',
+            },
+          ),
+          ApprovalOptionView(
+            id: 'option-malformed-link',
+            values: {'product_url': 'not a URL'},
+          ),
+        ],
+      ),
+      onOpenProductUrl: (url) async => openedUrl = url,
+      onDecision: ({
+        required approved,
+        selectedOptionId,
+        approvedOperationIds,
+      }) => selectedOption = selectedOptionId,
+    );
+
+    expect(find.textContaining('product_url'), findsNothing);
+    expect(find.textContaining('shop.example.test'), findsNothing);
+    expect(find.textContaining('線上商店'), findsOneWidget);
+    expect(find.textContaining('99'), findsOneWidget);
+    expect(find.textContaining('推薦'), findsOneWidget);
+    expect(
+      find.byKey(const Key('purchase-option-link-option-link')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('purchase-option-link-option-malformed-link')),
+      findsNothing,
+    );
+
+    await tester.tap(find.byKey(const Key('purchase-option-link-option-link')));
+    await tester.pump();
+
+    expect(openedUrl, Uri.parse('https://shop.example.test/product/1'));
+    expect(selectedOption, isNull);
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+          .onPressed,
+      isNull,
+    );
   });
 }

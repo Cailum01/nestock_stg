@@ -27,11 +27,11 @@ void main() {
         ),
       );
       Future<void> open() async {
-        await tester.tap(find.text('購物清單').last);
+        await tester.tap(find.byKey(const Key('cart')));
         await tester.pumpAndSettle();
       }
 
-      await tester.tap(find.text('購物清單'));
+      await tester.tap(find.byKey(const Key('cart')));
       await tester.pump(const Duration(milliseconds: 60));
       final clip = find.byKey(const Key('shopping-room-clip'));
       expect(
@@ -47,7 +47,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(
         tester.getCenter(find.byTooltip('關閉購物清單')).dx,
-        greaterThan(tester.getCenter(find.text('購物清單').first).dx),
+        greaterThan(tester.getCenter(find.byKey(const Key('cart'))).dx),
       );
       final room = tester.getRect(find.byKey(const Key('room')));
       await tester.tapAt(Offset(room.left + 2, room.bottom - 2));
@@ -61,7 +61,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('shopping-overlay')), findsNothing);
       await open();
-      await tester.tap(find.text('購物清單').last);
+      await tester.tap(find.byTooltip('關閉購物清單'));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('shopping-overlay')), findsNothing);
       await open();
@@ -75,14 +75,16 @@ void main() {
       expect(find.byKey(const Key('shopping-overlay')), findsNothing);
       expect(find.text('測試'), findsOneWidget);
       await open();
-      await tester.tap(find.text('拍照'));
+      await tester.tap(find.byKey(const Key('paw-camera')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('shopping-overlay')), findsNothing);
       expect(testCamera.calls, 1);
       await tester.pump(const Duration(seconds: 5));
       await tester.pumpAndSettle();
       await open();
-      await tester.tap(find.text('庫存'));
+      await tester.tap(find.byTooltip('關閉購物清單'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('cabinet')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('shopping-overlay')), findsNothing);
       expect(find.text('我的庫存'), findsOneWidget);
@@ -98,11 +100,13 @@ void main() {
       ),
     );
     await tester.enterText(find.byType(TextField), '查看照片');
-    await tester.tap(find.text('送出'));
+    await tester.tap(find.byKey(const Key('paw-send')));
     await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('quantity-0')), '5');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('購物清單'));
+    await tester.tap(find.byTooltip('關閉'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('cart')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('work-surface')).hitTestable(), findsNothing);
     await tester.tap(find.byTooltip('關閉購物清單'));
@@ -114,6 +118,8 @@ void main() {
           .text,
       '5',
     );
+    await tester.tap(find.byKey(const Key('paw-expand-interaction')));
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('work-surface')).hitTestable(), findsOneWidget);
   });
 }

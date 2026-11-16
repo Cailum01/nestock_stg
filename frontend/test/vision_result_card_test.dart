@@ -44,7 +44,36 @@ void main() {
       }),
     );
 
-    expect(find.text('僅辨識，尚未加入庫存'), findsOneWidget);
+    final card = find.byKey(const Key('vision-result-card'));
+    expect(card, findsOneWidget);
+    expect(find.text('尚未加入庫存'), findsOneWidget);
+    expect(find.text('僅辨識，尚未加入庫存'), findsNothing);
+    expect(find.text('照片辨識'), findsNothing);
+    expect(find.text('辨識摘要'), findsNothing);
+    expect(
+      find.descendant(
+        of: card,
+        matching: find.byKey(const Key('confirmation-border-top')),
+      ),
+      findsOneWidget,
+    );
+    final border = tester.widget<Image>(
+      find.descendant(
+        of: card,
+        matching: find.descendant(
+          of: find.byKey(const Key('confirmation-border-top')),
+          matching: find.byType(Image),
+        ),
+      ),
+    );
+    expect(
+      (border.image as AssetImage).assetName,
+      'assets/images/ui/confirmation_border_horizontal.png',
+    );
+    expect(
+      find.descendant(of: card, matching: find.byType(FilledButton)),
+      findsNothing,
+    );
     expect(find.text('鮮奶'), findsOneWidget);
     expect(find.text('2 瓶'), findsOneWidget);
     expect(find.text('期限：2026-12-01'), findsOneWidget);
@@ -115,8 +144,8 @@ void main() {
       }),
     );
 
-    expect(find.text('辨識摘要'), findsOneWidget);
-    expect(find.text('僅辨識，尚未加入庫存'), findsOneWidget);
+    expect(find.text('辨識摘要'), findsNothing);
+    expect(find.text('尚未加入庫存'), findsOneWidget);
     expect(find.text('茶'), findsOneWidget);
     expect(find.text('單位：包（待確認）'), findsOneWidget);
     expect(find.textContaining('invalid'), findsNothing);
@@ -128,7 +157,30 @@ void main() {
   ) async {
     await tester.pumpWidget(visionCard({'items': []}));
 
-    expect(find.text('辨識摘要'), findsOneWidget);
-    expect(find.text('僅辨識，尚未加入庫存'), findsOneWidget);
+    expect(find.text('辨識摘要'), findsNothing);
+    expect(find.text('尚未加入庫存'), findsOneWidget);
+  });
+
+  testWidgets('non-vision results keep the existing generic card renderer', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentResultCard(
+            result: const AgentResultView(
+              kind: ResultKind.inventory,
+              summary: '庫存查詢摘要',
+              data: {'items': []},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byType(Card), findsOneWidget);
+    expect(find.text('庫存'), findsOneWidget);
+    expect(find.text('庫存查詢摘要'), findsOneWidget);
+    expect(find.byKey(const Key('vision-result-card')), findsNothing);
   });
 }

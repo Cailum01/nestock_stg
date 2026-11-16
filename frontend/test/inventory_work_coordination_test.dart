@@ -16,11 +16,13 @@ void main() {
       ),
     );
     await tester.enterText(find.byType(TextField), '查看照片');
-    await tester.tap(find.text('送出'));
+    await tester.tap(find.byKey(const Key('paw-send')));
     await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('quantity-0')), '5');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('庫存'));
+    await tester.tap(find.byTooltip('關閉'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('cabinet')));
     await tester.pumpAndSettle();
     expect(find.text('我的庫存'), findsOneWidget);
     await tester.tap(find.byTooltip('關閉庫存'));
@@ -32,6 +34,8 @@ void main() {
           .text,
       '5',
     );
+    await tester.tap(find.byKey(const Key('paw-expand-interaction')));
+    await tester.pumpAndSettle();
     expect(find.byKey(const Key('work-surface')).hitTestable(), findsOneWidget);
   });
 }

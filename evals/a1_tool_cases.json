@@ -1,5 +1,5 @@
 {
-  "_about": "A1 tool selection cases (v8 section 20: >=3 example utterances and >=1 confusion case per tool) for the read tools wired in backend/app/agent/read_agent.py besides B2's two. Same fields as b2_tool_cases.json, plus optional `photo`: true means the request carries a photo, so the test adds the same PHOTO_ATTACHED system message the Agent adds. Per v8 the tool owners are B1 (list_inventory), C1 (list_shopping) and A2 (analyze_photo, search_purchase_options); they may edit or add cases. C1 owns the Golden Prompts set and may merge these in.",
+  "_about": "A1 tool selection cases (v8 section 20: >=3 example utterances and >=1 confusion case per tool) for the read tools wired in backend/app/agent/read_agent.py besides B2's two. Same fields as b2_tool_cases.json, plus optional `photo`: true means the request carries a photo, so the test adds the same PHOTO_ATTACHED system message the Agent adds. Optional `shopping_list` (complete_purchase cases): the rows a first `list_shopping` call gets back; the test checks that the model looks up the list first, answers it with these rows, and applies `expect_calls`, `must_not_call` and `args_contain` to the model's next turn. Per v8 the tool owners are B1 (list_inventory), C1 (list_shopping) and A2 (analyze_photo, search_purchase_options); they may edit or add cases. complete_purchase is A1's card tool (v8 flow C), offered when Cosmos is configured; the live test offers it as the Agent does then. C1 owns the Golden Prompts set and may merge these in.",
   "cases": [
     {
       "id": "inventory-01",
@@ -221,6 +221,135 @@
         "search_purchase_options"
       ],
       "note": "An inventory question gets facts only; no price lookup."
+    },
+    {
+      "id": "purchase-01",
+      "tool": "complete_purchase",
+      "kind": "positive",
+      "utterance": "我買了衛生紙 2 包",
+      "shopping_list": [
+        {
+          "shopping_item_id": "tissue-1",
+          "name": "衛生紙",
+          "quantity": 2,
+          "unit": "包",
+          "status": "pending",
+          "item_id": "tissue"
+        },
+        {
+          "shopping_item_id": "milk-1",
+          "name": "牛奶",
+          "quantity": 1,
+          "unit": "瓶",
+          "status": "pending",
+          "item_id": "milk"
+        }
+      ],
+      "expect_calls": [
+        "complete_purchase"
+      ],
+      "must_not_call": [
+        "list_inventory",
+        "search_purchase_options"
+      ],
+      "args_contain": {
+        "items": "tissue-1"
+      },
+      "note": "v8 flow C. Prompt 買回來了 rule 1: look up the shopping list first, then make the card with that entry's shopping_item_id."
+    },
+    {
+      "id": "purchase-02",
+      "tool": "complete_purchase",
+      "kind": "positive",
+      "utterance": "洗衣精買回來了，買了 2 瓶",
+      "shopping_list": [
+        {
+          "shopping_item_id": "seed-shopping-detergent",
+          "name": "洗衣精",
+          "quantity": 2,
+          "unit": "瓶",
+          "status": "pending",
+          "item_id": "seed-detergent"
+        },
+        {
+          "shopping_item_id": "seed-shopping-flour",
+          "name": "麵粉",
+          "quantity": 1,
+          "unit": "包",
+          "status": "pending",
+          "item_id": "seed-flour"
+        }
+      ],
+      "expect_calls": [
+        "complete_purchase"
+      ],
+      "must_not_call": [
+        "search_purchase_options"
+      ],
+      "args_contain": {
+        "items": "seed-shopping-detergent"
+      },
+      "note": "DEMO checklist v3, section 3 F, on the DEMO baseline's shopping rows."
+    },
+    {
+      "id": "purchase-03",
+      "tool": "complete_purchase",
+      "kind": "positive",
+      "utterance": "剛剛把麵粉買回來了，1 包",
+      "shopping_list": [
+        {
+          "shopping_item_id": "seed-shopping-detergent",
+          "name": "洗衣精",
+          "quantity": 2,
+          "unit": "瓶",
+          "status": "pending",
+          "item_id": "seed-detergent"
+        },
+        {
+          "shopping_item_id": "seed-shopping-flour",
+          "name": "麵粉",
+          "quantity": 1,
+          "unit": "包",
+          "status": "pending",
+          "item_id": "seed-flour"
+        }
+      ],
+      "expect_calls": [
+        "complete_purchase"
+      ],
+      "must_not_call": [
+        "search_purchase_options"
+      ],
+      "args_contain": {
+        "items": "seed-shopping-flour"
+      }
+    },
+    {
+      "id": "purchase-neg-01",
+      "tool": "complete_purchase",
+      "kind": "negative",
+      "utterance": "明天要去買洗衣精，家裡還有幾瓶？",
+      "expect_calls": [
+        "list_inventory"
+      ],
+      "must_not_call": [
+        "complete_purchase",
+        "search_purchase_options"
+      ],
+      "note": "Going to buy is not bought: an inventory question (Flow B), not a purchase card."
+    },
+    {
+      "id": "purchase-neg-02",
+      "tool": "complete_purchase",
+      "kind": "negative",
+      "utterance": "衛生紙買了沒？待購清單上還有嗎？",
+      "expect_calls": [
+        "list_shopping"
+      ],
+      "must_not_call": [
+        "complete_purchase"
+      ],
+      "note": "Asking whether it was bought is a shopping-list question, not a report of a purchase."
     }
   ]
 }

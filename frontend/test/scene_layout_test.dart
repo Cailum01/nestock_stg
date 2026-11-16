@@ -33,19 +33,54 @@ void main() {
       final agent = tester.getRect(find.byKey(const Key('agent')));
       final speech = tester.getRect(find.byKey(const Key('speech')));
       final composer = tester.getRect(find.byKey(const Key('composer')));
-      final toolbar = tester.getRect(find.byKey(const Key('toolbar')));
+      final actionCluster = tester.getRect(
+        find.byKey(const Key('paw-action-cluster')),
+      );
+      final composerFade = find.byKey(const Key('composer-background-fade'));
+      final layoutColumn = tester.widget<Column>(
+        find.byKey(const Key('home-layout-column')),
+      );
+      final sceneLayer = layoutColumn.children.indexWhere(
+        (child) => child.key == const Key('scene-layer'),
+      );
+      final composerLayer = layoutColumn.children.indexWhere(
+        (child) => child.key == const Key('composer'),
+      );
+      final composerStack = tester.widget<Stack>(
+        find
+            .descendant(
+              of: find.byKey(const Key('composer')),
+              matching: find.byType(Stack),
+            )
+            .first,
+      );
+      final composerFadeLayer = composerStack.children.indexWhere(
+        (child) => child.key == const Key('composer-background-fade-layer'),
+      );
+      final sceneStack = tester.widget<Stack>(
+        find.byKey(const Key('room-scene-stack')),
+      );
+      final cabinetLayer = sceneStack.children.indexWhere(
+        (child) => child.key == const Key('cabinet-layer'),
+      );
+      final beanbagLayer = sceneStack.children.indexWhere(
+        (child) => child.key == const Key('beanbag-layer'),
+      );
       expect(cabinet.center.dy, lessThan(room.center.dy));
       expect(cabinet.center.dx, lessThan(room.center.dx));
       expect(cart.center.dx, greaterThan(room.center.dx));
       expect(cart.top, greaterThan(room.top + room.height * .4));
-      expect(
-        room.contains(cart.topLeft) && room.contains(cart.bottomRight),
-        isTrue,
-      );
-      expect(
-        room.contains(agent.topLeft) && room.contains(agent.bottomRight),
-        isTrue,
-      );
+      // The approved shopping-cart placement is anchored near the room's right
+      // edge while remaining visibly within its vertical bounds.
+      expect(cart.top, greaterThanOrEqualTo(room.top));
+      expect(cart.bottom, lessThanOrEqualTo(room.bottom));
+      expect(cart.left, lessThan(room.right));
+      expect(cart.right, lessThanOrEqualTo(room.right));
+      expect(cart.right, greaterThan(room.right - room.width * .05));
+      // Noki's approved lower-room illustration may extend beyond the scene
+      // bounds, but it must remain visibly anchored in the lower half.
+      expect(room.overlaps(agent), isTrue);
+      expect(agent.center.dy, greaterThan(room.center.dy));
       expect(cabinet.width, greaterThan(room.width * .2));
       expect(find.byKey(const Key('window')), findsOneWidget);
       expect(find.byKey(const Key('window-image')), findsOneWidget);
@@ -82,19 +117,49 @@ void main() {
       );
       expect(
         (agent.center.dy - room.center.dy).abs(),
-        lessThan(room.height * .3),
+        // Noki is intentionally composed lower in the approved scene.
+        lessThan(room.height * .4),
       );
       expect(speech.center.dy, lessThan(agent.center.dy));
-      expect(speech.center.dx, greaterThan(agent.center.dx));
+      // The approved speech bubble sits just left of Noki while remaining
+      // above the character.
+      expect(speech.center.dx, lessThan(agent.center.dx));
       expect(composer.top, greaterThanOrEqualTo(room.bottom));
-      expect(toolbar.top, greaterThanOrEqualTo(composer.bottom));
-      expect(find.byType(TextField).hitTestable(), findsOneWidget);
-      for (final pair in [
-        ('cabinet', '白米'),
-        ('cart', '牛奶'),
-        ('庫存', '白米'),
-        ('購物清單', '牛奶'),
+      expect(actionCluster.bottom, lessThanOrEqualTo(composer.bottom));
+      expect(composerFade, findsOneWidget);
+      final fadeDecoration =
+          tester.widget<DecoratedBox>(composerFade).decoration as BoxDecoration;
+      final fade = fadeDecoration.gradient! as LinearGradient;
+      expect(fade.begin, Alignment.topCenter);
+      expect(fade.end, Alignment.bottomCenter);
+      expect(fade.colors.first.a, 0);
+      expect(fade.colors.last, const Color(0xFFEAEDF5));
+      // The scene paints first. The composer gradient then overlaps the lower
+      // scene, with opaque controls painted above that gradient.
+      expect(tester.getRect(composerFade).top, lessThan(room.bottom));
+      final fadeRect = tester.getRect(composerFade);
+      expect(agent.bottom, greaterThan(fadeRect.top));
+      expect(agent.top, lessThan(fadeRect.bottom));
+      expect(sceneLayer, greaterThanOrEqualTo(0));
+      expect(composerLayer, greaterThan(sceneLayer));
+      expect(composerFadeLayer, 0);
+      expect(cabinetLayer, greaterThanOrEqualTo(0));
+      expect(beanbagLayer, greaterThan(cabinetLayer));
+      for (final action in [
+        'paw-camera',
+        'paw-voice',
+        'paw-expand-interaction',
       ]) {
+        final actionFinder = find.byKey(Key(action));
+        expect(actionFinder.hitTestable(), findsOneWidget);
+        expect(tester.getSize(actionFinder), const Size(48, 48));
+      }
+      expect(
+        tester.getSize(find.byKey(const Key('paw-send'))),
+        const Size(64, 64),
+      );
+      expect(find.byType(TextField).hitTestable(), findsOneWidget);
+      for (final pair in [('cabinet', '白米'), ('cart', '牛奶')]) {
         final target = pair.$1 == 'cabinet' || pair.$1 == 'cart'
             ? find.byKey(Key(pair.$1))
             : find.text(pair.$1);

@@ -5,7 +5,7 @@
 - `b2_tool_cases.json`：B2 兩個工具（`get_reorder_candidates`、`get_consumption_forecast`）的
   範例語句與容易混淆的反例。每個工具至少 3 句正面範例，另有反例。對應 v8 第 20 節的工具負責人驗收項目。
 
-- `a1_tool_cases.json`：庫存、待購、照片、查價四個工具，共 17 個案例，與 B2 案例共用格式。
+- `a1_tool_cases.json`：庫存、待購、照片、查價四個工具，加上「買回來了」的確認卡工具 `complete_purchase`，共 22 個案例，與 B2 案例共用格式。
 
 ## 欄位
 
@@ -19,6 +19,7 @@
 | `must_not_call` | 第一輪不能呼叫的工具 |
 | `args_contain` | 呼叫時參數需包含的文字（選填） |
 | `photo` | `true` 表示附有照片，測試加入 Agent 使用的照片提示（選填） |
+| `shopping_list` | 只用在 `complete_purchase` 的案例：模型第一輪要先查待購清單，測試回給它這幾筆，`expect_calls`、`must_not_call`、`args_contain` 檢查的是下一輪（選填） |
 
 ## 怎麼跑
 
@@ -45,5 +46,5 @@ uv run pytest -m live_eval tests/test_b2_tool_cases.py tests/test_a1_tool_cases.
 - Golden Prompts 整體由 C1 負責；這裡的檔案格式只是 B2 的提案，C1 可以改格式或併入他的清單。
 - v8 把單品預估寫成 `get_consumption_forecast(item_id)`，目前 A1 實作的參數是 `item_name`
   （由後端比對品名）。案例依現有實作寫，改參數時請同步更新 `args_contain`。
-- 目前的 Agent 沒有寫入工具，所以「加入購物清單」「買回來了」這類句子要等 C1 的工具完成後，
-  才能補上完整的選擇案例。
+- 「買回來了」已有案例（`purchase-*`）；A1 的真模型測試會像有設 Cosmos 的 Agent 一樣，一起提供
+  `complete_purchase`。「加入購物清單」的寫入工具還沒有，要等完成後再補案例。

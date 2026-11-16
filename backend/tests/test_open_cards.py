@@ -26,7 +26,12 @@ from test_purchase_cards import (
     tool_results,
 )
 
-from app.agent.cards import OPEN_CARD_FIRST, PURCHASE_TOOL_SCHEMA, PurchaseCards
+from app.agent.cards import (
+    OPEN_CARD_FIRST,
+    OPEN_CARDS_UNKNOWN,
+    PURCHASE_TOOL_SCHEMA,
+    PurchaseCards,
+)
 from app.agent.llm import build_chat_model, load_azure_settings
 from app.agent.read_agent import OPEN_CARD, TOOL_SCHEMAS, _text, load_system_prompt
 from app.models.agent import ResumeRequest
@@ -172,6 +177,28 @@ def test_if_open_cards_cannot_be_listed_the_message_is_still_answered(monkeypatc
     assert response.message == "還有 1 瓶。"
     assert response.pending_approval is None
     assert all("沒確認" not in m.content for m in model.seen[0] if isinstance(m, SystemMessage))
+
+
+def test_if_open_cards_cannot_be_listed_no_new_card_is_made(monkeypatch):
+    """Unknown is not "none": a card may still be open (PR #160 C2 review)."""
+    container, reader, approvals = setup()
+    old = make_card(reader, approvals)
+
+    async def unreachable(**_):
+        raise ConnectionError("Cosmos is unreachable")
+
+    monkeypatch.setattr(approvals, "list_open", unreachable)
+    response, model = next_message(
+        reader,
+        approvals,
+        "衛生紙買回來了，2 包",
+        purchase_reply({"shopping_item_id": "tissue-1", "quantity": 2}, call_id="call-1"),
+        AIMessage(content="現在查不到確認卡的狀態，請稍後再說一次。"),
+    )
+
+    assert tool_results(model) == [OPEN_CARDS_UNKNOWN]
+    assert response.pending_approval is None
+    assert stored_cards(container) == {old["approval_id"]: "pending"}  # nothing new stored
 
 
 # ----- live model (run with -m live_eval, Issue #127) ----------------------------------

@@ -278,7 +278,10 @@ reminder is the card itself, not a sentence the user cannot act on (Issue #91,
   `open_card_not_answered`). A typed change gets the same answer (section 7).
 - `confirmed` cards that can still be retried (section 3) are not shown again: not
   built.
-- If the open cards cannot be listed, the message is answered without them.
+- If the open cards cannot be listed, the message is answered without them, but it
+  makes no new card (`complete_purchase` returns `open_cards_unknown`): unknown is
+  not "none", and a new card could be a second card for the same purchase (PR #160
+  C2 review). The user says it again later.
 - A 送出修改 message (with `replaces_approval_id`) skips this lookup; section 7 applies.
 
 Built (A1): `PurchaseCards.open_cards` and `ReadAgent.respond`. There is no background

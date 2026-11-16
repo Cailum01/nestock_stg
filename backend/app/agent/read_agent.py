@@ -41,6 +41,7 @@ from langgraph.graph.message import add_messages
 from app.agent.cards import (
     ONE_CARD_PER_MESSAGE,
     OPEN_CARD_FIRST,
+    OPEN_CARDS_UNKNOWN,
     PURCHASE_TOOL_SCHEMA,
     PurchaseCards,
 )
@@ -255,6 +256,8 @@ class _State(TypedDict, total=False):
     """The card a 送出修改 replaces (section 7); the new card records it."""
     open_card_shown: bool
     """An open card is shown again with this reply (section 8); no new card is made."""
+    open_cards_unknown: bool
+    """The open cards could not be listed (section 8); no new card is made."""
 
 
 def load_system_prompt() -> str:
@@ -661,6 +664,8 @@ class ReadAgent:
         """Make the purchase card. One card per message; it writes nothing else."""
         if self._purchases is None:
             return f"沒有這個工具：{call['name']}", None
+        if state.get("open_cards_unknown"):
+            return OPEN_CARDS_UNKNOWN, None
         if state.get("open_card_shown"):
             return OPEN_CARD_FIRST, None
         if "pending_approval" in update or "pending_approval" in state:
@@ -698,7 +703,9 @@ class ReadAgent:
             # Section 8: a card cleared from the screen is still open; show the newest
             # one again (same approval_id) instead of a reminder the user cannot press.
             open_cards = await self._purchases.open_cards(request.household_id)
-            if open_cards:
+            if open_cards is None:
+                start["open_cards_unknown"] = True  # unknown is not "none": no new card
+            elif open_cards:
                 shown = open_cards[0]
                 card = ApprovalService.to_pending_approval(shown).model_dump(mode="json")
                 start["pending_approval"] = card

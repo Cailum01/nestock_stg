@@ -115,6 +115,12 @@ ONE_CARD_PER_MESSAGE = json.dumps({"error": "card_already_made"})
 """A second `complete_purchase` in the same message: the first card stands."""
 OPEN_CARD_FIRST = json.dumps({"error": "open_card_not_answered"})
 """`complete_purchase` while an earlier open card is shown again (section 8): no new card."""
+OPEN_CARDS_UNKNOWN = json.dumps({"error": "open_cards_unknown"})
+"""`complete_purchase` when the open cards could not be listed (section 8): no new card.
+
+Unknown is not "none": a card could still be open, and a new one would be a second
+card for the same purchase (PR #160 C2 review). The user says it again later.
+"""
 CARD_FAILED = json.dumps({"error": "card_not_made"})
 TOO_MANY_ITEMS = json.dumps({"error": "too_many_items"})
 RECORDS_CHANGED = json.dumps({"error": "records_changed"})
@@ -226,19 +232,19 @@ class PurchaseCards:
         self._reader = reader
         self._approvals = approvals
 
-    async def open_cards(self, household_id: str) -> list[ApprovalRecord]:
+    async def open_cards(self, household_id: str) -> list[ApprovalRecord] | None:
         """Pending cards the household has not answered, newest first (section 8).
 
         After 清除對話 or reopening the App a card is gone from the screen but still
         open here; the next reply shows the newest one again. Confirmed cards waiting
-        for a retry are left out. If the cards cannot be listed, none are returned and
-        the message is still answered.
+        for a retry are left out. None when the cards cannot be listed: the message is
+        still answered, but it makes no new card (`OPEN_CARDS_UNKNOWN`).
         """
         try:
             cards = await self._approvals.list_open(household_id=household_id)
         except Exception:
             logger.warning("Open cards could not be listed", exc_info=True)
-            return []
+            return None
         pending = [card for card in cards if card.status is ApprovalStatus.PENDING]
         return sorted(pending, key=lambda card: card.created_at, reverse=True)
 

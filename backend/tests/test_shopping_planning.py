@@ -5,7 +5,12 @@ import pytest
 
 from app.models.domain import InventoryItem, ShoppingItem, TransactionReason
 from app.services.inventory_item_identity import resolve_inventory_item_id
-from app.services.shopping.planning import PurchaseInput, ShoppingPlanService
+from app.services.shopping.planning import (
+    AdjustmentInput,
+    NewInventoryTarget,
+    PurchaseInput,
+    ShoppingPlanService,
+)
 from app.services.shopping.preview import ShoppingDecisionRequired, ShoppingPreviewError
 
 CREATED = datetime(2026, 11, 3, tzinfo=UTC)
@@ -340,6 +345,107 @@ def test_new_target_plans_create_actual_stock_without_placeholder_or_fake_etag()
     assert source.shopping.status == "pending"
     assert source.inventory is None
     assert plan(purchase(), source) == result
+
+
+def adjustment(**changes):
+    operation_id = "photo-adjustment-1"
+    values = {
+        "operation_id": operation_id,
+        "transaction_id": "photo-transaction-1",
+        "approval_id": "photo-approval-1",
+        "new_inventory": NewInventoryTarget(
+            item_id=resolve_inventory_item_id(operation_id),
+            name="羅技 G400s 有線電競滑鼠",
+            unit="個",
+            location=None,
+        ),
+        "quantity": 1,
+    }
+    values.update(changes)
+    return AdjustmentInput(**values)
+
+
+def test_photo_new_item_adjustment_plans_stock_and_transaction_without_shopping():
+    source = adjustment()
+    result = ShoppingPlanService().plan_adjustment(
+        household_id=HOUSEHOLD,
+        adjustment=source,
+        recorded_at=RECORDED,
+    )
+
+    assert result.household_id == HOUSEHOLD
+    assert result.operation_id == source.operation_id
+    assert result.approval_id == source.approval_id
+    assert result.recorded_at == RECORDED
+    assert result.inventory_create.operation_id == source.operation_id
+    assert result.inventory_create.record.item_id == resolve_inventory_item_id(source.operation_id)
+    assert result.inventory_create.record.name == "羅技 G400s 有線電競滑鼠"
+    assert result.inventory_create.record.quantity == 1
+    assert result.inventory_create.record.unit == "個"
+    assert result.inventory_create.record.location is None
+    assert result.inventory_create.record.created_at == RECORDED
+    assert result.inventory_create.record.updated_at == RECORDED
+    assert result.transaction.transaction_id == source.transaction_id
+    assert result.transaction.operation_id == source.operation_id
+    assert result.transaction.item_id == result.inventory_create.record.item_id
+    assert result.transaction.quantity_delta == 1
+    assert result.transaction.reason == TransactionReason.ADJUSTMENT
+    assert result.transaction.created_at == RECORDED
+    # Rebuilding the same approved proposal is deterministic; no Shopping row,
+    # ChangeEvent, authorization, or persistence operation is produced here.
+    assert (
+        ShoppingPlanService().plan_adjustment(
+            household_id=HOUSEHOLD,
+            adjustment=source,
+            recorded_at=RECORDED,
+        )
+        == result
+    )
+
+
+@pytest.mark.parametrize(
+    "changes, message",
+    [
+        ({"operation_id": " "}, "Operation ID"),
+        ({"transaction_id": " "}, "Transaction ID"),
+        ({"approval_id": " "}, "Approval ID"),
+        ({"quantity": 0}, "Adjustment quantity"),
+        ({"quantity": -1}, "Adjustment quantity"),
+        ({"quantity": 1.5}, "Adjustment quantity"),
+        ({"quantity": True}, "Adjustment quantity"),
+        (
+            {
+                "new_inventory": NewInventoryTarget(
+                    item_id="client-chosen-id",
+                    name="滑鼠",
+                    unit="個",
+                    location=None,
+                )
+            },
+            "stable operation resolver",
+        ),
+    ],
+)
+def test_photo_new_item_adjustment_rejects_unresolved_or_invalid_values(changes, message):
+    with pytest.raises(ShoppingPreviewError, match=message):
+        ShoppingPlanService().plan_adjustment(
+            household_id=HOUSEHOLD,
+            adjustment=adjustment(**changes),
+            recorded_at=RECORDED,
+        )
+
+
+def test_photo_new_item_adjustment_rejects_blank_household_and_naive_time():
+    service = ShoppingPlanService()
+    source = adjustment()
+    with pytest.raises(ShoppingPreviewError, match="Household"):
+        service.plan_adjustment(household_id=" ", adjustment=source, recorded_at=RECORDED)
+    with pytest.raises(ShoppingPreviewError, match="timezone-aware"):
+        service.plan_adjustment(
+            household_id=HOUSEHOLD,
+            adjustment=source,
+            recorded_at=RECORDED.replace(tzinfo=None),
+        )
 
 
 @pytest.mark.parametrize(

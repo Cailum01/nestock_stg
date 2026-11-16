@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.services.cosmos_read import CosmosReadRepository
 from app.services.cosmos_write import (
     BatchOperationConflict,
     CosmosWriteRepository,
@@ -17,6 +18,9 @@ from app.services.shopping.intents import (
     ShoppingIntentError,
     ShoppingIntentService,
 )
+
+CREATED_AT = datetime(2026, 11, 14, 3, tzinfo=UTC)
+RETRY_AT = datetime(2026, 11, 14, 4, tzinfo=UTC)
 
 
 class FakeTransactionalBatchClient:
@@ -49,7 +53,6 @@ def make_command(**changes):
         "household_id": "demo-household",
         "request_id": "request-1",
         "name": "  洗衣精  ",
-        "created_at": datetime(2026, 11, 14, 3, tzinfo=UTC),
         "quantity": None,
         "unit": None,
     }
@@ -59,7 +62,11 @@ def make_command(**changes):
 
 def test_add_creates_a_pending_intent_without_inventing_quantity_or_unit():
     client = FakeTransactionalBatchClient()
-    service = ShoppingIntentService(CosmosWriteRepository(client))
+    service = ShoppingIntentService(
+        CosmosWriteRepository(client),
+        CosmosReadRepository(client),
+        clock=lambda: CREATED_AT,
+    )
 
     result = asyncio.run(service.add(make_command()))
 
@@ -95,7 +102,11 @@ def test_add_creates_a_pending_intent_without_inventing_quantity_or_unit():
 
 def test_add_normalizes_optional_values_and_retries_the_same_operation_id():
     client = FakeTransactionalBatchClient()
-    service = ShoppingIntentService(CosmosWriteRepository(client))
+    service = ShoppingIntentService(
+        CosmosWriteRepository(client),
+        CosmosReadRepository(client),
+        clock=lambda: CREATED_AT,
+    )
     command = make_command(quantity=2, unit="  瓶 ")
 
     first = asyncio.run(service.add(command))
@@ -109,9 +120,38 @@ def test_add_normalizes_optional_values_and_retries_the_same_operation_id():
     assert len(client.documents) == 3  # Shopping row, event, and operation receipt.
 
 
+def test_retry_reuses_backend_created_timestamp_not_a_new_retry_timestamp():
+    client = FakeTransactionalBatchClient()
+    timestamps = iter((CREATED_AT, RETRY_AT))
+    service = ShoppingIntentService(
+        CosmosWriteRepository(client),
+        CosmosReadRepository(client),
+        clock=lambda: next(timestamps),
+    )
+
+    first = asyncio.run(service.add(make_command()))
+    retry = asyncio.run(service.add(make_command()))
+
+    assert first.status is WriteStatus.APPLIED
+    assert retry.status is WriteStatus.ALREADY_APPLIED
+    assert retry.item.created_at == first.item.created_at == CREATED_AT
+    assert retry.item.updated_at == first.item.updated_at == CREATED_AT
+    operation_id, shopping_item_id = resolve_shopping_intent_identity(
+        household_id="demo-household", request_id="request-1"
+    )
+    shopping = client.documents[("demo-household", f"shopping_item:{shopping_item_id}")]
+    event = client.documents[("demo-household", f"shopping_intent_event:{operation_id}")]
+    assert shopping["created_at"] == event["occurred_at"] == "2026-11-14T03:00:00.000000Z"
+    assert len(client.documents) == 3
+
+
 def test_add_normalizes_household_consistently_for_identity_documents_and_partition():
     client = FakeTransactionalBatchClient()
-    service = ShoppingIntentService(CosmosWriteRepository(client))
+    service = ShoppingIntentService(
+        CosmosWriteRepository(client),
+        CosmosReadRepository(client),
+        clock=lambda: CREATED_AT,
+    )
 
     first = asyncio.run(service.add(make_command(household_id=" demo-household ")))
     retry = asyncio.run(service.add(make_command(household_id="demo-household")))
@@ -131,7 +171,11 @@ def test_add_normalizes_household_consistently_for_identity_documents_and_partit
 
 def test_add_rejects_changed_payload_under_the_same_operation_identity():
     client = FakeTransactionalBatchClient()
-    service = ShoppingIntentService(CosmosWriteRepository(client))
+    service = ShoppingIntentService(
+        CosmosWriteRepository(client),
+        CosmosReadRepository(client),
+        clock=lambda: CREATED_AT,
+    )
     asyncio.run(service.add(make_command(name="洗衣精")))
 
     with pytest.raises(OperationIdConflict, match="different canonical values"):
@@ -164,15 +208,33 @@ def test_request_identity_derives_stable_household_scoped_operation_and_item_ids
         ({"quantity": True}, "quantity"),
         ({"quantity": 1.5}, "quantity"),
         ({"unit": "  "}, "unit"),
-        ({"created_at": datetime(2026, 11, 14, 3)}, "timezone"),
     ],
 )
 def test_add_rejects_invalid_commands_before_calling_the_writer(changes, message):
     client = FakeTransactionalBatchClient()
-    service = ShoppingIntentService(CosmosWriteRepository(client))
+    service = ShoppingIntentService(
+        CosmosWriteRepository(client),
+        CosmosReadRepository(client),
+        clock=lambda: CREATED_AT,
+    )
 
     with pytest.raises(ShoppingIntentError, match=message):
         asyncio.run(service.add(make_command(**changes)))
+
+    assert client.batch_calls == []
+    assert client.documents == {}
+
+
+def test_add_rejects_naive_backend_clock_before_calling_the_writer():
+    client = FakeTransactionalBatchClient()
+    service = ShoppingIntentService(
+        CosmosWriteRepository(client),
+        CosmosReadRepository(client),
+        clock=lambda: datetime(2026, 11, 14, 3),
+    )
+
+    with pytest.raises(ShoppingIntentError, match="timezone-aware"):
+        asyncio.run(service.add(make_command()))
 
     assert client.batch_calls == []
     assert client.documents == {}

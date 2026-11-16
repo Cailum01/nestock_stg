@@ -7,12 +7,12 @@ logical request; this C1 service resolves durable operation and item IDs from it
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Protocol
+from datetime import UTC, datetime, timezone
+from typing import Callable, Protocol
 
 from app.models.domain import ShoppingItem, ShoppingStatus
 from app.services.cosmos_read import CosmosDocumentMapper
-from app.services.cosmos_write import CreateDocument, WriteStatus
+from app.services.cosmos_write import CreateDocument, OperationIdConflict, WriteStatus
 from app.services.shopping.identity import resolve_shopping_intent_identity
 
 
@@ -31,18 +31,25 @@ class ShoppingIntentWriter(Protocol):
     ) -> WriteStatus: ...
 
 
+class ShoppingIntentReader(Protocol):
+    async def read_shopping_item(
+        self, *, household_id: str, shopping_item_id: str
+    ) -> ShoppingItem | None: ...
+
+
 @dataclass(frozen=True)
 class AddShoppingIntent:
-    """Backend command; request_id and time must be stable across retries.
+    """Backend command with stable request identity across retries.
 
     The request_id is not a public DTO promise yet. This C1 proposal scopes it to
     household and add-operation kind to derive durable operation/item identities.
+    The backend owns creation timestamps and reuses the first stored timestamp
+    when retrying the same request.
     """
 
     household_id: str
     request_id: str
     name: str
-    created_at: datetime
     quantity: int | None = None
     unit: str | None = None
 
@@ -93,8 +100,16 @@ class ShoppingIntentService:
     values is rejected by that repository's receipt fingerprint check.
     """
 
-    def __init__(self, writer: ShoppingIntentWriter) -> None:
+    def __init__(
+        self,
+        writer: ShoppingIntentWriter,
+        reader: ShoppingIntentReader,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self._writer = writer
+        self._reader = reader
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     async def add(self, command: AddShoppingIntent) -> ShoppingIntentWriteResult:
         name = command.name.strip()
@@ -115,39 +130,122 @@ class ShoppingIntentService:
             raise ShoppingIntentError("planned quantity must be a positive integer when supplied.")
         if command.unit is not None and not command.unit.strip():
             raise ShoppingIntentError("unit must not be empty when supplied.")
-        if command.created_at.tzinfo is None or command.created_at.utcoffset() is None:
-            raise ShoppingIntentError("created_at must include a timezone.")
 
         operation_id, shopping_item_id = resolve_shopping_intent_identity(
             household_id=household_id,
             request_id=command.request_id,
         )
 
-        item = ShoppingItem(
+        existing = await self._reader.read_shopping_item(
+            household_id=household_id,
+            shopping_item_id=shopping_item_id,
+        )
+        created_at = (
+            existing.created_at
+            if self._matches_command(
+                existing, household_id=household_id, name=name, command=command
+            )
+            else self._clock()
+        )
+        if created_at.tzinfo is None or created_at.utcoffset() is None:
+            raise ShoppingIntentError("Backend clock must return a timezone-aware timestamp.")
+
+        item = self._build_item(
+            command=command,
+            household_id=household_id,
+            shopping_item_id=shopping_item_id,
+            name=name,
+            created_at=created_at,
+        )
+        try:
+            status = await self._write(
+                household_id=household_id,
+                operation_id=operation_id,
+                shopping_item_id=shopping_item_id,
+                item=item,
+            )
+        except OperationIdConflict:
+            existing = await self._reader.read_shopping_item(
+                household_id=household_id,
+                shopping_item_id=shopping_item_id,
+            )
+            if not self._matches_command(
+                existing, household_id=household_id, name=name, command=command
+            ):
+                raise
+            item = self._build_item(
+                command=command,
+                household_id=household_id,
+                shopping_item_id=shopping_item_id,
+                name=name,
+                created_at=existing.created_at,
+            )
+            status = await self._write(
+                household_id=household_id,
+                operation_id=operation_id,
+                shopping_item_id=shopping_item_id,
+                item=item,
+            )
+
+        return ShoppingIntentWriteResult(item=item, status=status)
+
+    @staticmethod
+    def _matches_command(
+        item: ShoppingItem | None,
+        *,
+        household_id: str,
+        name: str,
+        command: AddShoppingIntent,
+    ) -> bool:
+        return (
+            item is not None
+            and item.household_id == household_id
+            and item.name == name
+            and item.quantity == command.quantity
+            and item.unit == (command.unit.strip() if command.unit is not None else None)
+        )
+
+    @staticmethod
+    def _build_item(
+        *,
+        command: AddShoppingIntent,
+        household_id: str,
+        shopping_item_id: str,
+        name: str,
+        created_at: datetime,
+    ) -> ShoppingItem:
+        return ShoppingItem(
             shopping_item_id=shopping_item_id,
             household_id=household_id,
             name=name,
             quantity=command.quantity,
             unit=command.unit.strip() if command.unit is not None else None,
             status=ShoppingStatus.PENDING,
-            created_at=command.created_at,
-            updated_at=command.created_at,
+            created_at=created_at,
+            updated_at=created_at,
         )
-        document = CosmosDocumentMapper.to_document(item)
+
+    async def _write(
+        self,
+        *,
+        household_id: str,
+        operation_id: str,
+        shopping_item_id: str,
+        item: ShoppingItem,
+    ) -> WriteStatus:
         event = ShoppingIntentCreatedEvent(
             event_id=operation_id,
             household_id=household_id,
             operation_id=operation_id,
             shopping_item_id=shopping_item_id,
-            occurred_at=command.created_at,
+            occurred_at=item.created_at,
         )
-        status = await self._writer.execute_idempotent_batches(
+        return await self._writer.execute_idempotent_batches(
             household_id=household_id,
             operations_by_id={
                 operation_id: (
-                    CreateDocument(document),
+                    CreateDocument(CosmosDocumentMapper.to_document(item)),
                     CreateDocument(event.to_document()),
                 ),
             },
         )
-        return ShoppingIntentWriteResult(item=item, status=status)

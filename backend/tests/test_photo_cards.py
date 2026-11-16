@@ -2,8 +2,7 @@
 
 With photo cards on, photo items the household has no item for (no same name or
 alias), seen with confidence and with a confirmed unit, get one pending `create_item`
-card. Nothing else is written. In the running app photo cards are off until confirming
-one can be written, so the Agent there still only reports what the photo shows.
+card. Nothing else is written. Confirming one is in `test_photo_end_to_end.py`.
 """
 
 import asyncio
@@ -48,7 +47,7 @@ T0 = datetime(2026, 11, 15, 8, 0, tzinfo=UTC)
 
 
 class _PlanEveryLine:
-    """Stands in for the write builder that will write photo items (not built yet)."""
+    """Stands in for B1's photo item writer: plans every line, writes nothing."""
 
     def __init__(self, fails: bool = False) -> None:
         self.fails = fails

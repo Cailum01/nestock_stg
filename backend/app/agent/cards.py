@@ -36,7 +36,13 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, Protocol
 
-from app.models.agent import AgentResponse, AgentResult, ApprovalPresentation, ResultKind
+from app.models.agent import (
+    AgentResponse,
+    AgentResult,
+    ApprovalPresentation,
+    CardChange,
+    ResultKind,
+)
 from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus
 from app.services.approvals import (
     ApprovalRecord,
@@ -148,6 +154,17 @@ NEEDS_UNIT = "待購清單上沒寫單位，請使用者說買了幾個什麼（
 NEEDS_LOCATION = "這是家裡還沒有的東西，要說放在哪裡，才能新增到庫存。"
 UNREADABLE_DAY = "看不懂是哪一天買的，請使用者說日期（例如 11/15）。"
 FUTURE_DAY = "購買日期在今天之後，不能記錄；請使用者再說一次是哪天買的。"
+
+# 送出修改 sent as data (Issue #162): the reply when no new card is made.
+CARD_CHANGED = "已照修改重新出卡，請再確認一次。"
+CHANGE_UNKNOWN_LINE = "這一項不在原本的卡上，沒有出新卡。"
+CHANGE_DUPLICATE_LINE = "同一項改了兩次，沒有出新卡。"
+CHANGE_NOTHING = "卡上的值都沒有改，沒有出新卡。"
+CHANGE_DAY_OFF = "現在還不能改購買日期，沒有出新卡。"
+CHANGE_FUTURE_DAY = "購買日期不能在今天之後，沒有出新卡。"
+CHANGE_NOT_THIS_CARD = "這張卡不能在卡上修改，沒有出新卡。"
+CHANGE_LINE_REFUSED = "沒有出新卡："
+CHANGE_RECORDS_MOVED = "庫存或待購清單剛剛被改過，請再改一次。"
 ONE_CARD_PER_MESSAGE = json.dumps({"error": "card_already_made"})
 """A second `complete_purchase` in the same message: the first card stands."""
 CARD_FAILED = json.dumps({"error": "card_not_made"})
@@ -390,6 +407,89 @@ class PurchaseCards:
         requested = _requested_items(args.get("items"), dated=self._dated)
         if not requested:
             return json.dumps({"error": "no_items"}), None
+        lines, left_out = await self._lines(household_id, requested)
+        if not lines:
+            return json.dumps({"card": None, "not_on_card": left_out}, ensure_ascii=False), None
+        record, error = await self._store(household_id, lines, replaces_approval_id)
+        if record is None:
+            return error, None
+        card = ApprovalService.to_pending_approval(record)
+        view = {
+            "card": {"lines": [line.description for line in lines]},
+            "not_on_card": left_out,
+        }
+        return json.dumps(view, ensure_ascii=False), card.model_dump(mode="json")
+
+    async def change_card(
+        self, old: ApprovalRecord, changes: Sequence[CardChange]
+    ) -> dict[str, Any]:
+        """The new card for a 送出修改 sent as data (Issue #162); the model is not used.
+
+        Every line of `old` goes on the new card as it was, with the changed fields
+        replaced, read again from the current records (section 7). Raises
+        `CardChangeRefused` and stores nothing when a change does not fit the card or
+        any line can no longer be recorded: the new card never silently drops a line.
+        The caller retires `old` once the new card is stored (`retire`).
+        """
+        by_id = {op.operation_id: op for op in old.operations}
+        today = taipei_today(self._clock())
+        changed: dict[str, CardChange] = {}
+        for change in changes:
+            if change.operation_id not in by_id:
+                raise CardChangeRefused(
+                    "unknown_operation", CHANGE_UNKNOWN_LINE, operation_id=change.operation_id
+                )
+            if change.operation_id in changed:
+                raise CardChangeRefused(
+                    "duplicate_operation", CHANGE_DUPLICATE_LINE, operation_id=change.operation_id
+                )
+            changed[change.operation_id] = change
+            if "purchased_on" in change.model_fields_set:
+                if not self._dated:
+                    raise CardChangeRefused("purchase_day_off", CHANGE_DAY_OFF)
+                if change.purchased_on is not None and change.purchased_on > today:
+                    raise CardChangeRefused(
+                        "future_date", CHANGE_FUTURE_DAY, operation_id=change.operation_id
+                    )
+        before = [_line_as_said(op) for op in old.operations]
+        if any(item is None for item in before):
+            raise CardChangeRefused("line_refused", CHANGE_NOT_THIS_CARD)
+        if not self._dated and any("purchased_on" in item for item in before if item):
+            raise CardChangeRefused("purchase_day_off", CHANGE_DAY_OFF)
+        after = [
+            _with_change(item, changed.get(op.operation_id), today)
+            for op, item in zip(old.operations, before, strict=True)
+            if item is not None
+        ]
+        if after == before:
+            raise CardChangeRefused("nothing_changed", CHANGE_NOTHING)
+        lines, left_out = await self._lines(
+            old.household_id, _requested_items(after, dated=self._dated)
+        )
+        if left_out:
+            names = {
+                str(op.values.get("shopping_item_id")): str(op.values.get("name") or "")
+                for op in old.operations
+            }
+            refused = [
+                f"「{names.get(row['shopping_item_id']) or row['shopping_item_id']}」"
+                f"{row['reason']}"
+                for row in left_out
+            ]
+            raise CardChangeRefused(
+                "line_refused", CHANGE_LINE_REFUSED + "".join(refused), lines=left_out
+            )
+        record, error = await self._store(old.household_id, lines, old.approval_id)
+        if record is None:
+            if error == CARD_FAILED:
+                raise RuntimeError("The changed card was not stored.")
+            raise CardChangeRefused("line_refused", CHANGE_LINE_REFUSED + CHANGE_RECORDS_MOVED)
+        return ApprovalService.to_pending_approval(record).model_dump(mode="json")
+
+    async def _lines(
+        self, household_id: str, requested: Sequence[_Requested]
+    ) -> tuple[list[NewOperation], list[dict[str, Any]]]:
+        """Card lines for the requested items, and the items left off with why."""
         lines: list[NewOperation] = []
         left_out: list[dict[str, Any]] = []
         for item in requested:
@@ -398,9 +498,12 @@ class PurchaseCards:
                 left_out.append({"shopping_item_id": item.shopping_item_id, "reason": reason})
             else:
                 lines.append(line)
-        if not lines:
-            return json.dumps({"card": None, "not_on_card": left_out}, ensure_ascii=False), None
+        return lines, left_out
 
+    async def _store(
+        self, household_id: str, lines: list[NewOperation], replaces_approval_id: str | None
+    ) -> tuple[ApprovalRecord | None, str]:
+        """Store the pending card: (record, "") or (None, the error for the model)."""
         presentation = (
             ApprovalPresentation.SINGLE_ACTION
             if len(lines) == 1
@@ -416,18 +519,13 @@ class PurchaseCards:
                 )
             )
         except BatchTooLarge:
-            return TOO_MANY_ITEMS, None
+            return None, TOO_MANY_ITEMS
         except TargetChanged:
-            return RECORDS_CHANGED, None
+            return None, RECORDS_CHANGED
         except Exception:  # storage failed; no card was stored
             logger.warning("Purchase card was not stored", exc_info=True)
-            return CARD_FAILED, None
-        card = ApprovalService.to_pending_approval(record)
-        view = {
-            "card": {"lines": [line.description for line in lines]},
-            "not_on_card": left_out,
-        }
-        return json.dumps(view, ensure_ascii=False), card.model_dump(mode="json")
+            return None, CARD_FAILED
+        return record, ""
 
     def _purchase_time(self, item: _Requested) -> tuple[datetime | None, str]:
         """(purchased_at for the line, why the item is left off). Today means no time."""
@@ -549,6 +647,67 @@ def _requested_items(value: Any, *, dated: bool = False) -> list[_Requested]:
         unit, location, purchased_on = ((w or "").strip() or None for w in words)
         requested.append(_Requested(shopping_item_id, quantity, unit, location, purchased_on))
     return requested
+
+
+class CardChangeRefused(Exception):
+    """A 送出修改 sent as data was refused; nothing was stored (Issue #162).
+
+    `code` is one of the codes in contract section 7; `details` go with it.
+    """
+
+    def __init__(self, code: str, message: str, **details: Any) -> None:
+        super().__init__(code)
+        self.code = code
+        self.message = message
+        self.details = details
+
+
+def _whole(value: Any) -> Any:
+    """A whole number read back from JSON may come as 2.0."""
+    return int(value) if isinstance(value, float) and value.is_integer() else value
+
+
+def _line_as_said(op: Any) -> dict[str, Any] | None:
+    """A stored card line as the items `propose` takes; None for lines that cannot change.
+
+    A purchase line gives its shopping entry and quantity; a new-item line from the
+    list also its unit and location; a dated line its Taipei day (`purchased_on`).
+    """
+    values = op.values
+    if op.action == COMPLETE_PURCHASE:
+        item = {
+            "shopping_item_id": values.get("shopping_item_id"),
+            "quantity": _whole(values.get("purchased_quantity")),
+        }
+    elif op.action == CREATE_ITEM and values.get("shopping_item_id"):
+        item = {
+            "shopping_item_id": values.get("shopping_item_id"),
+            "quantity": _whole(values.get("quantity")),
+            "unit": values.get("unit"),
+            "location": values.get("location"),
+        }
+    else:
+        return None
+    purchased_at = values.get("purchased_at")
+    if isinstance(purchased_at, str):
+        day = datetime.fromisoformat(purchased_at).astimezone(TAIPEI).date()
+        item["purchased_on"] = day.isoformat()
+    return item
+
+
+def _with_change(item: dict[str, Any], change: CardChange | None, today: date) -> dict[str, Any]:
+    """The line after the user's change; fields the change leaves out stay as they were."""
+    if change is None:
+        return item
+    changed = dict(item)
+    if change.quantity is not None:
+        changed["quantity"] = change.quantity
+    if "purchased_on" in change.model_fields_set:
+        if change.purchased_on is None or change.purchased_on == today:
+            changed.pop("purchased_on", None)  # back to today: the confirmation time
+        else:
+            changed["purchased_on"] = change.purchased_on.isoformat()
+    return changed
 
 
 RESUME_MESSAGES = {

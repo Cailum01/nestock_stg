@@ -4,9 +4,11 @@ These are presentation envelopes, never proof that a mutation is authorized.
 Generic operation values must not be dispatched directly to domain services.
 """
 
+from datetime import date
 from enum import StrEnum
+from typing import Self
 
-from pydantic import Field, JsonValue, field_validator
+from pydantic import Field, JsonValue, field_validator, model_validator
 
 from app.models.base import ContractModel
 
@@ -29,6 +31,26 @@ class ResultKind(StrEnum):
     ACTION_RESULT = "action_result"
 
 
+class CardChange(ContractModel):
+    """One line changed on the card with 送出修改 (Issue #162): only the changed fields.
+
+    A field left out stays as it is on the card. `purchased_on` is a Taipei date;
+    an explicit null sets the line back to today (no purchase day on the card).
+    """
+
+    operation_id: str = Field(min_length=1)
+    quantity: int | None = Field(default=None, ge=1, strict=True)
+    purchased_on: date | None = None
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> Self:
+        if "quantity" in self.model_fields_set and self.quantity is None:
+            raise ValueError("quantity cannot be null; leave it out to keep it.")
+        if not {"quantity", "purchased_on"} & self.model_fields_set:
+            raise ValueError("Each change needs quantity or purchased_on.")
+        return self
+
+
 class AgentRequest(ContractModel):
     household_id: str
     message: str = Field(min_length=1)
@@ -47,6 +69,19 @@ class AgentRequest(ContractModel):
     it out. The old card must be in the same household and still pending; it is
     cancelled only after the new card is stored.
     """
+    card_changes: list[CardChange] | None = Field(default=None, min_length=1)
+    """送出修改 as data (Issue #162): the changed lines of the `replaces_approval_id` card.
+
+    With it, the backend makes the new card from the stored card and these changes
+    without the model; `message` is only the chat text. Without it, `message`
+    describes the change for the model as before (Issue #91).
+    """
+
+    @model_validator(mode="after")
+    def _changes_need_the_card(self) -> Self:
+        if self.card_changes is not None and self.replaces_approval_id is None:
+            raise ValueError("card_changes needs replaces_approval_id.")
+        return self
 
 
 class AgentResult(ContractModel):

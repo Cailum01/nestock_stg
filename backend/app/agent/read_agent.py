@@ -38,7 +38,13 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
-from app.agent.cards import ONE_CARD_PER_MESSAGE, PURCHASE_TOOL_SCHEMA, PurchaseCards
+from app.agent.cards import (
+    CARD_CHANGED,
+    ONE_CARD_PER_MESSAGE,
+    PURCHASE_TOOL_SCHEMA,
+    CardChangeRefused,
+    PurchaseCards,
+)
 from app.core.dependencies import (
     get_approval_service,
     get_cosmos_read_repository,
@@ -51,7 +57,7 @@ from app.models.agent import AgentRequest, AgentResponse, AgentResult, ResultKin
 from app.models.commerce import PurchaseOption
 from app.models.domain import InventoryItem
 from app.models.vision import SceneType, VisionAnalysisResult
-from app.services.approvals import ApprovalRecord, CardNotChangeable
+from app.services.approvals import ApprovalRecord, ApprovalService, CardNotChangeable
 from app.services.commerce.biggo import BigGoCommerceProvider
 from app.services.item_matching import ItemMatch, ItemMatcher, MatchMethod, match_term
 from app.services.provisional_storage.interfaces import MediaStorageService
@@ -263,6 +269,21 @@ def _match_view(match: ItemMatch) -> dict[str, Any]:
             {"item_id": choice.item_id, "item_name": choice.name} for choice in match.items
         ]
     return view
+
+
+def _change_refused(
+    code: str, message: str, *, card: dict[str, Any] | None = None, **details: Any
+) -> AgentResponse:
+    """A refused 送出修改 sent as data: 200, the code in `results[0].data` (Issue #162)."""
+    return AgentResponse(
+        message=message,
+        results=[
+            AgentResult(
+                kind=ResultKind.ACTION_RESULT, summary=message, data={"code": code, **details}
+            )
+        ],
+        pending_approval=card,
+    )
 
 
 def _card_view(record: ApprovalRecord) -> str:
@@ -652,7 +673,51 @@ class ReadAgent:
             replaces_approval_id=state.get("replaces_approval_id"),
         )
 
+    async def _change_card(self, request: AgentRequest) -> AgentResponse:
+        """送出修改 sent as data (Issue #162, contract section 7): no model call.
+
+        The reply is 200 either way. A refused change carries `results[0].data.code`
+        and, while the old card is still pending, that card again, so it stays on
+        screen; nothing new is stored.
+        """
+        household_id = request.household_id
+        if self._purchases is None:
+            return _change_refused("card_not_changeable", CARD_CHANGE_UNAVAILABLE)
+        try:
+            old = await self._purchases.card_to_change(household_id, request.replaces_approval_id)
+        except CardNotChangeable as refused:
+            return _change_refused(
+                "card_not_changeable", CARD_CHANGE_REFUSED[refused.reason], reason=refused.reason
+            )
+        try:
+            card = await self._purchases.change_card(old, request.card_changes or [])
+        except CardChangeRefused as refused:
+            shown = ApprovalService.to_pending_approval(old).model_dump(mode="json")
+            return _change_refused(refused.code, refused.message, card=shown, **refused.details)
+        not_replaced = await self._purchases.retire(
+            household_id, old.approval_id, card["approval_id"]
+        )
+        if not_replaced is not None:
+            return _change_refused(
+                "card_not_changeable",
+                CARD_CHANGE_REFUSED.get(not_replaced, CARD_CHANGE_NOT_DONE),
+                reason=not_replaced,
+            )
+        return AgentResponse(
+            message=CARD_CHANGED,
+            results=[
+                AgentResult(
+                    kind=ResultKind.ACTION_RESULT,
+                    summary=CARD_CHANGED,
+                    data={"code": "card_changed", "replaced_approval_id": old.approval_id},
+                )
+            ],
+            pending_approval=card,
+        )
+
     async def respond(self, request: AgentRequest) -> AgentResponse:
+        if request.card_changes is not None:
+            return await self._change_card(request)
         messages: list[AnyMessage] = [SystemMessage(self._system_prompt)]
         if self._purchases is not None and (today := self._purchases.date_note()):
             messages.append(SystemMessage(today))  # dated purchases only (A1-50); off

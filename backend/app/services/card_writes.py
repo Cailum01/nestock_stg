@@ -8,12 +8,10 @@
   B1's builder for a new item without one (Issue #124): it takes the lines from A1's
   `PhotoInputResolver`, plans each with C1's `plan_adjustment` and writes the item,
   the `adjustment` Transaction, the change event and the receipts with the card in
-  one batch. That builder is not built yet; until it is, a photo card is refused
-  here and nothing is written. Photo cards are also off in the running app
-  (`get_read_agent`), so no such card is made.
+  one batch: `PhotoItemWriteBuilder` (PR #171). Without it, a photo card is refused
+  here and nothing is written.
 
-The app does not use this router yet: putting it in `get_approval_service`
-(`app/core/dependencies.py`, B1) comes with B1's builder.
+B1 puts this router in `get_approval_service` (`app/core/dependencies.py`).
 """
 
 from __future__ import annotations

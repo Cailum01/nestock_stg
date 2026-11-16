@@ -2,7 +2,7 @@
 
 `PhotoInputResolver` turns each confirmed line into C1's `AdjustmentInput` from the
 stored card alone, and `CardWriteRouter` hands photo cards to the builder that will
-write them (B1's, not built yet) while purchase cards keep going to C1's builder.
+write them (B1's, PR #171) while purchase cards keep going to C1's builder.
 Same faked Cosmos container and real approval service as `test_purchase_cards`.
 """
 

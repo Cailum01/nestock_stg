@@ -320,7 +320,7 @@ photo cards are on:
 - Before the new card is stored, each line is checked against the household's items
   again: a line whose name is now the name or alias of a household item is refused
   (`line_refused`), so confirming never adds a second item.
-- With photo cards off (the running app, section 10), a photo card cannot be
+- With photo cards off (no Cosmos, section 10), a photo card cannot be
   changed on the card: `line_refused`, each line with reason 這一項不能在卡上修改。
 - A photo card is changed only with `card_changes`. The sentence format in section 7
   is for purchase cards: the Agent's card tool makes purchase cards only.
@@ -444,27 +444,27 @@ New-item cards from a photo (Issue #124; built, but off in the running app):
   is no `shopping_item_id` and no target version.
 - Items the household has, unsure items and items without a confirmed unit are only
   reported, as before. A photo item-match card (Issue #124 point 2) is not built.
-- Confirming (Issue #124; A1's part built, not used by the app yet): A1's
+- Confirming (Issue #124, #168): A1's
   `PhotoInputResolver` (`backend/app/services/purchase_inputs.py`) turns each line in
   the fixed `approved_operation_ids`, in card order, into C1's `AdjustmentInput`
   from the stored card only: `approval_id`, `operation_id`, `transaction_id`,
   `quantity`, and a new item with `name`, `unit`, `location` (null) and `item_id`
-  from B1's `resolve_inventory_item_id(operation_id)`. B1's builder (not built) plans
-  each line with C1's `plan_adjustment`, using the card's `decided_at` as the time,
+  from B1's `resolve_inventory_item_id(operation_id)`. B1's `PhotoItemWriteBuilder`
+  (`backend/app/services/photo_item_writes.py`, PR #171) plans each line with C1's
+  `plan_adjustment`, using the card's `decided_at` as the time,
   and writes the item, the `adjustment` Transaction, the change event
   (`shopping_item_id` null) and the receipts with the completed card in one batch
   (#42). A1's `CardWriteRouter` (`backend/app/services/card_writes.py`) sends photo
-  cards to that builder and purchase cards to C1's `ShoppingWriteBuilder`; without
-  B1's builder it refuses a photo card, so nothing is stored or written. It goes into
-  `get_approval_service` together with B1's builder.
+  cards to that builder and purchase cards to C1's `ShoppingWriteBuilder`, in
+  `get_approval_service`. Without a photo builder it refuses a photo card, so
+  nothing is stored or written. The reply after confirming is 已記錄：<name> +N
+  <unit>（現在 N <unit>） per line, like a purchase.
 - As in section 8, a photo makes no card in a message that brings an open card back,
   or when the open cards cannot be listed; the photo is only reported.
 - The quantity can be changed on the card with `card_changes` (section 7.1); a new
   card replaces the old one, and the user confirms again.
-- Off in `get_read_agent` until confirming can be written: B1's write for a new item
-  without a Shopping List entry (Issue #124 point 1), and A1 handing the card to it.
-  Until then a photo is only reported, so the App never gets a card it cannot write;
-  changing one on the card is off with it.
+- On in `get_read_agent` whenever cards are (Cosmos): confirming is written by
+  B1's builder above. Without Cosmos a photo is only reported.
 
 ```json
 {

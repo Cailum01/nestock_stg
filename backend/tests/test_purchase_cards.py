@@ -34,6 +34,7 @@ from app.main import create_app
 from app.models.agent import AgentRequest, ApprovalPresentation
 from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus
 from app.services.approvals import ApprovalService, NewOperation, ResumeOutcome, ResumeResult
+from app.services.card_writes import CardWriteRouter
 from app.services.cosmos_read import (
     CosmosDocumentMapper,
     CosmosInventoryService,
@@ -47,10 +48,12 @@ from app.services.cosmos_write import (
     ReplaceDocument,
 )
 from app.services.inventory_item_identity import resolve_inventory_item_id
+from app.services.photo_item_writes import PhotoItemWriteBuilder
 from app.services.purchase_inputs import (
     COMPLETE_PURCHASE,
     CREATE_ITEM,
     CardInputResolver,
+    PhotoInputResolver,
     UnsupportedAction,
 )
 from app.services.shopping.preview import ShoppingDecisionRequired
@@ -432,11 +435,14 @@ def test_reads_writes_and_cards_share_one_cosmos_client(monkeypatch):
     assert inventory._repository is read_repository
     assert shopping._repository is read_repository
     assert approvals._storage is write_repository
-    # Issue #60: C1 plans the batch from raw documents; A1 resolves the stored card.
-    assert isinstance(approvals._writes, ShoppingWriteBuilder)
-    assert approvals._writes._reader is document_reader
-    assert isinstance(approvals._writes._resolver, CardInputResolver)
-    assert approvals._writes._resolver._reader is read_repository
+    # Purchase cards keep the Issue #60 builder; no-Shopping cards use B1's writer.
+    assert isinstance(approvals._writes, CardWriteRouter)
+    assert isinstance(approvals._writes._purchases, ShoppingWriteBuilder)
+    assert approvals._writes._purchases._reader is document_reader
+    assert isinstance(approvals._writes._purchases._resolver, CardInputResolver)
+    assert approvals._writes._purchases._resolver._reader is read_repository
+    assert isinstance(approvals._writes._photo_items, PhotoItemWriteBuilder)
+    assert isinstance(approvals._writes._photo_items._resolver, PhotoInputResolver)
 
 
 def resume_app(approvals):

@@ -1067,29 +1067,35 @@ async def test_azure_lifecycle_policy_preserves_attached_and_respects_unretain_g
 
 
 @pytest.mark.anyio
-async def test_azure_blob_upload_graceful_fallback_on_hierarchical_namespace(
+async def test_azure_blob_upload_fails_fast_on_hierarchical_namespace(
     blob_storage, fake_blob_service
 ):
     """驗證當 Azure Storage Account 開啟階層命名空間 (ADLS Gen2) 不支援 Tags 時：
 
     1. upload_blob 捕獲 FeatureNotYetSupportedForHierarchicalNamespaceAccounts 錯誤。
-    2. 自動移除 tags 進行重試並成功存入二進位檔案。
-    3. set_blob_tags 遇到該錯誤時優雅忽略，不拋出中斷異常。
+    2. 適配器落實 Fail-Fast 原則，拋出明確的 RuntimeError，拒絕靜默降級或忽略 Tags。
+    3. set_blob_tags 遇到該錯誤時亦拋出 RuntimeError 阻斷。
     """
-    container = fake_blob_service.get_container_client("media")
+    del fake_blob_service
     original_upload = FakeBlobClient.upload_blob
-    call_log = []
+    original_set_tags = FakeBlobClient.set_blob_tags
 
     async def mock_upload_with_tag_failure(self, *args, **kwargs):
-        call_log.append(kwargs.copy())
         if "tags" in kwargs and kwargs["tags"]:
             raise RuntimeError(
                 "Specified feature is not yet supported for hierarchical namespace accounts. "
-                "ErrorCode: FeatureNotYetSupportedForHierarchicalNamespaceAccounts featurename: Blob Tags"
+                "ErrorCode: FeatureNotYetSupportedForHierarchicalNamespaceAccounts"
             )
         return await original_upload(self, *args, **kwargs)
 
+    async def mock_set_tags_with_hns_failure(self, *args, **kwargs):
+        raise RuntimeError(
+            "Specified feature is not yet supported for hierarchical namespace accounts. "
+            "ErrorCode: FeatureNotYetSupportedForHierarchicalNamespaceAccounts"
+        )
+
     FakeBlobClient.upload_blob = mock_upload_with_tag_failure
+    FakeBlobClient.set_blob_tags = mock_set_tags_with_hns_failure
     try:
         req = UploadAuthorizationRequest(
             household_id="home-dev",
@@ -1100,16 +1106,13 @@ async def test_azure_blob_upload_graceful_fallback_on_hierarchical_namespace(
         auth = await blob_storage.create_upload_authorization(req)
         token = auth.upload_url.split("/")[-1]
 
-        # 上傳應順利成功（自動重試不拋出異常）
-        await blob_storage.receive_staged_upload(token, b"0123456789abcdef")
+        # 斷言：遭遇 HNS 帳戶時強制 Fail-Fast 拋出 RuntimeError，絕不靜默略過
+        with pytest.raises(RuntimeError, match="Hierarchical namespace.*not supported"):
+            await blob_storage.receive_staged_upload(token, b"0123456789abcdef")
 
-        # 驗證兩次調用：第一次帶 tags 失敗，第二次移除 tags 成功
-        assert len(call_log) >= 2
-        assert "tags" in call_log[0]
-        assert "tags" not in call_log[1]
-
-        # 驗證檔案確實寫入
-        blob_bytes = await blob_storage.get_media_bytes("home-dev", auth.image_ref)
-        assert blob_bytes == b"0123456789abcdef"
+        # 斷言：_set_blob_tags 遭遇 HNS 亦強制 Fail-Fast
+        with pytest.raises(RuntimeError, match="Hierarchical namespace.*not supported"):
+            await blob_storage._set_blob_tags("some/path.jpg", {"retention": "attached"})
     finally:
         FakeBlobClient.upload_blob = original_upload
+        FakeBlobClient.set_blob_tags = original_set_tags

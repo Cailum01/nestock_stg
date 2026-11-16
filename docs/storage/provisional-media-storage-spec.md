@@ -78,6 +78,7 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
    - 雲端路徑規則：`households/{household_id}/media/{input_id}.jpg`。
    - 衍生工件規則：`households/{household_id}/media/{input_id}/derived/{artifact_name}`。
    - 安全規範：內建 10MB 大小熔斷、逾時防護、例外不吞噬傳播、COMPLETED 等冪保護與樂觀並發 ETag 重試防護。
+   - 支援邊界 (Support Boundary)：Media Storage 必須配置於標準 Azure Blob Storage（非-HNS / GPv2 帳戶）。若誤配置啟用階層命名空間 (Hierarchical Namespace, HNS / ADLS Gen2) 之帳戶，適配器強制拋出明確異常阻斷 (Fail-Fast)，嚴禁靜默降級或忽略 Tags，以捍衛 Lifecycle 清理政策確定性。
 2. **`LocalStagingMediaStorage` (`local_staging_adapter.py`) - [DEV_FALLBACK]**：
    - 記憶體字典快取，支援無雲端環境或離線單元測試。
    - 介面、狀態轉移與防禦行為 100% 保持與 Azure Blob Storage 對齊。
@@ -156,6 +157,7 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
 1. **上傳預設孤立**：上傳時原始圖檔與衍生工件預設寫入 Index Tags `{"retention": "orphan", "household_id": "<id>"}`。
 2. **附著保留 (`retain_media`)**：當下游業務（如購物完成或庫存確認）持久化時，將原始圖與衍生工件原子更新為 `{"retention": "attached", "household_id": "<id>"}`，由於不符合 `blobIndexMatch` 條件，永久排除於 Lifecycle 自動清理之外。
 3. **解除保留與寬限期 (`unretain_media`)**：當商品刪除或換圖解除附件時，除將 Index Tags 還原為 `retention="orphan"` 外，適配器對 Blob 執行時間戳刷新（重設 `CreationTime`），使 Azure 原生排程之 `daysAfterCreationGreaterThan: 1` 重新自該時刻起算，保證享有完整的 24 小時寬限期。
+4. **階層命名空間 (HNS) 邊界約束**：依微軟官方規格，啟用階層命名空間 (HNS / ADLS Gen2) 之帳戶不支援 Blob Index Tags。為確保 24h 孤兒清理政策之確定性，Nestock 相片暫存容器強制限制使用標準 GPv2 帳戶；若誤用 HNS 帳戶，適配器於操作時立即拋出 `RuntimeError` 阻斷 (Fail-Fast)，嚴禁吞噬錯誤或以無 Tags 狀態存檔。
 ---
 
 ## 5. 實體雲端驗證紀錄 (Physical Verification Audit)

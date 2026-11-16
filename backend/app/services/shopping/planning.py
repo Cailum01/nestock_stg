@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.models.domain import (
+    ChangeEvent,
     InventoryItem,
     ShoppingItem,
     ShoppingStatus,
@@ -55,11 +56,11 @@ class PurchaseInput:
 
 @dataclass(frozen=True)
 class AdjustmentInput:
-    """A confirmed new-item stock adjustment with no Shopping row.
+    """A confirmed standalone stock addition with no Shopping row.
 
     This input must be resolved from A1's stored approval, never from mutable
-    client values. B1's ChangeEvent/persistence contract is not represented here
-    yet because the current shared model requires a Shopping item ID.
+    client values. Every identity and value comes from the stored approval card;
+    B1's atomic repository and A1's resolver remain separate dependencies.
     """
 
     operation_id: str
@@ -100,10 +101,10 @@ class PurchasePlan:
 
 @dataclass(frozen=True)
 class AdjustmentPlan:
-    """Pure domain plan for an approved photo-created inventory item.
+    """Pure domain plan for any approved standalone new inventory item.
 
-    B1 must add the agreed ChangeEvent and atomic persistence mapping before
-    this plan can be connected to an executable write path.
+    The returned domain records are grouped per operation by the batch builder;
+    ApprovalService and B1's repository still own authorization and persistence.
     """
 
     household_id: str
@@ -111,6 +112,7 @@ class AdjustmentPlan:
     approval_id: str
     inventory_create: InventoryCreate
     transaction: Transaction
+    change_event: ChangeEvent
     recorded_at: datetime
 
 
@@ -310,10 +312,10 @@ class ShoppingPlanService:
         adjustment: AdjustmentInput,
         recorded_at: datetime,
     ) -> AdjustmentPlan:
-        """Plan a no-Shopping new-item adjustment from an approved proposal.
+        """Plan a standalone incoming-stock addition from an approved proposal.
 
-        This only creates immutable domain values. It performs no authorization,
-        ChangeEvent construction, Cosmos writes, or public API integration.
+        This only creates immutable domain values, including the provenance event.
+        It performs no authorization, Cosmos writes, or public API integration.
         """
         _identity(household_id, "Household")
         _identity(adjustment.operation_id, "Operation ID")
@@ -358,12 +360,24 @@ class ShoppingPlanService:
             reason=TransactionReason.ADJUSTMENT,
             created_at=recorded_at,
         )
+        change_event = ChangeEvent(
+            event_id=adjustment.operation_id,
+            household_id=household_id,
+            operation_id=adjustment.operation_id,
+            approval_id=adjustment.approval_id,
+            transaction_id=adjustment.transaction_id,
+            shopping_item_id=None,
+            item_id=target.item_id,
+            occurred_at=recorded_at,
+            recorded_at=recorded_at,
+        )
         return AdjustmentPlan(
             household_id=household_id,
             operation_id=adjustment.operation_id,
             approval_id=adjustment.approval_id,
             inventory_create=inventory_create,
             transaction=transaction,
+            change_event=change_event,
             recorded_at=recorded_at,
         )
 

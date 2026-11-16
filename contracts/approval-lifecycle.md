@@ -462,10 +462,12 @@ quantity can be changed.
   the line as `purchased_at` (12:00 Taipei that day, `purchase_time.py`, PR #71) and
   in its description (「11/15 買的」); today or no day leaves it off; a future or
   unreadable day leaves the item off the card. `purchase_inputs.py` passes
-  `purchased_at` on to C1. It stays off until the App shows the day on the purchase
-  card (HITL rule 4; the App shows only name, quantity and unit today) and how the
-  user changes the day is agreed with C2 (the card can change only the quantity
-  today).
+  `purchased_at` on to C1. `NESTOCK_DATED_PURCHASES=1` in the backend's environment
+  (`backend/.env` on your own computer) turns it on for testing; any other value, or
+  none, is off, and the cloud does not set it. It stays off in the cloud until the
+  App shows the day on the purchase card (HITL rule 4; PR #163), the App sends a
+  changed day as `card_changes` (section 7.1), and the live-model tests cover days
+  (Issue #127).
 
 ```json
 {

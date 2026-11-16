@@ -28,7 +28,9 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import os
 import re
+from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Awaitable, Callable, Protocol, TypedDict
@@ -69,6 +71,7 @@ from app.tools.queries import QueryTools
 PROMPT_PATH = Path(__file__).resolve().parents[3] / "prompts" / "agent_system.md"
 MAX_STEPS = 8  # graph steps per message; stops endless tool loops
 MAX_PURCHASE_OPTIONS = 5
+DATED_PURCHASES_VAR = "NESTOCK_DATED_PURCHASES"  # "1": purchase day on (section 11)
 PRICE_NOT_SUPPORTED = json.dumps({"error": "price_search_not_available"})
 PRICE_FAILED = json.dumps({"error": "price_search_failed"})
 """Tool result when A2's price search raises: the Agent still answers (no 502)."""
@@ -868,4 +871,15 @@ def _purchase_cards() -> PurchaseCards | None:
     reader = get_cosmos_read_repository()
     if approvals is None or reader is None:
         return None
-    return PurchaseCards(reader, approvals)
+    # Read after the services above loaded backend/.env, so a line there applies.
+    return PurchaseCards(reader, approvals, dated_purchases=dated_purchases_on())
+
+
+def dated_purchases_on(environment: Mapping[str, str] | None = None) -> bool:
+    """`NESTOCK_DATED_PURCHASES=1` turns the purchase day on (contract section 11).
+
+    For testing on your own computer; the cloud does not set it, so it stays off there.
+    Any other value, or none, is off.
+    """
+    env = os.environ if environment is None else environment
+    return env.get(DATED_PURCHASES_VAR, "").strip() == "1"

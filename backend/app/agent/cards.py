@@ -17,8 +17,9 @@ or alias, no line is made; the item-match card that would ask "is it this one?" 
 no confirm rules yet.
 
 A purchase day the user says (「昨天買的」, A1-50) is built but off
-(`dated_purchases`): the App does not show it on the card yet, and a card may only
-hold values the user sees (HITL rule 4).
+(`dated_purchases`; `NESTOCK_DATED_PURCHASES=1` turns it on for local testing): the
+App does not show it on the card yet, and a card may only hold values the user sees
+(HITL rule 4).
 
 Not covered yet: items that are not on the list, the item-match card (Issue #90),
 buying more than listed, a different unit, spreading more items than one batch holds
@@ -307,11 +308,11 @@ class _Requested:
 class PurchaseCards:
     """The `complete_purchase` tool: makes and stores a pending purchase card.
 
-    `dated_purchases` (A1-50, off in the running app): the model is told today's date
-    and may give each item the day it was bought. A past day goes on the line as
-    `purchased_at` (12:00 Taipei that day, `purchase_time.py`) and in its text; today
-    or no day leaves it off, so the confirmation time is used. It stays off until the
-    App shows the day on the card (HITL rule 4) and changing it is agreed with C2.
+    `dated_purchases` (A1-50; off unless `NESTOCK_DATED_PURCHASES=1`, read in
+    `read_agent._purchase_cards`): the model is told today's date and may give each
+    item the day it was bought. A past day goes on the line as `purchased_at` (12:00
+    Taipei that day, `purchase_time.py`) and in its text; today or no day leaves it
+    off, so the confirmation time is used. Contract section 11 says when it is on.
     """
 
     def __init__(

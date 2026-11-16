@@ -1,7 +1,7 @@
 """A1-50: a purchase day the user says (「昨天買的」) on the purchase card.
 
-Built but off in the running app (`PurchaseCards(dated_purchases=False)`): the App
-shows only name, quantity and unit on a purchase card, and a card may only hold values
+Built but off in the running app unless `NESTOCK_DATED_PURCHASES=1` (local testing):
+the App shows only name, quantity and unit on a purchase card, and a card may only hold values
 the user sees (HITL rule 4). Contract section 11. Same faked Cosmos container and real
 services as `test_purchase_cards`; the clock is T0 = 2026-11-10 16:00 Taipei.
 """
@@ -25,13 +25,20 @@ from test_purchase_cards import (
     tool_results,
 )
 
+from app.agent import read_agent
 from app.agent.cards import (
+    DATED_PURCHASE_TOOL_SCHEMA,
     FUTURE_DAY,
     PURCHASE_TOOL_SCHEMA,
     UNREADABLE_DAY,
     PurchaseCards,
 )
-from app.agent.read_agent import ReadAgent, load_system_prompt
+from app.agent.read_agent import (
+    DATED_PURCHASES_VAR,
+    ReadAgent,
+    dated_purchases_on,
+    load_system_prompt,
+)
 from app.services.cosmos_read import CosmosInventoryService, CosmosShoppingService
 from app.tools.queries import QueryTools
 
@@ -175,3 +182,29 @@ def test_confirming_a_dated_card_dates_the_transaction_and_event():
     assert datetime.fromisoformat(event["occurred_at"]) == noon
     assert datetime.fromisoformat(event["recorded_at"]) == T0  # when the user confirmed
     assert container.get("inventory_item:tissue")["quantity"] == 3
+
+
+@pytest.mark.parametrize(
+    ("value", "on"),
+    [("1", True), (" 1 ", True), ("0", False), ("true", False), ("", False), (None, False)],
+)
+def test_the_switch_is_on_only_when_the_variable_is_1(value, on):
+    environment = {} if value is None else {DATED_PURCHASES_VAR: value}
+
+    assert dated_purchases_on(environment) is on
+
+
+@pytest.mark.parametrize(("value", "schema"), [("1", "dated"), (None, "plain")])
+def test_the_running_app_reads_the_switch(monkeypatch, value, schema):
+    _, reader, approvals = setup()
+    monkeypatch.setattr(read_agent, "get_approval_service", lambda: approvals)
+    monkeypatch.setattr(read_agent, "get_cosmos_read_repository", lambda: reader)
+    if value is None:
+        monkeypatch.delenv(DATED_PURCHASES_VAR, raising=False)
+    else:
+        monkeypatch.setenv(DATED_PURCHASES_VAR, value)
+
+    cards = read_agent._purchase_cards()
+
+    expected = DATED_PURCHASE_TOOL_SCHEMA if schema == "dated" else PURCHASE_TOOL_SCHEMA
+    assert cards is not None and cards.tool_schema is expected

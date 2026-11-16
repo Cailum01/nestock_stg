@@ -60,12 +60,12 @@ class Transaction(ContractModel):
 
 
 class ChangeEvent(ContractModel):
-    """Immutable provenance record for one committed purchase operation.
+    """Immutable provenance record for one committed domain operation.
 
     PROVISIONAL per issue #60: B1 writes it in the same batch as the operation's
     domain writes. ``event_id`` equals ``operation_id`` so a retry maps to the
-    same document. ``occurred_at`` is the purchase time; ``recorded_at`` is the
-    approval decision time.
+    same document. ``occurred_at`` is the domain event time; ``recorded_at`` is
+    the approval decision time.
     """
 
     event_id: str
@@ -73,7 +73,7 @@ class ChangeEvent(ContractModel):
     operation_id: str
     approval_id: str
     transaction_id: str
-    shopping_item_id: str
+    shopping_item_id: str | None = None
     item_id: str
     occurred_at: datetime
     recorded_at: datetime

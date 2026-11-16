@@ -262,7 +262,7 @@ above. A typed change is answered as in section 8.
 The App shows a card only with the reply that brought it. After 清除對話 or reopening
 the App, the card is gone from the screen but still open in the backend. So the
 reminder is the card itself, not a sentence the user cannot act on (Issue #91,
-2026-11-16; asked C2 to confirm the App side):
+2026-11-16; C2 confirmed the App side the same day):
 
 - On every `POST /agent/messages` without `replaces_approval_id`, the backend lists
   the household's open cards (`ApprovalService.list_open`). Expired cards are left

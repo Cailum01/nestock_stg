@@ -21,9 +21,12 @@ A purchase day the user says (「昨天買的」, A1-50) is built but off
 App does not show it on the card yet, and a card may only hold values the user sees
 (HITL rule 4).
 
+Buying more than listed makes a card with what was bought; the listed quantity is not
+a limit (Issue #178).
+
 Not covered yet: items that are not on the list, the item-match card (Issue #90),
-buying more than listed, a different unit, spreading more items than one batch holds
-over several cards, changing a card (Issue #91), and reminding the user of open cards.
+a different unit, spreading more items than one batch holds over several cards,
+changing a card (Issue #91), and reminding the user of open cards.
 """
 
 from __future__ import annotations

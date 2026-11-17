@@ -34,8 +34,9 @@ The account, database, container, and private media container exist. This does
 **not** mean the production schema, complete indexing policy for every approved
 query, seed data, or write integration is complete. Setup did not insert domain
 or sample records; check the environment before assuming it remains empty. The
-dev container has the composite index required
-by the current Transaction ordering query, defined in
+dev container has the composite indexes required by the current Transaction
+ordering query (`created_at DESC, transaction_id ASC`) and media-retention work
+query (`next_attempt_at ASC, created_at ASC`), defined in
 [cosmos-indexing-policy.json](./cosmos-indexing-policy.json); a future approved
 feature-keyword query may require another index after its query plan is verified.
 

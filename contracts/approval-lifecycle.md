@@ -195,6 +195,19 @@ Because the `confirmed → completed` update is in the same batch, the approval
 record and the domain records cannot disagree (answer to #27 question 2).
 Inventory, Shopping and Transaction are never split across writes.
 
+A card that keeps a photo (Issue #176, sections 10 and 11) also writes, in the same
+batch, the end of the photo mapping's 24-hour TTL and a `pending` media-retention work
+item (B1, C1). Moving the photo out of staging is not in the batch: after the first
+write (`completed`), `/agent/resume` replies first and then, in the background, runs
+C1's post-commit trigger (PR #201). A repeated confirm (`already_completed`) does not
+start it, so a double tap does not run the same work twice at once (PR #203). Its
+on-demand worker calls A2's idempotent `retain_media` for this household's due work
+items; the query needs the `next_attempt_at`, `created_at` composite index (#202). A
+failure is logged and leaves the work item `pending` (or `needs_attention` after a
+permanent error); the reply is not changed and no domain write is repeated. A pending
+item is tried again after the next written confirm in the same household. Without
+Cosmos there is no trigger.
+
 ## 6. Recovery after an error or timeout
 
 The `completed` status and the receipts are written in the same batch, so after a
@@ -503,7 +516,8 @@ New-item cards from a photo (Issue #124; on with Cosmos since PR #172):
   TTL in the same batch. When the mapping cannot be used, the card is made without
   them. Either way the model is told (`photo` with the card), so the reply says
   whether the photo will be kept; the App does not show the photo on the card yet
-  (C2, Issue #176). Blob retention after confirming is not A1's (Issue #176).
+  (C2, Issue #176). After confirming, the photo is moved out of staging in the
+  background (section 5).
 - Items the household has, unsure items and items without a confirmed unit are only
   reported, as before. A photo item-match card (Issue #124 point 2) is not built.
 - Confirming (Issue #124, #168): A1's
@@ -623,7 +637,7 @@ quantity can be changed.
   three values or none: a line with only some of them, or without the matching
   target, is refused and nothing is written. C1's batch then writes the photo on the
   item, ends the mapping's TTL and stores the retention work item; moving the photo
-  out of staging is C1's and A2's (Issue #176). `card_changes` keeps the photo,
+  out of staging runs after the reply (section 5). `card_changes` keeps the photo,
   unless the item has a photo of its own by then.
 - Purchase time (Issue #113): the Transaction's `created_at` is when the purchase
   happened. Without a day on the line, the first `decided_at` is used, and a retry

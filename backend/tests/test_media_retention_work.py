@@ -236,6 +236,7 @@ def test_list_due_is_household_scoped_ordered_and_bounded():
     assert client.queries[0]["partition_key"] == "home"
     assert {"name": "@limit", "value": 1} in client.queries[0]["parameters"]
     assert "c.next_attempt_at <= @now" in client.queries[0]["query"]
+    assert "ORDER BY c.next_attempt_at ASC, c.created_at ASC" in client.queries[0]["query"]
 
 
 @pytest.mark.parametrize("limit", [0, 101, True])

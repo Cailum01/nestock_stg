@@ -239,7 +239,7 @@ def test_transaction_query_applies_exact_item_since_limit_and_partition():
     }
 
 
-def test_cosmos_index_policy_supports_transaction_ordering():
+def test_cosmos_index_policy_supports_transaction_and_retention_ordering():
     policy_path = Path(__file__).resolve().parents[2] / "datalake" / "cosmos-indexing-policy.json"
     policy = json.loads(policy_path.read_text(encoding="utf-8"))
 
@@ -247,7 +247,11 @@ def test_cosmos_index_policy_supports_transaction_ordering():
         [
             {"path": "/created_at", "order": "descending"},
             {"path": "/transaction_id", "order": "ascending"},
-        ]
+        ],
+        [
+            {"path": "/next_attempt_at", "order": "ascending"},
+            {"path": "/created_at", "order": "ascending"},
+        ],
     ]
 
 

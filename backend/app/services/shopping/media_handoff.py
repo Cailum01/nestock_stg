@@ -8,6 +8,7 @@ because A2's ``retain_media`` contract is idempotent.
 
 from __future__ import annotations
 
+import logging
 import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Protocol
 
+from app.services.approvals import ResumeResult
 from app.services.cosmos_write import CreateDocument
 from app.services.media_retention_work import (
     MediaRetentionWorkItemSnapshot,
@@ -23,6 +25,8 @@ from app.services.media_retention_work import (
     build_pending_media_retention_work_item,
 )
 from app.services.provisional_storage import classify_media_retention_error
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -311,6 +315,43 @@ class MediaRetentionRetryWorker:
             updated_at=now,
         )
         return True
+
+
+class MediaRetentionPostCommitTrigger:
+    """C1 seam for starting retention only after ApprovalService commits.
+
+    The API/A1 caller invokes ``after_resume`` with the result from
+    ``ApprovalService.resume``. A non-written result is a no-op. A written result
+    may process due work for that household, including the item just committed in
+    the same batch. Failures here must not turn a completed approval into a failed
+    response: the durable work item remains pending for the next on-demand run.
+    """
+
+    def __init__(self, worker: MediaRetentionRetryWorker) -> None:
+        self._worker = worker
+
+    async def after_resume(
+        self, *, household_id: str, result: ResumeResult
+    ) -> MediaRetentionRun | None:
+        if not result.written:
+            return None
+        if result.record is None or result.record.household_id != household_id:
+            logger.error(
+                "Skipping media retention trigger: completed result has no matching "
+                "approval record (household_id=%s).",
+                household_id,
+            )
+            return None
+        try:
+            return await self._worker.process_pending(household_id=household_id)
+        except Exception:
+            logger.warning(
+                "Media retention run failed after approval %s; durable work remains "
+                "available for a later on-demand run.",
+                result.record.approval_id,
+                exc_info=True,
+            )
+            return None
 
 
 def media_retention_work_item_id(operation_id: str) -> str:

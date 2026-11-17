@@ -28,6 +28,7 @@ from test_purchase_cards import (
 from app.agent.cards import CARD_CHANGED, PurchaseCards
 from app.agent.read_agent import ReadAgent, load_system_prompt
 from app.models.agent import AgentRequest
+from app.models.domain import ShoppingStatus
 from app.services.cosmos_read import CosmosInventoryService, CosmosShoppingService
 from app.tools.queries import QueryTools
 
@@ -148,7 +149,6 @@ def test_lines_left_out_of_the_change_keep_their_quantity_and_day():
         ([{"operation_id": "LINE", "quantity": 2}], "nothing_changed", True),
         ([{"operation_id": "LINE", "purchased_on": "2026-11-09"}], "purchase_day_off", False),
         ([{"operation_id": "LINE", "purchased_on": "2026-11-11"}], "future_date", True),
-        ([{"operation_id": "LINE", "quantity": 5}], "line_refused", True),  # listed: 2
     ],
 )
 def test_a_refused_change_stores_nothing_and_shows_the_old_card_again(changes, expected, dated):
@@ -168,20 +168,40 @@ def test_a_refused_change_stores_nothing_and_shows_the_old_card_again(changes, e
 
 
 def test_the_refused_line_is_named_with_its_reason():
-    _, reader, approvals = setup()
+    container, reader, approvals = setup()
+    old = make_card(reader, approvals, TISSUE)
+    (line,) = old.operations
+    container.put(shopping().model_copy(update={"status": ShoppingStatus.COMPLETED}))
+
+    response = change(reader, approvals, old, {"operation_id": line.operation_id, "quantity": 1})
+
+    assert code(response) == "line_refused"
+    assert response.pending_approval == old  # still on screen, nothing new stored
+    assert cards(container) == {old.approval_id: "pending"}
+    assert (
+        response.message == "沒有出新卡：「衛生紙」待購清單上找不到這一筆，可能已經買過或被刪掉。"
+    )
+    assert response.results[0].data["lines"] == [
+        {
+            "operation_id": line.operation_id,  # Issue #124: every refused line has it
+            "shopping_item_id": "tissue-1",
+            "reason": "待購清單上找不到這一筆，可能已經買過或被刪掉。",
+        }
+    ]
+
+
+def test_a_quantity_above_the_listed_one_makes_a_new_card():
+    # Issue #178: the planned 衛生紙 2 包 does not cap the bought quantity.
+    container, reader, approvals = setup()
     old = make_card(reader, approvals, TISSUE)
     (line,) = old.operations
 
     response = change(reader, approvals, old, {"operation_id": line.operation_id, "quantity": 5})
 
-    assert response.message == "沒有出新卡：「衛生紙」買的數量比待購清單上多，現在還不能記錄。"
-    assert response.results[0].data["lines"] == [
-        {
-            "operation_id": line.operation_id,  # Issue #124: every refused line has it
-            "shopping_item_id": "tissue-1",
-            "reason": "買的數量比待購清單上多，現在還不能記錄。",
-        }
-    ]
+    assert response.message == CARD_CHANGED
+    new = response.pending_approval
+    assert [op.description for op in new.operations] == ["衛生紙 +5 包（從待購清單完成購買）"]
+    assert cards(container) == {old.approval_id: "cancelled", new.approval_id: "pending"}
 
 
 def test_a_card_that_cannot_change_any_more_gets_no_card():

@@ -125,11 +125,11 @@ def test_a_new_card_that_cannot_be_stored_leaves_the_old_card_open():
     container, reader, approvals = setup()
     old = first_card(reader, approvals)
     model = ScriptedModel(
-        purchase_reply({"shopping_item_id": "tissue-1", "quantity": 5}, call_id="call-1"),
-        AIMessage(content="買的數量比待購清單多，現在還不能記錄。"),
+        purchase_reply({"shopping_item_id": "gone", "quantity": 1}, call_id="call-1"),
+        AIMessage(content="待購清單上找不到這一筆。"),
     )
 
-    response = change(agent(model, reader, approvals), old.approval_id, "衛生紙：數量改成 5")
+    response = change(agent(model, reader, approvals), old.approval_id, "改成牛奶 1 瓶")
 
     assert response.pending_approval is None
     assert status(container, old.approval_id) == ("pending", None)

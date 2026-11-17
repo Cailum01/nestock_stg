@@ -15,7 +15,6 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent.cards import (
     ALREADY_HAVE,
-    MORE_THAN_LISTED,
     NEEDS_LOCATION,
     NEEDS_UNIT,
     OTHER_UNIT,
@@ -223,6 +222,28 @@ def test_bought_item_gets_a_card_and_nothing_else_changes():
     ]
 
 
+def test_buying_more_than_listed_makes_a_card_and_records_what_was_bought():
+    # Issue #178: the list's planned 衛生紙 2 包 does not cap a purchase of 3.
+    container, reader, approvals = setup()
+    model = ScriptedModel(
+        purchase_reply({"shopping_item_id": "tissue-1", "quantity": 3}, call_id="call-1"),
+        AIMessage(content="請確認下方的卡片，按確認後才會記錄。"),
+    )
+    card = ask(agent(model, reader, approvals), "我買了衛生紙 3 包").pending_approval
+    assert card.operations[0].description == "衛生紙 +3 包（從待購清單完成購買）"
+    body = {"household_id": HOME, "approval_id": card.approval_id, "approved": True}
+
+    with TestClient(resume_app(approvals)) as client:
+        response = client.post("/agent/resume", json=body)
+
+    assert response.status_code == 200
+    assert container.get("inventory_item:tissue")["quantity"] == 4
+    listed = container.get("shopping_item:tissue-1")
+    assert (listed["status"], listed["quantity"]) == ("completed", 2)
+    (transaction,) = container.of_type("transaction")
+    assert transaction["quantity_delta"] == 3
+
+
 def test_card_line_holds_what_the_user_sees_and_both_versions():
     """The line format A1's `CardInputResolver` reads back at confirmation."""
     container, reader, _ = setup()
@@ -252,7 +273,6 @@ def test_card_line_holds_what_the_user_sees_and_both_versions():
 @pytest.mark.parametrize(
     "listed, quantity",
     [
-        (shopping(quantity=2), 3),  # more than listed
         (shopping(item_id=None), 1),  # not linked to an inventory item (Issue #90)
         (shopping(unit="串"), 1),  # a different unit
     ],
@@ -315,7 +335,6 @@ def test_several_items_go_on_one_card_and_unfit_ones_are_left_off_with_a_reason(
     "item, reason",
     [
         ({"shopping_item_id": "gone", "quantity": 1}, "待購清單上找不到"),
-        ({"shopping_item_id": "tissue-1", "quantity": 3}, "比待購清單上多"),
     ],
 )
 def test_nothing_fits_means_no_card(item, reason):
@@ -326,6 +345,24 @@ def test_nothing_fits_means_no_card(item, reason):
 
     assert response.pending_approval is None
     assert reason in tool_results(model)[-1]
+    assert container.of_type("pending_approval") == []
+
+
+def test_a_list_unit_other_than_the_inventory_unit_makes_no_card():
+    """The list says 串, the stock is counted in 包: the Agent layer leaves it off (A1-69)."""
+    container, reader, approvals = setup(inventory(), shopping(unit="串"))
+    model = ScriptedModel(
+        purchase_reply({"shopping_item_id": "tissue-1", "quantity": 1}, call_id="call-1"),
+        AIMessage(content="好"),
+    )
+
+    response = ask(agent(model, reader, approvals))
+
+    assert response.pending_approval is None
+    assert json.loads(tool_results(model)[-1]) == {
+        "card": None,
+        "not_on_card": [{"shopping_item_id": "tissue-1", "reason": OTHER_UNIT}],
+    }
     assert container.of_type("pending_approval") == []
 
 
@@ -659,6 +696,26 @@ def test_confirming_a_new_item_card_creates_the_item_once():
     assert (transaction["item_id"], transaction["quantity_delta"]) == (item_id, 1)
 
 
+def test_a_new_item_bought_beyond_the_list_is_created_with_what_was_bought():
+    # Issue #178: 牙膏 1 條 on the list, 2 bought; the list keeps its planned 1.
+    container, reader, approvals = setup(inventory(), paste())
+    card = new_item_card(reader, approvals, quantity=2)[0].pending_approval
+    assert card.operations[0].values["quantity"] == 2
+    body = {"household_id": HOME, "approval_id": card.approval_id, "approved": True}
+
+    with TestClient(resume_app(approvals)) as client:
+        response = client.post("/agent/resume", json=body)
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "已記錄：牙膏 +2 條（現在 2 條）"
+    item_id = resolve_inventory_item_id(card.operations[0].operation_id)
+    assert container.get(f"inventory_item:{item_id}")["quantity"] == 2
+    listed = container.get("shopping_item:paste-1")
+    assert (listed["status"], listed["quantity"]) == ("completed", 1)
+    (transaction,) = container.of_type("transaction")
+    assert transaction["quantity_delta"] == 2
+
+
 def test_cancelling_a_new_item_card_creates_nothing():
     container, reader, approvals = setup(inventory(), paste())
     card = new_item_card(reader, approvals)[0].pending_approval
@@ -723,7 +780,6 @@ def test_a_new_item_sits_on_one_card_with_ordinary_purchases_and_both_are_writte
     [
         ([paste()], {"location": None}, NEEDS_LOCATION),
         ([paste()], {"unit": "支"}, OTHER_UNIT),
-        ([paste()], {"quantity": 2}, MORE_THAN_LISTED),
         (
             [inventory("paste", "牙膏", 0, "條"), inventory("paste-2", "牙膏", 1, "條"), paste()],
             {},

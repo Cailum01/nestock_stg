@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, ToolMessage
 
-from app.agent.read_agent import ReadAgent, get_read_agent, load_system_prompt
+from app.agent.read_agent import TOOL_SCHEMAS, ReadAgent, get_read_agent, load_system_prompt
 from app.core.dependencies import get_inventory_service, get_shopping_service
 from app.main import create_app
 from app.models.agent import AgentRequest, ResultKind
@@ -90,6 +90,32 @@ def test_shopping_question_uses_shopping_list():
 
     assert [row["name"] for row in _tool_rows(model)] == ["牛奶"]
     assert response.results == []  # inventory card only when inventory was looked up
+
+
+def test_the_model_never_sees_a_planned_shopping_quantity():
+    # Issue #179: the App's shopping list shows only items, so the Agent must not read
+    # out a planned quantity; the unit stays for the purchase card's unit rules.
+    model = ScriptedModel(_call("list_shopping"), AIMessage(content="還要買牛奶。"))
+    _ask(_agent(model), "我還要買什麼？")
+
+    rows = _tool_rows(model)
+    assert rows and all("quantity" not in row for row in rows)
+    assert all("unit" in row and "name" in row for row in rows)
+
+
+def test_an_inventory_lookup_shows_the_shopping_list_without_planned_quantities():
+    model = ScriptedModel(_call("list_inventory"), AIMessage(content="庫存裡沒有找到 AA 電池。"))
+    _ask(_agent(model), "我要買 AA 電池，家裡還有嗎？")
+
+    shopping = _tool_rows(model)["shopping_list"]
+    assert [row["name"] for row in shopping] == ["牛奶"]
+    assert all("quantity" not in row for row in shopping)
+
+
+def test_prompt_and_tool_say_the_shopping_list_has_no_quantities():
+    assert "只說品項，不要說要買幾個" in load_system_prompt()
+    tool = next(t for t in TOOL_SCHEMAS if t["function"]["name"] == "list_shopping")
+    assert "數量" not in tool["function"]["description"]
 
 
 # --- v8 Flow B: "I want to buy X, do we still have it?" ----------------------

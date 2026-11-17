@@ -62,7 +62,7 @@ from app.core.dependencies import (
 )
 from app.models.agent import AgentRequest, AgentResponse, AgentResult, ResultKind
 from app.models.commerce import PurchaseOption
-from app.models.domain import InventoryItem
+from app.models.domain import InventoryItem, ShoppingItem
 from app.models.vision import SceneType, VisionAnalysisResult
 from app.services.approvals import ApprovalRecord, ApprovalService, CardNotChangeable
 from app.services.commerce.biggo import BigGoCommerceProvider
@@ -163,7 +163,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_shopping",
-            "description": "查詢待購清單：還要買的東西、數量、狀態。",
+            "description": "查詢待購清單：還要買的東西和狀態。",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -328,6 +328,17 @@ def _household_item_view(item: InventoryItem) -> dict[str, Any]:
         "aliases": list(item.aliases or []),
         "unit": item.unit,
     }
+
+
+def _shopping_view(item: ShoppingItem) -> dict[str, Any]:
+    """A shopping entry as the model sees it, without its planned quantity (Issue #179).
+
+    The App's shopping list shows only the items, so the Agent must not read out a
+    planned quantity the user never sees. The field stays in the backend (Issue #180).
+    """
+    row = item.model_dump(mode="json")
+    row.pop("quantity", None)
+    return row
 
 
 def _forecast_row(item: InventoryItem, forecast: Any) -> dict[str, Any]:
@@ -561,6 +572,9 @@ class ReadAgent:
                     content, card = await self._propose_purchase(state, update, call)
                     if card is not None:
                         update["pending_approval"] = card
+                elif call["name"] == "list_shopping":
+                    items = await self._handlers["list_shopping"](state["household_id"])
+                    content = json.dumps([_shopping_view(i) for i in items], ensure_ascii=False)
                 elif handler is None:
                     content = f"沒有這個工具：{call['name']}"
                 else:
@@ -627,9 +641,7 @@ class ReadAgent:
                 "shopping_list_error": SHOPPING_LIST_UNAVAILABLE,
             }
         else:
-            pending = [
-                item.model_dump(mode="json") for item in shopping if item.status == "pending"
-            ]
+            pending = [_shopping_view(item) for item in shopping if item.status == "pending"]
             view = {**view, "shopping_list": pending}
         return json.dumps(view, ensure_ascii=False)
 

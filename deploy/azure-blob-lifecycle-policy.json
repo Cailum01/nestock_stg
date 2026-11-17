@@ -1,0 +1,27 @@
+{
+  "rules": [
+    {
+      "enabled": true,
+      "name": "purge-staging-orphan-media-after-24h",
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": [
+            "blockBlob"
+          ],
+          "prefixMatch": [
+            "media/staging/"
+          ]
+        },
+        "actions": {
+          "baseBlob": {
+            "delete": {
+              "daysAfterCreationGreaterThan": 1
+            }
+          }
+        }
+      }
+    }
+  ]
+}
+

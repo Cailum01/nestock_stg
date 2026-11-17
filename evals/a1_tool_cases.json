@@ -231,7 +231,6 @@
         {
           "shopping_item_id": "tissue-1",
           "name": "衛生紙",
-          "quantity": 2,
           "unit": "包",
           "status": "pending",
           "item_id": "tissue"
@@ -239,7 +238,6 @@
         {
           "shopping_item_id": "milk-1",
           "name": "牛奶",
-          "quantity": 1,
           "unit": "瓶",
           "status": "pending",
           "item_id": "milk"
@@ -266,7 +264,6 @@
         {
           "shopping_item_id": "seed-shopping-detergent",
           "name": "洗衣精",
-          "quantity": 2,
           "unit": "瓶",
           "status": "pending",
           "item_id": "seed-detergent"
@@ -274,7 +271,6 @@
         {
           "shopping_item_id": "seed-shopping-flour",
           "name": "麵粉",
-          "quantity": 1,
           "unit": "包",
           "status": "pending",
           "item_id": "seed-flour"
@@ -300,7 +296,6 @@
         {
           "shopping_item_id": "seed-shopping-detergent",
           "name": "洗衣精",
-          "quantity": 2,
           "unit": "瓶",
           "status": "pending",
           "item_id": "seed-detergent"
@@ -308,7 +303,6 @@
         {
           "shopping_item_id": "seed-shopping-flour",
           "name": "麵粉",
-          "quantity": 1,
           "unit": "包",
           "status": "pending",
           "item_id": "seed-flour"

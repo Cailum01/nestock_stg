@@ -215,12 +215,66 @@ class BaseMediaStorageLifecycle:
     async def retain_media(self, household_id: str, image_ref: str) -> bool:
         """Mark media and derived artifacts as attached so orphan cleanup preserves them."""
         rec = self._retention_records.get((household_id, image_ref))
+        if (rec is None or rec.get("purged")) and self._mapping_port is not None:
+            snap = await self.get_media_snapshot(household_id, image_ref)
+            if snap is not None and snap.record.status == MediaProcessingStatus.COMPLETED:
+                rec = {
+                    "input_id": snap.record.input_id,
+                    "retention": "attached",
+                    "expires_at": None,
+                    "artifact_ref": snap.record.artifact_ref,
+                    "purged": False,
+                }
+                self._retention_records[(household_id, image_ref)] = rec
         if rec is None or rec.get("purged"):
             return False
         target_rec = dict(rec)
         target_rec["retention"], target_rec["expires_at"] = "attached", None
         await self._mark_storage_retained(household_id, image_ref, target_rec)
         rec["retention"], rec["expires_at"] = "attached", None
+        return True
+
+    async def unretain_media(
+        self, household_id: str, image_ref: str, ttl_seconds: int = 86400
+    ) -> bool:
+        """Release attached retention status, restoring orphan expiration window."""
+        rec = self._retention_records.get((household_id, image_ref))
+        if (rec is None or rec.get("purged")) and self._mapping_port is not None:
+            snap = await self.get_media_snapshot(household_id, image_ref)
+            if snap is not None and snap.record.status == MediaProcessingStatus.COMPLETED:
+                now_init = datetime.now(UTC)
+                rec = {
+                    "input_id": snap.record.input_id,
+                    "retention": "orphan",
+                    "expires_at": now_init + timedelta(seconds=ttl_seconds),
+                    "artifact_ref": snap.record.artifact_ref,
+                    "purged": False,
+                }
+                self._retention_records[(household_id, image_ref)] = rec
+        if rec is None or rec.get("purged"):
+            return False
+        now = datetime.now(UTC)
+        exp = now + timedelta(seconds=ttl_seconds)
+        target_rec = dict(rec)
+        target_rec["retention"] = "orphan"
+        target_rec["expires_at"] = exp
+        await self._mark_storage_retained(household_id, image_ref, target_rec)
+        rec["retention"] = "orphan"
+        rec["expires_at"] = exp
+
+        if self._mapping_port is not None and hasattr(self._mapping_port, "update_retention"):
+            snap = await self.get_media_snapshot(household_id, image_ref)
+            if snap is not None and (
+                snap.record.ttl_seconds is None or snap.record.ttl_seconds != ttl_seconds
+            ):
+                updated_snap = await self._mapping_port.update_retention(
+                    household_id=household_id,
+                    input_id=snap.record.input_id,
+                    expected_etag=snap.etag,
+                    ttl_seconds=ttl_seconds,
+                )
+                self._snapshots[(household_id, image_ref)] = updated_snap
+
         return True
 
     async def cleanup_expired_blobs(self, now: datetime | None = None) -> list[str]:

@@ -26,8 +26,9 @@ asked A1 to do that part (Issue #60, Issue #27). This module is only that step:
   `quantity` and `unit` what was bought, with the same two versions as a purchase
   line; the router (`card_writes.py`) sends only 「是」 here.
 
-Not covered yet: removals (A1 has no removal card), buying more than listed, and a
-different unit. C1's plan refuses the last two.
+Not covered yet: removals (A1 has no removal card) and a different unit, which C1's
+plan refuses. Buying more than listed is resolved like any other line; the listed
+quantity is not a limit (Issue #178).
 
 Photo new-item cards (Issue #124, contract section 10) have no Shopping List entry,
 so they are not purchases: `PhotoInputResolver` below turns them into C1's

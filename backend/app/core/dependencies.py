@@ -352,16 +352,22 @@ def _create_approval_service(
     write_repository: CosmosWriteRepository | None,
     document_reader: DocumentQueryClient | None,
 ) -> ApprovalService | None:
-    """Purchase cards are written by C1's `ShoppingWriteBuilder` (Issue #60).
+    """Route stored approval cards to their domain-specific write builders.
 
-    A1's `CardInputResolver` turns the stored card back into C1's purchase inputs
-    through the read repository; C1 reads whole stored documents through the raw
-    reader so storage-only metadata survives its replacements.
+    A1's `CardInputResolver` turns purchase cards back into C1's inputs through the
+    read repository; C1 reads whole stored documents through the raw reader so
+    storage-only metadata survives replacements. New-item cards use A1's resolver
+    and B1's atomic no-Shopping writer.
     """
     if read_repository is None or write_repository is None or document_reader is None:
         return None
-    from app.services.purchase_inputs import CardInputResolver
+    from app.services.card_writes import CardWriteRouter
+    from app.services.photo_item_writes import PhotoItemWriteBuilder
+    from app.services.purchase_inputs import CardInputResolver, PhotoInputResolver
     from app.services.shopping.workflow import ShoppingWriteBuilder
 
-    builder = ShoppingWriteBuilder(document_reader, CardInputResolver(read_repository))
+    builder = CardWriteRouter(
+        purchases=ShoppingWriteBuilder(document_reader, CardInputResolver(read_repository)),
+        photo_items=PhotoItemWriteBuilder(PhotoInputResolver()),
+    )
     return ApprovalService(write_repository, builder)

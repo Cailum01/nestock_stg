@@ -59,6 +59,8 @@ class ConfirmationCard extends StatefulWidget {
     this.onSubmitChanges,
     this.onDraftFocusChanged,
     this.allowExclusion = true,
+    this.editableFields,
+    this.changeError,
   });
 
   final List<ConfirmationItemView> items;
@@ -70,6 +72,11 @@ class ConfirmationCard extends StatefulWidget {
   final ValueChanged<List<ConfirmationItemView>>? onSubmitChanges;
   final ValueChanged<ConfirmationDraftFocus?>? onDraftFocusChanged;
   final bool allowExclusion;
+
+  /// Null retains the legacy all-field editor; supplied sets constrain cards
+  /// whose backend contract only accepts certain changes.
+  final Set<ConfirmationDraftField>? editableFields;
+  final String? changeError;
 
   @override
   State<ConfirmationCard> createState() => _ConfirmationCardState();
@@ -252,6 +259,10 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
   bool get _hasInvalidQuantity =>
       _quantities.any((controller) => !_isValidQuantity(controller.text));
 
+  /// Draft state is intentionally separate from its serialized value: an
+  /// invalid active quantity can otherwise normalize back to the stored value.
+  bool get _hasUnsentDraft => _hasChanges || _hasInvalidQuantity;
+
   String? _normalizedLocation(String value) {
     final location = value.trim();
     return location.isEmpty ? null : location;
@@ -290,6 +301,13 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
             onChanged: () => setState(() {}),
             index: index,
             allowExclusion: widget.allowExclusion,
+            editableFields: widget.editableFields,
+          ),
+        if (widget.changeError != null)
+          Text(
+            widget.changeError!,
+            key: const Key('confirmation-card-change-error'),
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
           ),
         if (widget.items.isEmpty)
           for (final entry in widget.details.entries)
@@ -319,7 +337,7 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
             ],
             FilledButton(
               key: const Key('confirmation-confirm'),
-              onPressed: widget.onConfirm,
+              onPressed: _hasUnsentDraft ? null : widget.onConfirm,
               child: const Text('確認'),
             ),
           ],
@@ -349,6 +367,7 @@ class _ConfirmationItem extends StatelessWidget {
     required this.onChanged,
     required this.index,
     required this.allowExclusion,
+    required this.editableFields,
   });
 
   final ConfirmationItemView item;
@@ -368,6 +387,10 @@ class _ConfirmationItem extends StatelessWidget {
   final VoidCallback onChanged;
   final int index;
   final bool allowExclusion;
+  final Set<ConfirmationDraftField>? editableFields;
+
+  bool _canEdit(ConfirmationDraftField field) =>
+      editableFields == null || editableFields!.contains(field);
 
   InputDecoration _inlineDecoration(BuildContext context) => InputDecoration(
     isDense: true,
@@ -416,7 +439,7 @@ class _ConfirmationItem extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        editing
+                        editing && _canEdit(ConfirmationDraftField.name)
                             ? TextField(
                                 key: Key('confirmation-name-$index'),
                                 controller: nameController,
@@ -427,47 +450,53 @@ class _ConfirmationItem extends StatelessWidget {
                               )
                             : Text(nameController.text, style: nameStyle),
                         const SizedBox(height: 3),
-                        if (editing)
+                        if (editing &&
+                            (_canEdit(ConfirmationDraftField.quantity) ||
+                                _canEdit(ConfirmationDraftField.unit)))
                           Wrap(
                             crossAxisAlignment: WrapCrossAlignment.center,
                             spacing: 8,
                             runSpacing: 4,
                             children: [
-                              const Text('數量'),
-                              SizedBox(
-                                width: 44,
-                                child: TextField(
-                                  key: Key('confirmation-quantity-$index'),
-                                  controller: quantityController,
-                                  focusNode: quantityFocusNode,
-                                  style: detailStyle,
-                                  onChanged: (_) => onChanged(),
-                                  keyboardType: TextInputType.number,
-                                  inputFormatters: [
-                                    TextInputFormatter.withFunction(
-                                      (oldValue, newValue) =>
-                                          _quantityEditingPattern.hasMatch(
-                                            newValue.text,
-                                          )
-                                          ? newValue
-                                          : oldValue,
-                                    ),
-                                  ],
-                                  decoration: _inlineDecoration(context),
+                              if (_canEdit(ConfirmationDraftField.quantity))
+                                const Text('數量'),
+                              if (_canEdit(ConfirmationDraftField.quantity))
+                                SizedBox(
+                                  width: 44,
+                                  child: TextField(
+                                    key: Key('confirmation-quantity-$index'),
+                                    controller: quantityController,
+                                    focusNode: quantityFocusNode,
+                                    style: detailStyle,
+                                    onChanged: (_) => onChanged(),
+                                    keyboardType: TextInputType.number,
+                                    inputFormatters: [
+                                      TextInputFormatter.withFunction(
+                                        (oldValue, newValue) =>
+                                            _quantityEditingPattern.hasMatch(
+                                              newValue.text,
+                                            )
+                                            ? newValue
+                                            : oldValue,
+                                      ),
+                                    ],
+                                    decoration: _inlineDecoration(context),
+                                  ),
                                 ),
-                              ),
-                              const Text('單位'),
-                              SizedBox(
-                                width: 72,
-                                child: TextField(
-                                  key: Key('confirmation-unit-$index'),
-                                  controller: unitController,
-                                  focusNode: unitFocusNode,
-                                  style: detailStyle,
-                                  onChanged: (_) => onChanged(),
-                                  decoration: _inlineDecoration(context),
+                              if (_canEdit(ConfirmationDraftField.unit))
+                                const Text('單位'),
+                              if (_canEdit(ConfirmationDraftField.unit))
+                                SizedBox(
+                                  width: 72,
+                                  child: TextField(
+                                    key: Key('confirmation-unit-$index'),
+                                    controller: unitController,
+                                    focusNode: unitFocusNode,
+                                    style: detailStyle,
+                                    onChanged: (_) => onChanged(),
+                                    decoration: _inlineDecoration(context),
+                                  ),
                                 ),
-                              ),
                             ],
                           )
                         else
@@ -481,7 +510,9 @@ class _ConfirmationItem extends StatelessWidget {
                             const Icon(Icons.location_on_outlined, size: 16),
                             const SizedBox(width: 4),
                             Expanded(
-                              child: editing
+                              child:
+                                  editing &&
+                                      _canEdit(ConfirmationDraftField.location)
                                   ? Semantics(
                                       label: '位置',
                                       child: TextField(
@@ -513,7 +544,9 @@ class _ConfirmationItem extends StatelessWidget {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (!excluded)
+                        if (!excluded &&
+                            (editableFields == null ||
+                                editableFields!.isNotEmpty))
                           IconButton(
                             key: Key(
                               editing

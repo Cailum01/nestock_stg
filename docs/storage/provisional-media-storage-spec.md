@@ -175,7 +175,8 @@ az storage account management-policy create \
 依據 Issue #98 第 1 步「對齊 mapping／`retain_media` 契約及重試」之要求，明確規範調用端與儲存層之契約行為：
 
 #### 4.2.1 觸發時機與職責分工 (Post-Commit Handoff)
-- **觸發順序**：業務寫入必須堅持「資料庫事務優先」原則。下游業務（如 C1 購物審批、庫存入庫）在完成 Cosmos DB 交易批次提交（即原子清除 Mapping 之 `ttl_seconds` 並記錄附件關聯）後，方可非同步或同步呼叫 `retain_media(household_id, input_id)`。
+- **觸發順序**：業務寫入必須堅持「資料庫事務優先」原則。下游業務（如 C1 購物審批、庫存入庫）在完成 Cosmos DB 交易批次提交（即原子清除 Mapping 之 `ttl_seconds` 並記錄附件關聯）後，方可非同步或同步呼叫 `retain_media(household_id: str, image_ref: str) -> bool`。
+- **參數約束 (Parameter Invariant)**：呼叫端傳入之參數為 `image_ref`（如 `blob://households/{hid}/media/{input_id}.jpg`，由上傳結果或 Mapping 記錄之 `image_ref` 欄位取得），嚴禁將純 UUID 之 `input_id` 當作路徑傳入，確保儲存層 `_parse_blob_path` 順暢解析。
 - **故障隔離**：若 `retain_media` 執行失敗，不得回滾已提交之業務交易紀錄；應交由重試機制完成 Blob 前綴遷移。
 
 #### 4.2.2 儲存端冪等性保證 (Storage Idempotency Contract)
@@ -184,21 +185,43 @@ az storage account management-policy create \
   - 自動確保其 Metadata 與 ContentSettings 處於正確保留狀態；
   - 絕不拋出 `409 Conflict`、`ResourceExistsError` 或中斷業務流程。
 
-#### 4.2.3 呼叫端重試機制 (Retry Policy with Exponential Backoff)
+#### 4.2.3 呼叫端重試機制與補償邊界 (Retry Policy & Reconciliation Boundary)
 - **暫態故障重試**：當呼叫 `retain_media` 遭遇暫時性網路抖動（如 HTTP 503, 504 或連線超時）時，呼叫端**必須**採用帶有抖動的指數退避重試（Exponential Backoff with Jitter）：
   - **最大重試次數**：3 次。
   - **建議間隔**：第 1 次 1.0 秒、第 2 次 2.0 秒、第 3 次 4.0 秒。
-- **終極補償路徑**：若連續重試均失敗，呼叫端記錄 `[MEDIA_RETENTION_FAILED]` 錯誤日誌。由於 Cosmos DB Mapping 已永久保留（`ttl_seconds is None`），後續背景維運或重啟程序可依據 Mapping 進行無損補償遷移（Stateless Recovery）。
+- **重試耗盡降級與補償邊界 [NOT_IMPLEMENTED_IN_PR_155]**：
+  - 若連續重試 3 次均失敗，呼叫端**必須**記錄包含 `household_id` 與 `image_ref` 之 `[CRITICAL_MEDIA_RETENTION_FAILED]` 結構化錯誤日誌以待人工干預與警報處理。
+  - **能力範圍誠實揭露**：PR #155 階段**尚未實作**自動化背景對齊掃描器（Background Reconciliation Sweeper）、重試發布佇列（Outbox/Retry Queue）或應用程式重啟自 mapping 自動搬移 Blob 之機制。雖然 Cosmos DB Mapping 已設定為永久保留（`ttl_seconds is None`），但 Blob 實體仍停留於 `staging/` 前綴下，在未經補償搬移前，仍存在 24 小時後遭 Azure 原生政策清除之風險。
+  - **接續工程指引**：自動化重試佇列、發布者補償與端到端對齊機制，依據 Issue #98 之職能分工，明確排定於後續「步驟 4：C1、A2 完成購買流程接線」中實作，不作為本 PR 之驗收承諾。
 
 #### 4.2.4 雙端時鐘與 TTL 一致性
-- 當執行 `unretain_media(household_id, input_id)`（例如商品刪除或換圖）：
+- 當執行 `unretain_media(household_id: str, image_ref: str, ttl_seconds: int = 86400) -> bool`（例如商品刪除或換圖）：
   1. **Blob 實體層**：檔案遷回 `staging/`，並執行 Self-Overwrite 重設 `CreationTime`，確保享有完整的 24 小時（86400 秒）寬限期。
   2. **Cosmos Mapping 層**：儲存適配器同步透過 `MediaMappingPort.update_retention` 將 TTL 精確重設為 `86400` 秒。
   - 確保雙端之過期淘汰時鐘完全同步，絕不產生幽靈孤兒紀錄。
 
-#### 4.2.5 雲端基礎架構權限邊界 (Infrastructure Control-Plane Boundary)
+#### 4.2.5 雲端基礎架構權限邊界與政策套用指引 (Infrastructure Control-Plane Boundary)
 - **應用端憑證 (Data Plane)**：應用程式服務僅持有具備容器存取權限之 SAS 連線字串（Data Plane），無權直接調用 ARM 控制台 API 修改 Storage Account 全域政策。
-- **維運端職責 (Control Plane)**：正式 Lifecycle 政策（`deploy/azure-blob-lifecycle-policy.json`）之發布與管理，屬於 Azure 訂閱管理員或 DevOps/SRE 團隊之職責。PR #155 交付標準定義檔與套用腳本，作為部署之權威依據。
+- **客觀 RBAC 權限邊界現況**：
+  開發者帳戶（`26511@tibame.com`）執行 Azure CLI 對共享資源群組 `GAE26512RG` 查詢或管理儲存帳戶時，遭遇客觀授權阻斷：
+  ```text
+  ERROR: (AuthorizationFailed) The client 'mail#26511@tibame.com' does not have authorization to perform action 'Microsoft.Storage/storageAccounts/read' over scope '/subscriptions/186e9d87-a1a6-4dcd-8033-005369690f26/resourceGroups/GAE26512RG/providers/Microsoft.Storage/storageAccounts/stnestockdev20261101'
+  ```
+  因此，A2 開發端在物理環境上無權限在目標帳戶執行 ARM 政策套用或讀回，此操作屬於訂閱管理者 / B1 (`Cailum01`) 之 Control Plane 職責。
+- **正式政策套用與讀回驗收指令 (Control Plane)**：
+  請持有 ARM 寫入權限之管理員執行以下標準指令完成部署與驗收：
+  ```bash
+  # 1. 套用 Lifecycle 政策
+  az storage account management-policy create \
+    --account-name stnestockdev20261101 \
+    --resource-group GAE26512RG \
+    --policy @deploy/azure-blob-lifecycle-policy.json
+
+  # 2. 讀回政策以驗收配置生效
+  az storage account management-policy show \
+    --account-name stnestockdev20261101 \
+    --resource-group GAE26512RG
+  ```
 ---
 
 ## 5. 實體雲端驗證紀錄 (Physical Verification Audit)

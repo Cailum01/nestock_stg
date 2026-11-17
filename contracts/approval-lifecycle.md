@@ -19,8 +19,9 @@ rules and runs on B1's `CosmosWriteRepository`. With Cosmos configured,
 kinds of card. One is the v8 flow C purchase card (`complete_purchase`, section 11;
 read back by A1's `backend/app/services/purchase_inputs.py` and written through C1's
 `ShoppingWriteBuilder`), including new-item lines for entries not yet in inventory
-(section 10). The other is the new-item card from a photo (section 10, Issue #124;
-written through B1's `PhotoItemWriteBuilder`). Changing a card with 送出修改 is built (section 7, and sent as data in
+(section 10). The other is the new-item card without a Shopping List entry, from a
+photo (section 10, Issue #124) or from what the user says they got (`add_stock`,
+Issue #168); both are written through B1's `PhotoItemWriteBuilder`. Changing a card with 送出修改 is built (section 7, and sent as data in
 section 7.1), and an open card comes back with the next message (section 8). A
 purchase day the user says is built but off (section 11). Not built yet: the Agent making the
 new card by itself after a record changed (section 4 point 7); for now the reply
@@ -466,6 +467,29 @@ New-item cards from a photo (Issue #124; on with Cosmos since PR #172):
   card replaces the old one, and the user confirms again.
 - On in `get_read_agent` whenever cards are (Cosmos): confirming is written by
   B1's builder above. Without Cosmos a photo is only reported.
+
+New-item cards from what the user says (Issue #168, 「我收到一瓶洗髮精」):
+
+- The Agent's second card tool, `add_stock` (`backend/app/agent/stock_cards.py`), for
+  something new that came home and is not a Shopping List entry: a gift, something
+  received, or bought off the list. It stores one pending card and writes nothing
+  else, like `complete_purchase`; one card per message, and none while an open card
+  is shown again or the open cards are unknown (section 8).
+- Same format as the photo card: `single_action` for one item, `batch_action` for
+  several, every line `create_item` with `name`, `quantity`, `unit`, `location` and
+  `transaction_id`; no `shopping_item_id` and no target version. `location` is what
+  the user said, or null (the App shows 未填). The description ends with （使用者說的）.
+- An item whose name or alias the household already has gets no line (#36 layers
+  ①②), so confirming never adds a second item; adding to an item the household
+  has is not covered. When the model thinks it may be a household item under another
+  name, the prompt has it ask the user first and call the tool only for a new thing.
+- Confirming is the photo card's path above: `PhotoInputResolver`, B1's
+  `PhotoItemWriteBuilder`, C1's `plan_adjustment`; the Transaction reason is
+  `adjustment` (C1 and B2 in Issue #168), at the card's `decided_at`.
+- The quantity can be changed with `card_changes` as on a photo card; the new card
+  keeps each line's location and wording.
+- On in `get_read_agent` whenever cards are (Cosmos); without Cosmos the tool is not
+  offered.
 
 ```json
 {

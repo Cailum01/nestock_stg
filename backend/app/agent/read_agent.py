@@ -1,10 +1,11 @@
 """A1 Agent (Day 5, photo reading Day 8): understand, look, answer.
 
 - Read tools: inventory, shopping list, photo recognition and price search.
-- One card tool, `complete_purchase` (v8 flow C, `app/agent/cards.py`), offered only
-  when approval cards are configured. It stores a pending confirmation card and
-  writes nothing else; the write happens in `/agent/resume` after the user confirms
-  (AGENTS.md HITL rules 2 and 8).
+- Two card tools, offered only when approval cards are configured: `complete_purchase`
+  (v8 flow C, `app/agent/cards.py`) and `add_stock` (a new item the user says they
+  got that is not a Shopping List entry, Issue #168, `app/agent/stock_cards.py`).
+  Each stores a pending confirmation card and writes nothing else; the write happens
+  in `/agent/resume` after the user confirms (AGENTS.md HITL rules 2 and 8).
 - household_id and image_ref always come from the request, never from the
   model's arguments.
 - A photo is used only after the media is verified to belong to the request's
@@ -52,6 +53,7 @@ from app.agent.cards import (
     PhotoItem,
     PurchaseCards,
 )
+from app.agent.stock_cards import ADD_STOCK, StockCards
 from app.core.dependencies import (
     get_approval_service,
     get_cosmos_read_repository,
@@ -308,6 +310,17 @@ def _change_refused(
     )
 
 
+def _no_new_card(state: dict[str, Any], update: dict[str, Any]) -> str | None:
+    """Why a card tool makes no card now (section 8), or None when it may."""
+    if state.get("open_cards_unknown"):
+        return OPEN_CARDS_UNKNOWN
+    if state.get("open_card_shown"):
+        return OPEN_CARD_FIRST
+    if "pending_approval" in update or "pending_approval" in state:
+        return ONE_CARD_PER_MESSAGE
+    return None
+
+
 def _card_view(record: ApprovalRecord) -> str:
     """The card being changed, as the model needs it: lines and their shown values."""
     lines = [
@@ -492,10 +505,10 @@ class ReadAgent:
         commerce: PurchaseOptionSearch | None = None,
         purchases: PurchaseCards | None = None,
         photo_cards: PhotoCards | None = None,
+        stock: StockCards | None = None,
     ) -> None:
-        self._model = model.bind_tools(
-            [*TOOL_SCHEMAS, purchases.tool_schema] if purchases is not None else TOOL_SCHEMAS
-        )
+        card_tools = [cards.tool_schema for cards in (purchases, stock) if cards is not None]
+        self._model = model.bind_tools([*TOOL_SCHEMAS, *card_tools])
         self._handlers: dict[str, Callable[[str], Awaitable[list[Any]]]] = {
             "list_inventory": tools.list_inventory,
             "list_shopping": tools.list_shopping,
@@ -510,6 +523,8 @@ class ReadAgent:
         self._purchases = purchases
         # Issue #124: new-item cards from photos; off in the app until they can be written.
         self._photo_cards = photo_cards
+        # Issue #168: new-item cards for what the user says they got (`add_stock`).
+        self._stock = stock
         self._matcher = matcher or ItemMatcher(tools.inventory, tools.shopping)
         self._graph = self._build_graph()
 
@@ -559,6 +574,10 @@ class ReadAgent:
                         update["inventory"] = rows
                 elif call["name"] == PURCHASE_TOOL_SCHEMA["function"]["name"]:
                     content, card = await self._propose_purchase(state, update, call)
+                    if card is not None:
+                        update["pending_approval"] = card
+                elif call["name"] == ADD_STOCK:
+                    content, card = await self._propose_stock(state, update, call)
                     if card is not None:
                         update["pending_approval"] = card
                 elif handler is None:
@@ -734,13 +753,29 @@ class ReadAgent:
         """Make the purchase card. One card per message; it writes nothing else."""
         if self._purchases is None:
             return f"沒有這個工具：{call['name']}", None
-        if state.get("open_cards_unknown"):
-            return OPEN_CARDS_UNKNOWN, None
-        if state.get("open_card_shown"):
-            return OPEN_CARD_FIRST, None
-        if "pending_approval" in update or "pending_approval" in state:
-            return ONE_CARD_PER_MESSAGE, None
+        refused = _no_new_card(state, update)
+        if refused is not None:
+            return refused, None
         return await self._purchases.propose(
+            state["household_id"],
+            call.get("args") or {},
+            replaces_approval_id=state.get("replaces_approval_id"),
+        )
+
+    async def _propose_stock(
+        self, state: _State, update: _State, call: dict[str, Any]
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Make the new-item card for what the user says they got (Issue #168).
+
+        The same rules as the purchase card: one card per message, and no new card while
+        an open card is shown again or the open cards are unknown (section 8).
+        """
+        if self._stock is None:
+            return f"沒有這個工具：{call['name']}", None
+        refused = _no_new_card(state, update)
+        if refused is not None:
+            return refused, None
+        return await self._stock.propose(
             state["household_id"],
             call.get("args") or {},
             replaces_approval_id=state.get("replaces_approval_id"),
@@ -923,6 +958,8 @@ def get_read_agent() -> ReadAgent | None:
         # Issue #124: photo new-item cards, written on confirm by B1's no-Shopping
         # writer through A1's `CardWriteRouter` (`get_approval_service`, PR #171).
         photo_cards=_photo_cards(),
+        # Issue #168: said new-item cards, written the same way as photo cards.
+        stock=_stock_cards(),
     )
 
 
@@ -932,6 +969,15 @@ def _photo_cards() -> PhotoCards | None:
     if approvals is None:
         return None
     return PhotoCards(approvals)
+
+
+def _stock_cards() -> StockCards | None:
+    """The `add_stock` tool needs approval storage and the inventory list: Cosmos only."""
+    approvals = get_approval_service()
+    reader = get_cosmos_read_repository()
+    if approvals is None or reader is None:
+        return None
+    return StockCards(reader, approvals)
 
 
 def _purchase_cards() -> PurchaseCards | None:

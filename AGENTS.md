@@ -76,8 +76,9 @@ six-owner foundation small and independently usable.
 6. Retries of the same logical write reuse the same operation identity. UI retries,
    timeouts, lost responses and Agent resume must never duplicate logical writes.
 7. Backend validation is mandatory; frontend validation is not authorization.
-8. `POST /agent/messages` writes no domain data. Its only card tool,
-   `complete_purchase` (v8 flow C), stores a pending approval card and returns it.
+8. `POST /agent/messages` writes no domain data. Its card tools, `complete_purchase`
+   (v8 flow C) and `add_stock` (a new item not from the Shopping List, Issue #168),
+   store a pending approval card and return it.
    `POST /agent/resume` writes only what that stored card holds, after the checks in
    `contracts/approval-lifecycle.md`. Cards need Cosmos; without it the Agent offers
    no card tool and `/agent/resume` returns 503. Do not interpret generic proposed

@@ -350,6 +350,189 @@
         "complete_purchase"
       ],
       "note": "Asking whether it was bought is a shopping-list question, not a report of a purchase."
+    },
+    {
+      "id": "stock-01",
+      "tool": "add_stock",
+      "kind": "positive",
+      "utterance": "朋友送我一瓶洗髮精，放在浴室",
+      "inventory": [
+        {
+          "item_id": "tissue",
+          "name": "衛生紙",
+          "aliases": [],
+          "quantity": 3,
+          "unit": "包",
+          "location": "浴室櫃子"
+        },
+        {
+          "item_id": "detergent",
+          "name": "洗衣精",
+          "aliases": [],
+          "quantity": 1,
+          "unit": "瓶",
+          "location": "陽台"
+        },
+        {
+          "item_id": "milk",
+          "name": "牛奶",
+          "aliases": [
+            "鮮奶"
+          ],
+          "quantity": 0,
+          "unit": "瓶",
+          "location": "冰箱"
+        }
+      ],
+      "expect_calls": [
+        "add_stock"
+      ],
+      "must_not_call": [
+        "complete_purchase"
+      ],
+      "args_contain": {
+        "items": "洗髮精"
+      },
+      "note": "Issue #168: something new the household does not have and that is not a Shopping List entry. Prompt 家裡多了東西 rules 1 and 4: look at the inventory first, then make the card."
+    },
+    {
+      "id": "stock-02",
+      "tool": "add_stock",
+      "kind": "positive",
+      "utterance": "公司發了兩包米，我放在廚房櫃子",
+      "inventory": [
+        {
+          "item_id": "tissue",
+          "name": "衛生紙",
+          "aliases": [],
+          "quantity": 3,
+          "unit": "包",
+          "location": "浴室櫃子"
+        },
+        {
+          "item_id": "detergent",
+          "name": "洗衣精",
+          "aliases": [],
+          "quantity": 1,
+          "unit": "瓶",
+          "location": "陽台"
+        },
+        {
+          "item_id": "milk",
+          "name": "牛奶",
+          "aliases": [
+            "鮮奶"
+          ],
+          "quantity": 0,
+          "unit": "瓶",
+          "location": "冰箱"
+        }
+      ],
+      "expect_calls": [
+        "add_stock"
+      ],
+      "must_not_call": [
+        "complete_purchase"
+      ],
+      "args_contain": {
+        "items": "米"
+      }
+    },
+    {
+      "id": "stock-03",
+      "tool": "add_stock",
+      "kind": "positive",
+      "utterance": "鄰居送了 6 顆雞蛋",
+      "inventory": [
+        {
+          "item_id": "tissue",
+          "name": "衛生紙",
+          "aliases": [],
+          "quantity": 3,
+          "unit": "包",
+          "location": "浴室櫃子"
+        },
+        {
+          "item_id": "detergent",
+          "name": "洗衣精",
+          "aliases": [],
+          "quantity": 1,
+          "unit": "瓶",
+          "location": "陽台"
+        },
+        {
+          "item_id": "milk",
+          "name": "牛奶",
+          "aliases": [
+            "鮮奶"
+          ],
+          "quantity": 0,
+          "unit": "瓶",
+          "location": "冰箱"
+        }
+      ],
+      "expect_calls": [
+        "add_stock"
+      ],
+      "must_not_call": [
+        "complete_purchase"
+      ],
+      "args_contain": {
+        "items": "雞蛋"
+      },
+      "note": "No location said: the card shows 未填 and the model does not ask (rule 4)."
+    },
+    {
+      "id": "stock-neg-01",
+      "tool": "add_stock",
+      "kind": "negative",
+      "utterance": "牛奶買回來了，1 瓶",
+      "expect_calls": [
+        "list_shopping"
+      ],
+      "must_not_call": [
+        "add_stock"
+      ],
+      "note": "Bought: a purchase looks at the Shopping List first (買回來了 rule 1), not add_stock (家裡多了東西 rule 7)."
+    },
+    {
+      "id": "stock-neg-02",
+      "tool": "add_stock",
+      "kind": "negative",
+      "utterance": "朋友送我一包衛生紙",
+      "inventory": [
+        {
+          "item_id": "tissue",
+          "name": "衛生紙",
+          "aliases": [],
+          "quantity": 3,
+          "unit": "包",
+          "location": "浴室櫃子"
+        },
+        {
+          "item_id": "detergent",
+          "name": "洗衣精",
+          "aliases": [],
+          "quantity": 1,
+          "unit": "瓶",
+          "location": "陽台"
+        },
+        {
+          "item_id": "milk",
+          "name": "牛奶",
+          "aliases": [
+            "鮮奶"
+          ],
+          "quantity": 0,
+          "unit": "瓶",
+          "location": "冰箱"
+        }
+      ],
+      "expect_calls": [],
+      "must_not_call": [
+        "add_stock"
+      ],
+      "note": "The household already has 衛生紙: no card, the model says so (家裡多了東西 rule 2)."
     }
   ]
 }

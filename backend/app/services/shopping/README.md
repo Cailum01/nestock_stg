@@ -30,9 +30,12 @@ B1's `CosmosWriteRepository`.
   unit, location, or other approved value changes.
 
 The C1 planner and builder, including new-target creates, are implemented and
-covered by offline integration tests. Production stored-card support for new
-targets remains an A1 integration dependency (PR #140); this README describes the
-C1 handoff and does not claim the Agent/App journey is enabled end to end.
+covered by offline integration tests. A1's stored-card resolver supports
+Shopping-backed `create_item` lines using B1's operation-derived stable ID; the
+Agent/resume integration has offline coverage for mixed existing/new targets,
+confirmation, retry and cancellation. This is backend test evidence, not live
+Azure model or Android App end-to-end acceptance. Issue #90's item-match/alias
+journey remains outside this completed new-target purchase path.
 
 The production composition now injects A1's `CardInputResolver` into
 `ShoppingWriteBuilder`. It rehydrates only the fixed, server-stored card lines and
@@ -115,6 +118,17 @@ Inventory, creates a purchase Transaction, or reverses earlier effects.
 
 ### Standalone stock additions (#168)
 
+#### Photo-card adapter boundary (#173)
+
+B1's `PhotoItemWriteBuilder` remains the adapter for approved no-Shopping
+photo cards: it owns that card flow's stored-card validation and write routing.
+It calls C1's pure `ShoppingPlanService.plan_adjustment` for the domain
+adjustment rules. C1's `ShoppingWriteBuilder` continues to assemble the writes
+for its own supported approval workflows. These adapters keep their own
+card-specific orchestration and persistence mapping; #173 does not require a
+shared write builder or a refactor of PR #171. This boundary does not enable
+photo-card generation or presentation.
+
 `AdjustmentInput` and `plan_adjustment` cover any confirmed new-item stock
 addition without a Shopping row, including `add_stock` and photo-created items.
 The stored card supplies the exact name, positive actual quantity, unit and
@@ -153,13 +167,24 @@ replacements and optional Inventory creates. Inputs are preserved, validation is
 all-or-nothing, and repeated stored inputs produce identical IDs and values. Pure
 planning cannot prove absence, freshness, authorization or durable idempotency.
 
-A1 resolves ambiguous existing-item matches and any alias approval before handing
-inputs to C1. The caller obtains a new item's stable ID from B1's resolver and
+A1 resolves ambiguous existing-item matches before handing inputs to C1. The
+caller obtains a new item's stable ID from B1's resolver and
 binds it to the stored operation; the C1 planner validates and carries that exact
-ID through the create, Transaction, event, receipt, and outcome. This builder does
-not execute item-match cards or standalone gifts /
-add_stock without a Shopping entry. Those need A1's card lifecycle and B1's event
-scope agreement; no dummy Shopping ID or event field is invented here.
+ID through the create, Transaction, event, receipt, and outcome. C1 does not choose
+or rank match candidates; A1 owns that resolution. Standalone gifts / `add_stock`
+without a Shopping entry need A1's card lifecycle and B1's event scope agreement;
+no dummy Shopping ID or event field is invented here.
+
+For #90/#175, C1's `ShoppingWriteBuilder` can now plan the `same_item` outcome of
+one stored `item_match` card as a normal purchase, provided A1's resolver supplies
+the exact existing Inventory and pending Shopping snapshots, their ETags, the
+displayed quantity/unit, and a stored `transaction_id`. C1 validates those values
+against the card, then uses the normal purchase batch and does not add an alias.
+The `new_item` choice is not a purchase write: A1 closes the match card without a
+domain write, asks for the item's location, then issues a separate new-item card.
+Runtime item-match cards remain unavailable until A1 enables their shape and
+selection lifecycle and updates `CardInputResolver`; this C1 builder change alone
+is not end-to-end support.
 
 ## Time contract (#60)
 
@@ -342,13 +367,15 @@ reset plus read-back is the separate final-Demo evidence for that last step.
 
 ## Current limits and Demo prerequisites
 
-The currently integrated Agent route supports existing Inventory targets linked
-from pending Shopping entries, with an explicit positive whole-number purchase
-quantity independent of the planned quantity and the same unit. The C1 planner and
-builder also support confirmed new Inventory targets and removal, but A1's stored
-card resolver does not yet expose those journeys. Unit conversion, media attachment
-retention, and historical purchase-time entry remain unsupported in the Agent/App
-flow; they do not fall back to unapproved writes.
+The Agent/resume backend flow supports existing Inventory targets linked from
+pending Shopping entries and stored `create_item` lines that create a new Inventory
+target. Both use an explicit positive whole-number purchase quantity independent
+of the planned quantity and require the same unit. C1's builder also supports the
+`same_item` purchase mapping without alias learning, but the Agent cannot issue
+that card until A1 completes the approval and resolver integration in Issues #90
+and #175. C1's builder supports removal, but the Agent has no removal card. Unit
+conversion, media attachment retention, and historical purchase-time entry remain
+unsupported in the Agent/App flow; they do not fall back to unapproved writes.
 
 The route is backend integration, not App E2E: C2 still needs to connect the Android
 approval-card and retry/cancel flows to the Agent API. Production evidence also still
@@ -357,8 +384,10 @@ Transaction/read-side validation. The isolated `c1-test-*` check below is not th
 Demo baseline and must not be presented as Android acceptance.
 
 `ShoppingWriteBuilder` supports removal and new targets when an approved stored-card
-resolver supplies the exact values and B1 stable ID. Optional media retention remains
-disabled in production composition pending A2/B1 integration. Non-Shopping event
+resolver supplies the exact values and B1 stable ID. The backend integration path is
+covered offline; Android card presentation and refresh/reopen acceptance remain C2
+work. Optional media retention remains disabled in production composition pending
+A2/B1 integration. Non-Shopping event
 scope, media detach/cleanup, oversized-card
 splitting and broader live conflict/reconciliation validation remain cross-owner
 work. Until those decisions and C2 flow are complete, do not claim #27 or #90 is

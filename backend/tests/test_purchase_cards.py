@@ -47,6 +47,8 @@ from app.services.cosmos_write import (
     ReplaceDocument,
 )
 from app.services.inventory_item_identity import resolve_inventory_item_id
+from app.services.media_mapping import CosmosMediaMappingStorage
+from app.services.media_retention_work import CosmosMediaRetentionWorkItemStorage
 from app.services.photo_item_writes import PhotoItemWriteBuilder
 from app.services.purchase_inputs import (
     COMPLETE_PURCHASE,
@@ -55,6 +57,8 @@ from app.services.purchase_inputs import (
     PhotoInputResolver,
     UnsupportedAction,
 )
+from app.services.shopping.media import B1MediaRetentionPlanner
+from app.services.shopping.media_handoff import B1MediaRetentionWorkItemAdapter
 from app.services.shopping.preview import ShoppingDecisionRequired
 from app.services.shopping.workflow import ShoppingWriteBuilder
 from app.tools.queries import QueryTools
@@ -472,12 +476,23 @@ def test_reads_writes_and_cards_share_one_cosmos_client(monkeypatch):
     assert inventory._repository is read_repository
     assert shopping._repository is read_repository
     assert approvals._storage is write_repository
-    # Purchase cards keep the Issue #60 builder; no-Shopping cards use B1's writer.
+    # Purchase cards use C1's builder with B1's media persistence adapters.
     assert isinstance(approvals._writes, CardWriteRouter)
     assert isinstance(approvals._writes._purchases, ShoppingWriteBuilder)
-    assert approvals._writes._purchases._reader is document_reader
-    assert isinstance(approvals._writes._purchases._resolver, CardInputResolver)
-    assert approvals._writes._purchases._resolver._reader is read_repository
+    purchase_builder = approvals._writes._purchases
+    assert purchase_builder._reader is document_reader
+    assert isinstance(purchase_builder._resolver, CardInputResolver)
+    assert purchase_builder._resolver._reader is read_repository
+    assert isinstance(purchase_builder._media_retention, B1MediaRetentionPlanner)
+    mapping_storage = purchase_builder._media_retention._storage
+    assert isinstance(mapping_storage, CosmosMediaMappingStorage)
+    assert mapping_storage._read_repository is read_repository
+    assert mapping_storage._write_client is writes.transactional_batch_client
+    assert isinstance(purchase_builder._media_work_items, B1MediaRetentionWorkItemAdapter)
+    work_item_storage = purchase_builder._media_work_items._storage
+    assert isinstance(work_item_storage, CosmosMediaRetentionWorkItemStorage)
+    assert work_item_storage._write_client is writes.transactional_batch_client
+    assert work_item_storage._query_client is document_reader
     assert isinstance(approvals._writes._photo_items, PhotoItemWriteBuilder)
     assert isinstance(approvals._writes._photo_items._resolver, PhotoInputResolver)
 

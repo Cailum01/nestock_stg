@@ -21,6 +21,7 @@ from app.services.cosmos_write import CosmosWriteRepository, TransactionalBatchC
 from app.services.demo import DemoInventoryService, DemoShoppingService
 from app.services.interfaces import InventoryService, ShoppingService
 from app.services.media_mapping import CosmosMediaMappingStorage, MediaMappingPort
+from app.services.media_retention_work import CosmosMediaRetentionWorkItemStorage
 from app.services.provisional_storage.azure_blob_adapter import AzureBlobMediaStorage
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
@@ -365,10 +366,28 @@ def _create_approval_service(
     from app.services.card_writes import CardWriteRouter
     from app.services.photo_item_writes import PhotoItemWriteBuilder
     from app.services.purchase_inputs import CardInputResolver, PhotoInputResolver
+    from app.services.shopping.media import B1MediaRetentionPlanner
+    from app.services.shopping.media_handoff import B1MediaRetentionWorkItemAdapter
     from app.services.shopping.workflow import ShoppingWriteBuilder
 
+    write_client = write_repository.transactional_batch_client
+    media_mapping = CosmosMediaMappingStorage(
+        read_repository=read_repository,
+        write_client=write_client,
+    )
+    media_work_items = B1MediaRetentionWorkItemAdapter(
+        CosmosMediaRetentionWorkItemStorage(
+            write_client=write_client,
+            query_client=document_reader,
+        )
+    )
     builder = CardWriteRouter(
-        purchases=ShoppingWriteBuilder(document_reader, CardInputResolver(read_repository)),
+        purchases=ShoppingWriteBuilder(
+            document_reader,
+            CardInputResolver(read_repository),
+            media_retention=B1MediaRetentionPlanner(media_mapping),
+            media_work_items=media_work_items,
+        ),
         photo_items=PhotoItemWriteBuilder(PhotoInputResolver()),
         household_items=read_repository,
     )

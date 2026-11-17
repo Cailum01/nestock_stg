@@ -188,6 +188,11 @@ class CosmosWriteRepository:
         self._client = client
         self._query_client = query_client
 
+    @property
+    def transactional_batch_client(self) -> TransactionalBatchClient:
+        """Expose the shared batch port to companion persistence adapters."""
+        return self._client
+
     async def create_pending_approval(
         self,
         *,

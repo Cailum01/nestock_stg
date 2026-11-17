@@ -476,7 +476,7 @@ def test_reads_writes_and_cards_share_one_cosmos_client(monkeypatch):
     assert inventory._repository is read_repository
     assert shopping._repository is read_repository
     assert approvals._storage is write_repository
-    # Purchase cards use C1's builder with B1's media persistence adapters.
+    # Purchase and photo cards share B1's media mapping storage.
     assert isinstance(approvals._writes, CardWriteRouter)
     assert isinstance(approvals._writes._purchases, ShoppingWriteBuilder)
     purchase_builder = approvals._writes._purchases
@@ -493,8 +493,10 @@ def test_reads_writes_and_cards_share_one_cosmos_client(monkeypatch):
     assert isinstance(work_item_storage, CosmosMediaRetentionWorkItemStorage)
     assert work_item_storage._write_client is writes.transactional_batch_client
     assert work_item_storage._query_client is document_reader
-    assert isinstance(approvals._writes._photo_items, PhotoItemWriteBuilder)
-    assert isinstance(approvals._writes._photo_items._resolver, PhotoInputResolver)
+    photo_builder = approvals._writes._photo_items
+    assert isinstance(photo_builder, PhotoItemWriteBuilder)
+    assert isinstance(photo_builder._resolver, PhotoInputResolver)
+    assert photo_builder._media_mapping_storage is mapping_storage
 
 
 def resume_app(approvals):

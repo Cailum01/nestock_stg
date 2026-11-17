@@ -388,7 +388,10 @@ def _create_approval_service(
             media_retention=B1MediaRetentionPlanner(media_mapping),
             media_work_items=media_work_items,
         ),
-        photo_items=PhotoItemWriteBuilder(PhotoInputResolver()),
+        photo_items=PhotoItemWriteBuilder(
+            PhotoInputResolver(),
+            media_mapping_storage=media_mapping,
+        ),
         household_items=read_repository,
     )
     return ApprovalService(write_repository, builder)

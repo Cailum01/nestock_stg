@@ -265,6 +265,19 @@ def test_confirm_attaches_photo_and_removes_mapping_ttl_in_same_batch():
     inventory = container.of_type("inventory_item")
     assert len(inventory) == 1
     assert inventory[0]["image_ref"] == image_ref
+    work_items = container.of_type("media_retention_work_item")
+    assert len(work_items) == 1
+    work_item = work_items[0]
+    assert work_item["household_id"] == HOME
+    assert work_item["operation_id"] == card.operation_ids[0]
+    assert work_item["approval_id"] == result.record.approval_id
+    assert work_item["image_ref"] == image_ref
+    assert work_item["status"] == "pending"
+    assert work_item["attempt_count"] == 0
+    expected_time = T0.isoformat(timespec="microseconds").replace("+00:00", "Z")
+    assert work_item["created_at"] == expected_time
+    assert work_item["updated_at"] == expected_time
+    assert work_item["next_attempt_at"] == expected_time
     domain_batch = next(
         batch
         for batch in container.batches
@@ -277,7 +290,19 @@ def test_confirm_attaches_photo_and_removes_mapping_ttl_in_same_batch():
     )
     assert mapping_update.if_match_etag == snapshot.etag
     assert "ttl" not in mapping_update.document
-    assert len(domain_batch) == 6
+    assert len(domain_batch) == 7
+    assert {
+        operation.document["record_type"]
+        for operation in domain_batch
+        if operation.document.get("record_type") != "user_input"
+    } == {
+        "inventory_item",
+        "transaction",
+        "change_event",
+        "media_retention_work_item",
+        "operation_receipt",
+        "pending_approval",
+    }
     retained = run(mapping_storage.find_by_image_ref(household_id=HOME, image_ref=image_ref))
     assert retained is not None
     assert retained.record.ttl_seconds is None
@@ -286,6 +311,7 @@ def test_confirm_attaches_photo_and_removes_mapping_ttl_in_same_batch():
     retry = confirm(service, card)
     assert retry.outcome is ResumeOutcome.ALREADY_COMPLETED
     assert len(container.batches) == batch_count
+    assert len(container.of_type("media_retention_work_item")) == 1
 
 
 @pytest.mark.parametrize("mapping_change", ["etag", "missing"])

@@ -3,9 +3,18 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from test_shopping_workflow import run
 
+from app.services.media_retention_work import (
+    MediaRetentionWorkItem as B1WorkRecord,
+)
+from app.services.media_retention_work import (
+    MediaRetentionWorkItemSnapshot,
+    MediaRetentionWorkStatus,
+)
 from app.services.shopping.media_handoff import (
+    B1MediaRetentionWorkItemAdapter,
     MediaRetentionRetryWorker,
     MediaRetentionWorkItem,
+    NewMediaRetentionWorkItem,
     media_retention_work_item_id,
 )
 
@@ -54,6 +63,90 @@ class FakeMedia:
 class HttpFailure(Exception):
     def __init__(self, status_code):
         self.status_code = status_code
+
+
+class FakeB1WorkStorage:
+    """Implements the merged #191 port shape, including ETag snapshots."""
+
+    def __init__(self, snapshots=()):
+        self.snapshots = list(snapshots)
+        self.queries = []
+        self.transitions = []
+
+    async def list_due(self, *, household_id, now, limit):
+        self.queries.append((household_id, now, limit))
+        return self.snapshots
+
+    async def transition(self, snapshot, **changes):
+        self.transitions.append((snapshot, changes))
+        return snapshot
+
+
+def b1_snapshot():
+    return MediaRetentionWorkItemSnapshot(
+        record=B1WorkRecord(
+            household_id=HOUSEHOLD,
+            operation_id="purchase-op-1",
+            approval_id="approval-1",
+            image_ref="opaque-image-ref",
+            status=MediaRetentionWorkStatus.PENDING,
+            attempt_count=0,
+            next_attempt_at=NOW,
+            last_error_code=None,
+            created_at=NOW,
+            updated_at=NOW,
+        ),
+        etag="etag-b1-1",
+    )
+
+
+def test_b1_adapter_builds_initial_item_with_canonical_port_and_identity():
+    storage = FakeB1WorkStorage()
+    adapter = B1MediaRetentionWorkItemAdapter(storage)
+    draft = NewMediaRetentionWorkItem(
+        id=media_retention_work_item_id("purchase-op-1"),
+        household_id=HOUSEHOLD,
+        operation_id="purchase-op-1",
+        approval_id="approval-1",
+        image_ref="opaque-image-ref",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+
+    operation = adapter.create_pending(draft)
+
+    assert operation.document["id"] == draft.id
+    assert operation.document["record_type"] == "media_retention_work_item"
+    assert operation.document["household_id"] == HOUSEHOLD
+    assert operation.document["operation_id"] == "purchase-op-1"
+    assert operation.document["approval_id"] == "approval-1"
+    assert operation.document["image_ref"] == "opaque-image-ref"
+    assert operation.document["status"] == "pending"
+    assert operation.document["next_attempt_at"] == "2026-11-17T12:00:00.000000Z"
+
+
+def test_b1_adapter_uses_formal_due_query_and_etag_snapshot_transition():
+    snapshot = b1_snapshot()
+    storage = FakeB1WorkStorage([snapshot])
+    adapter = B1MediaRetentionWorkItemAdapter(storage, query_limit=8)
+    media = FakeMedia()
+
+    result = run(
+        MediaRetentionRetryWorker(adapter, media).process_pending(household_id=HOUSEHOLD, now=NOW)
+    )
+
+    assert storage.queries == [(HOUSEHOLD, NOW, 8)]
+    assert media.calls == [(HOUSEHOLD, "opaque-image-ref")]
+    sent_snapshot, changes = storage.transitions[0]
+    assert sent_snapshot is snapshot
+    assert changes == {
+        "status": MediaRetentionWorkStatus.COMPLETED,
+        "attempt_count": 0,
+        "next_attempt_at": None,
+        "last_error_code": None,
+        "updated_at": NOW,
+    }
+    assert result.completed == 1
 
 
 def item(*, attempt_count=0, next_attempt_at=None, household_id=HOUSEHOLD):

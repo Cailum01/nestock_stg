@@ -7,6 +7,7 @@ every quantity, unit, target, timestamp and stable ID to the server-stored card.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC
 from typing import Protocol
 
 from app.models.agent import ApprovalPresentation
@@ -297,11 +298,17 @@ class ShoppingWriteBuilder:
                     "operation_id": attachment.operation_id,
                     "approval_id": record.approval_id,
                     "image_ref": attachment.image_ref,
-                    "created_at": record.decided_at.isoformat(),
-                    "updated_at": record.decided_at.isoformat(),
+                    "created_at": record.decided_at.astimezone(UTC)
+                    .isoformat(timespec="microseconds")
+                    .replace("+00:00", "Z"),
+                    "updated_at": record.decided_at.astimezone(UTC)
+                    .isoformat(timespec="microseconds")
+                    .replace("+00:00", "Z"),
                     "status": "pending",
                     "attempt_count": 0,
-                    "next_attempt_at": None,
+                    "next_attempt_at": record.decided_at.astimezone(UTC)
+                    .isoformat(timespec="microseconds")
+                    .replace("+00:00", "Z"),
                     "last_error_code": None,
                 }
                 if not isinstance(work_item, CreateDocument) or any(

@@ -1,7 +1,7 @@
 """C1 attachment retention joins the existing approval/domain batch; synthetic data only."""
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, timedelta
 from importlib import import_module
 from importlib.util import find_spec
 
@@ -46,11 +46,17 @@ class SyntheticWorkItemWriter:
                 "operation_id": draft.operation_id,
                 "approval_id": draft.approval_id,
                 "image_ref": draft.image_ref,
-                "created_at": draft.created_at.isoformat(),
-                "updated_at": draft.updated_at.isoformat(),
+                "created_at": draft.created_at.astimezone(UTC)
+                .isoformat(timespec="microseconds")
+                .replace("+00:00", "Z"),
+                "updated_at": draft.updated_at.astimezone(UTC)
+                .isoformat(timespec="microseconds")
+                .replace("+00:00", "Z"),
                 "status": "pending",
                 "attempt_count": 0,
-                "next_attempt_at": None,
+                "next_attempt_at": draft.created_at.astimezone(UTC)
+                .isoformat(timespec="microseconds")
+                .replace("+00:00", "Z"),
                 "last_error_code": None,
             }
         )
@@ -126,7 +132,14 @@ def test_attachment_and_retention_are_in_one_batch_with_purchase_and_retry(kind)
     assert work_item["operation_id"] == bindings[0].operation_id
     assert work_item["approval_id"] == result.record.approval_id
     assert work_item["image_ref"] == "opaque-test-media"
-    assert work_item["created_at"] == result.record.decided_at.isoformat()
+    expected_time = (
+        result.record.decided_at.astimezone(UTC)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+    assert work_item["created_at"] == expected_time
+    assert work_item["updated_at"] == expected_time
+    assert work_item["next_attempt_at"] == expected_time
     assert h.container.get("input:synthetic") == mapping
     assert sum(op.document["id"] == "input:synthetic" for op in h.container.batches[-1]) == 1
 

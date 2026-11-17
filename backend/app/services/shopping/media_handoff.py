@@ -16,6 +16,12 @@ from hashlib import sha256
 from typing import Protocol
 
 from app.services.cosmos_write import CreateDocument
+from app.services.media_retention_work import (
+    MediaRetentionWorkItemSnapshot,
+    MediaRetentionWorkItemStorage,
+    MediaRetentionWorkStatus,
+    build_pending_media_retention_work_item,
+)
 
 
 @dataclass(frozen=True)
@@ -32,7 +38,7 @@ class NewMediaRetentionWorkItem:
 
 
 class MediaRetentionWorkItemWriter(Protocol):
-    """B1 port that maps C1's fixed draft to a same-partition CreateDocument."""
+    """Narrow C1 purchase-batch port implemented by the B1 helper adapter."""
 
     def create_pending(self, draft: NewMediaRetentionWorkItem) -> CreateDocument: ...
 
@@ -49,6 +55,7 @@ class MediaRetentionWorkItem:
     etag: str
     attempt_count: int = 0
     next_attempt_at: datetime | None = None
+    snapshot: MediaRetentionWorkItemSnapshot | None = None
 
     def __post_init__(self) -> None:
         identity = (
@@ -95,6 +102,100 @@ class MediaRetentionWorkItemStore(Protocol):
     async def mark_needs_attention(
         self, item: MediaRetentionWorkItem, *, error_code: str, updated_at: datetime
     ) -> None: ...
+
+
+class B1MediaRetentionWorkItemAdapter:
+    """Map C1's purchase/worker needs onto B1's merged #191 storage port."""
+
+    def __init__(self, storage: MediaRetentionWorkItemStorage, *, query_limit: int = 100):
+        if (
+            isinstance(query_limit, bool)
+            or not isinstance(query_limit, int)
+            or not 1 <= query_limit <= 100
+        ):
+            raise ValueError("query_limit must be between 1 and 100.")
+        self._storage = storage
+        self._query_limit = query_limit
+
+    def create_pending(self, draft: NewMediaRetentionWorkItem) -> CreateDocument:
+        """Build the durable pending record with B1's canonical schema and ID."""
+        if draft.created_at != draft.updated_at:
+            raise ValueError("Initial work-item timestamps must match the approval time.")
+        return build_pending_media_retention_work_item(
+            household_id=draft.household_id,
+            operation_id=draft.operation_id,
+            approval_id=draft.approval_id,
+            image_ref=draft.image_ref,
+            created_at=draft.created_at,
+        )
+
+    async def list_due_pending(
+        self, *, household_id: str, due_at: datetime
+    ) -> Sequence[MediaRetentionWorkItem]:
+        snapshots = await self._storage.list_due(
+            household_id=household_id, now=due_at, limit=self._query_limit
+        )
+        return tuple(self._project(snapshot) for snapshot in snapshots)
+
+    async def mark_completed(self, item: MediaRetentionWorkItem, *, updated_at: datetime) -> None:
+        await self._transition(
+            item,
+            status=MediaRetentionWorkStatus.COMPLETED,
+            attempt_count=item.attempt_count,
+            next_attempt_at=None,
+            last_error_code=None,
+            updated_at=updated_at,
+        )
+
+    async def schedule_retry(
+        self,
+        item: MediaRetentionWorkItem,
+        *,
+        attempt_count: int,
+        next_attempt_at: datetime,
+        error_code: str,
+        updated_at: datetime,
+    ) -> None:
+        await self._transition(
+            item,
+            status=MediaRetentionWorkStatus.PENDING,
+            attempt_count=attempt_count,
+            next_attempt_at=next_attempt_at,
+            last_error_code=error_code,
+            updated_at=updated_at,
+        )
+
+    async def mark_needs_attention(
+        self, item: MediaRetentionWorkItem, *, error_code: str, updated_at: datetime
+    ) -> None:
+        await self._transition(
+            item,
+            status=MediaRetentionWorkStatus.NEEDS_ATTENTION,
+            attempt_count=item.attempt_count,
+            next_attempt_at=None,
+            last_error_code=error_code,
+            updated_at=updated_at,
+        )
+
+    @staticmethod
+    def _project(snapshot: MediaRetentionWorkItemSnapshot) -> MediaRetentionWorkItem:
+        record = snapshot.record
+        return MediaRetentionWorkItem(
+            id=record.document_id,
+            household_id=record.household_id,
+            operation_id=record.operation_id,
+            approval_id=record.approval_id,
+            image_ref=record.image_ref,
+            etag=snapshot.etag,
+            attempt_count=record.attempt_count,
+            next_attempt_at=record.next_attempt_at,
+            snapshot=snapshot,
+        )
+
+    async def _transition(self, item: MediaRetentionWorkItem, **changes) -> None:
+        if item.snapshot is None:
+            raise ValueError("A B1 ETag snapshot is required for a work-item transition.")
+        await self._storage.transition(item.snapshot, **changes)
 
 
 class MediaRetentionPort(Protocol):

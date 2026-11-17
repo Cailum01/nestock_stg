@@ -430,26 +430,33 @@ composition are separate owner work; a mapping update does not prove Blob cleanu
 
 ## Post-commit media handoff (#98, C1 orchestration draft)
 
-When a purchase has an attachment, `ShoppingWriteBuilder` now requires a B1
-`MediaRetentionWorkItemWriter`. It adds one deterministic pending work item to the
-purchase operation's writes, in the same household batch as the purchase, Inventory
-attachment, mapping retention update, receipt and completed approval. The stable
-record ID is `media_retention:` plus the SHA-256 of the stable `operation_id`; its
-creation/update times come from the stored approval's `decided_at`, so an uncertain-
-result retry produces identical documents. The record stores `approval_id` and
-`image_ref`, but not `input_id` or mapping ETag. The writer is a narrow B1 port, not a
-Cosmos document adapter.
+When a purchase has an attachment, `ShoppingWriteBuilder` requires a
+`MediaRetentionWorkItemWriter`. `B1MediaRetentionWorkItemAdapter` now maps that
+batch seam to the merged #191 `build_pending_media_retention_work_item(...)` helper,
+so one deterministic pending record joins the purchase operation's same-household
+batch with the Inventory attachment, mapping retention update, receipt and completed
+approval. Its stable record ID is `media_retention:` plus the SHA-256 of the stable
+`operation_id`; timestamps come from the stored approval's `decided_at`. B1's
+canonical pending record starts with `next_attempt_at=decided_at`. It stores
+`approval_id` and `image_ref`, but not `input_id` or mapping ETag.
 
-`MediaRetentionRetryWorker` processes only pending work items. It invokes A2's
-idempotent `retain_media`; success marks the item complete. Transient HTTP 429/500/503
-and connection/timeouts are retried after jittered 1/2/4-second delays. Missing or
-purged media, other errors, and exhausted retries become durable `needs_attention`
-items without changing the already-completed purchase. B1's port supplies due-pending
-household queries and ETag-guarded state updates; records include `attempt_count`,
-`next_attempt_at`, `last_error_code`, and `updated_at`. It never routes retries back
-through `ApprovalService` or replays domain writes. A2 confirmed the idempotent success
-and error categories in #98. B1's port implementation and production composition are
-still pending, so this worker is not yet active in the application.
+`B1MediaRetentionWorkItemAdapter` also maps the worker onto #191's
+household-scoped `list_due(..., now, limit)` and snapshot/ETag `transition(...)` port.
+`MediaRetentionRetryWorker` processes only due pending items. It invokes A2's
+idempotent `retain_media`; success marks the item complete. The current prototype
+classifies transient HTTP 429/500/503 and connection/timeouts with jittered 1/2/4-
+second delays. In PR #193 review, C1 asked to consume A2's more specific
+`suggested_backoff_seconds` (including 502/504) when that classifier is integrated;
+that policy update is still outstanding. Missing or purged media, other errors,
+and exhausted retries become durable `needs_attention` items without changing the
+already-completed purchase. Retries never route back through `ApprovalService` or
+replay domain writes.
+
+The adapter and worker have offline coverage against the formal #191 port shape.
+They are not yet wired into production composition: A1's `CardInputResolver` does
+not provide `media_attachments`, and an A2 `retain_media` implementation plus worker
+scheduling/composition is not enabled here. Do not treat this as purchase attachment
+or Blob lifecycle end-to-end acceptance.
 
 ## Isolated live acceptance
 

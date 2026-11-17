@@ -30,6 +30,17 @@ App does not show it on the card yet, and a card may only hold values the user s
 Buying more than listed makes a card with what was bought; the listed quantity is not
 a limit (Issue #178).
 
+A photo sent with the message is kept with the record it adds to (Issue #176):
+photo new-item lines, and a purchase card with exactly one line, hold the photo's
+`image_ref`, `input_id` and the ETag of its completed mapping (`CardPhoto`), fixed when
+the card is made; a purchase line also carries the mapping as a target. Confirming
+hands exactly these on (B1's photo writer, C1's purchase batch); they are never looked
+up again. The App does not show the photo on the card yet (C2, Issue #176), so the
+model is told to say the photo will be kept (`PHOTO_KEPT`). No photo is kept, and the
+model is told why, when the mapping is not completed, the item already has a photo
+(it is never replaced), the purchase card has several lines, or the card is an
+item-match card. Said new-item cards (`add_stock`) keep no photo.
+
 Not covered yet: items that are not on the list, a different unit, spreading more
 items than one batch holds over several cards, changing a card (Issue #91), and
 reminding the user of open cards.
@@ -72,7 +83,16 @@ from app.services.approvals import (
 )
 from app.services.cosmos_read import MappedDocument
 from app.services.item_matching import match_term, normalize_term
-from app.services.purchase_inputs import COMPLETE_PURCHASE, CREATE_ITEM, PurchaseRecordReader
+from app.services.purchase_inputs import (
+    COMPLETE_PURCHASE,
+    CREATE_ITEM,
+    IMAGE_REF,
+    INPUT_ID,
+    MAPPING_ETAG,
+    PurchaseRecordReader,
+    photo_target,
+    stored_photo,
+)
 from app.services.purchase_time import (
     TAIPEI,
     FuturePurchaseDate,
@@ -219,11 +239,79 @@ OPEN_CARDS_UNKNOWN = json.dumps({"error": "open_cards_unknown"})
 Unknown is not "none": a card could still be open, and a new one would be a second
 card for the same purchase (PR #160 C2 review). The user says it again later.
 """
+
+# Issue #176: told to the model with a card when the message had a photo (`photo`).
+PHOTO_KEPT = (
+    "使用者按確認後，這張照片會跟著這筆紀錄存下來（之後可以拿來比對，App 的庫存畫面不顯示）。"
+    "請在回覆裡告訴使用者：確認後會把這張照片存下來。"
+)
+PHOTO_NOT_READY = "這張照片現在讀不到處理結果，這張卡不會存照片。請告訴使用者這次的照片不會存下來。"
+PHOTO_ITEM_HAS_ONE = "「{name}」已經有照片，不會換掉，這次的照片不會存。請告訴使用者。"
+PHOTO_ONE_LINE_ONLY = (
+    "照片只跟著只有一項的購買卡存；這張卡有好幾項，這次的照片不會存。請告訴使用者。"
+)
+PHOTO_NOT_ON_MATCH = "比對卡不存照片，這次的照片不會存。請告訴使用者。"
+
 CARD_FAILED = json.dumps({"error": "card_not_made"})
 TOO_MANY_ITEMS = json.dumps({"error": "too_many_items"})
 RECORDS_CHANGED = json.dumps({"error": "records_changed"})
 STILL_OPEN = "open"
 """`PurchaseCards.retire`: the old card is still pending, or could not be read."""
+
+
+@dataclass(frozen=True)
+class CardPhoto:
+    """The photo sent with the message, for a card to keep (Issue #176).
+
+    `input_id` and `mapping_etag` come from the photo's mapping when it is completed;
+    without them the photo cannot be kept (`ready` is False). Fixed on the card when it
+    is made, so confirming keeps exactly the photo the card was made with.
+    """
+
+    image_ref: str
+    input_id: str | None = None
+    mapping_etag: str | None = None
+
+    @property
+    def ready(self) -> bool:
+        return bool(self.input_id) and bool(self.mapping_etag)
+
+    def values(self) -> dict[str, str]:
+        """The line values for this photo; empty when it cannot be kept."""
+        if not self.ready:
+            return {}
+        return {
+            IMAGE_REF: self.image_ref,
+            INPUT_ID: str(self.input_id),
+            MAPPING_ETAG: str(self.mapping_etag),
+        }
+
+    @classmethod
+    def on_line(cls, op: Any) -> CardPhoto | None:
+        """The photo a stored line holds, or None (so 送出修改 keeps it)."""
+        photo = stored_photo(op.values)
+        if photo is None:
+            return None
+        image_ref, input_id, mapping_etag = photo
+        return cls(image_ref=image_ref, input_id=input_id, mapping_etag=mapping_etag)
+
+
+def with_photo(line: NewOperation, photo: CardPhoto) -> NewOperation:
+    """A purchase line that also keeps `photo`: its values and its mapping as a target.
+
+    C1 checks the target against the mapping's ETag when the card is confirmed.
+    """
+    return NewOperation(
+        action=line.action,
+        description=line.description,
+        values={**line.values, **photo.values()},
+        targets=[
+            *line.targets,
+            TargetVersion(
+                record_id=photo_target(str(photo.input_id)), etag=str(photo.mapping_etag)
+            ),
+        ],
+    )
 
 
 def purchase_operation(
@@ -388,6 +476,7 @@ def photo_item_operation(
     unit: str,
     location: str | None = None,
     transaction_id: str | None = None,
+    photo: CardPhoto | None = None,
 ) -> NewOperation:
     """One card line from a photo: "add this as a new inventory item" (Issue #124).
 
@@ -395,7 +484,8 @@ def photo_item_operation(
     A photo gives no location, so `location` is None and the App shows 未填 until the
     user fills one in on the card (Issue #188); confirming accepts no location. There
     is no Shopping List entry, so no `shopping_item_id` and no target versions;
-    `transaction_id` is for the write that confirms it.
+    `transaction_id` is for the write that confirms it. A ready `photo` adds its three
+    values (Issue #176); B1's writer checks them against the mapping when confirmed.
     """
     place = f"，放在{location}" if location else ""
     return NewOperation(
@@ -407,6 +497,7 @@ def photo_item_operation(
             "unit": unit,
             "location": location,
             "transaction_id": transaction_id or uuid.uuid4().hex,
+            **(photo.values() if photo is not None else {}),
         },
     )
 
@@ -475,14 +566,21 @@ def _with_new_item_change(line: _NewItemLine, change: CardChange | None) -> _New
 
 
 def _new_item_again(op: Any, line: _NewItemLine) -> NewOperation:
-    """A photo or said new-item line again with `line`'s values, keeping its unit and
-    where it came from (the description's source label)."""
-    make = said_item_operation if op.description.endswith(SAID) else photo_item_operation
-    return make(
+    """A photo or said new-item line again with `line`'s values, keeping its unit,
+    where it came from (the description's source label) and its photo (Issue #176)."""
+    if op.description.endswith(SAID):
+        return said_item_operation(
+            name=line.name,
+            quantity=line.quantity,
+            unit=str(op.values.get("unit")),
+            location=line.location,
+        )
+    return photo_item_operation(
         name=line.name,
         quantity=line.quantity,
         unit=str(op.values.get("unit")),
         location=line.location,
+        photo=CardPhoto.on_line(op),
     )
 
 
@@ -506,16 +604,24 @@ class PhotoCards:
     def __init__(self, approvals: ApprovalService) -> None:
         self._approvals = approvals
 
-    async def propose(self, household_id: str, items: Sequence[PhotoItem]) -> dict[str, Any] | None:
+    async def propose(
+        self,
+        household_id: str,
+        items: Sequence[PhotoItem],
+        photo: CardPhoto | None = None,
+    ) -> dict[str, Any] | None:
         """Store one pending card for the items and return it for the App, or None.
 
         One item is a `single_action` card, several a `batch_action` card. Nothing but
-        the pending card is written; a card that cannot be stored is not shown.
+        the pending card is written; a card that cannot be stored is not shown. With a
+        ready `photo`, every line keeps it (Issue #176): the items share the one photo.
         """
         if not items:
             return None
         lines = [
-            photo_item_operation(name=item.name, quantity=item.quantity, unit=item.unit)
+            photo_item_operation(
+                name=item.name, quantity=item.quantity, unit=item.unit, photo=photo
+            )
             for item in items
         ]
         presentation = (
@@ -761,12 +867,18 @@ class PurchaseCards:
         return reason
 
     async def propose(
-        self, household_id: str, args: dict[str, Any], *, replaces_approval_id: str | None = None
+        self,
+        household_id: str,
+        args: dict[str, Any],
+        *,
+        replaces_approval_id: str | None = None,
+        photo: CardPhoto | None = None,
     ) -> tuple[str, dict[str, Any] | None]:
         """(result for the model, card for the App). Writes nothing but the pending card.
 
         `replaces_approval_id` is the card a 送出修改 replaces; the new card records it
-        (section 7).
+        (section 7). `photo` is the photo sent with the message: a card with exactly one
+        line keeps it (Issue #176), and the model is told whether it is kept (`photo`).
         """
         requested = _requested_items(args.get("items"), dated=self._dated)
         if not requested:
@@ -776,19 +888,53 @@ class PurchaseCards:
             # Issue #175: an item-match card holds one item; any others are said again.
             first, *later = matches
             left_out.extend(_said_later(match) for match in later)
-            return await self._propose_match(household_id, first, left_out, replaces_approval_id)
+            note = None if photo is None else PHOTO_NOT_ON_MATCH
+            return await self._propose_match(
+                household_id, first, left_out, replaces_approval_id, note
+            )
         left_out.extend(_said_later(match) for match in matches)
         if not lines:
             return json.dumps({"card": None, "not_on_card": left_out}, ensure_ascii=False), None
+        photo_note = None
+        if photo is not None:
+            lines, photo_note = await self._with_photo(household_id, lines, photo)
         record, error = await self._store(household_id, lines, replaces_approval_id)
         if record is None:
             return error, None
         card = ApprovalService.to_pending_approval(record)
-        view = {
+        view: dict[str, Any] = {
             "card": {"lines": [line.description for line in lines]},
             "not_on_card": left_out,
         }
+        if photo_note is not None:
+            view["photo"] = photo_note
         return json.dumps(view, ensure_ascii=False), card.model_dump(mode="json")
+
+    async def _with_photo(
+        self, household_id: str, lines: list[NewOperation], photo: CardPhoto
+    ) -> tuple[list[NewOperation], str | None]:
+        """(the lines, with the photo on the one line when it can be kept; the model's note).
+
+        Issue #176: only a card with exactly one line keeps the photo, and never over an
+        inventory item's own photo. The item is read again for its photo; if it changed
+        since the line was made, the line is left as it is and storing the card reports
+        the change (`RECORDS_CHANGED`).
+        """
+        if not photo.ready:
+            return lines, PHOTO_NOT_READY
+        if len(lines) != 1:
+            return lines, PHOTO_ONE_LINE_ONLY
+        line = lines[0]
+        if line.action == COMPLETE_PURCHASE:
+            inventory = await self._reader.read_inventory_item_with_etag(
+                household_id=household_id, item_id=str(line.values["item_id"])
+            )
+            shown = {target.record_id: target.etag for target in line.targets}
+            if inventory is None or shown.get(inventory.document_id) != inventory.etag:
+                return lines, None
+            if inventory.record.image_ref is not None:
+                return lines, PHOTO_ITEM_HAS_ONE.format(name=inventory.record.name)
+        return [with_photo(line, photo)], PHOTO_KEPT
 
     async def _propose_match(
         self,
@@ -796,6 +942,7 @@ class PurchaseCards:
         line: NewOperation,
         left_out: list[dict[str, Any]],
         replaces_approval_id: str | None,
+        photo_note: str | None = None,
     ) -> tuple[str, dict[str, Any] | None]:
         """Store the item-match card for one unsure item (contract section 10)."""
         candidate = str(line.values["candidate_name"])
@@ -810,6 +957,8 @@ class PurchaseCards:
             "not_on_card": left_out,
             "note": ITEM_MATCH_MADE.format(term=line.values["user_term"], candidate=candidate),
         }
+        if photo_note is not None:
+            view["photo"] = photo_note
         return json.dumps(view, ensure_ascii=False), card.model_dump(mode="json")
 
     async def change_card(
@@ -822,6 +971,9 @@ class PurchaseCards:
         `CardChangeRefused` and stores nothing when a change does not fit the card or
         any line can no longer be recorded: the new card never silently drops a line.
         The caller retires `old` once the new card is stored (`retire`).
+
+        A photo on `old` stays on the new card (Issue #176), with the values it had,
+        unless the item has a photo of its own by now; there is no model reply to say so.
         """
         by_id = {op.operation_id: op for op in old.operations}
         today = taipei_today(self._clock())
@@ -881,6 +1033,9 @@ class PurchaseCards:
         if left_out:
             by_entry = {str(op.values.get("shopping_item_id")): op for op in old.operations}
             _refuse_lines([(by_entry[row["shopping_item_id"]], row["reason"]) for row in left_out])
+        kept = [photo for op in old.operations if (photo := CardPhoto.on_line(op)) is not None]
+        if kept:
+            lines, _ = await self._with_photo(old.household_id, lines, kept[0])
         record, error = await self._store(old.household_id, lines, old.approval_id)
         if record is None:
             if error == CARD_FAILED:

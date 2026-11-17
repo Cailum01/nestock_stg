@@ -31,6 +31,7 @@ from app.agent.cards import (
     CHANGE_NOT_THIS_CARD,
     CHANGE_NOT_THIS_LINE,
     PHOTO_CARD_MADE,
+    PHOTO_NOT_READY,
     PhotoCards,
     PhotoItem,
     PurchaseCards,
@@ -106,9 +107,12 @@ def test_a_new_photo_item_gets_a_pending_create_item_card():
         (card.approval_id, "pending")
     ]
     assert [result.kind for result in response.results] == [ResultKind.VISION]
+    # This local storage has no mapping to read, so the card keeps no photo (Issue #176).
+    assert not {"image_ref", "input_id", "mapping_etag"} & line.values.keys()
     assert seen["new_item_card"] == {
         "lines": ["會新增一個庫存品項：滑鼠 1 個（照片辨識）"],
         "note": PHOTO_CARD_MADE,
+        "photo": PHOTO_NOT_READY,
     }
 
 

@@ -206,11 +206,11 @@ class PhotoInputResolver:
     Only the operations in the card's fixed `approved_operation_ids`, in card order.
     Everything comes from the stored card, never from the App (C1's `AdjustmentInput`
     rule): `approval_id`; per line its `operation_id`, `transaction_id`, `quantity`,
-    `name`, `unit` and `location` (null for a photo, contract section 10). The new
-    item's `item_id` is B1's `resolve_inventory_item_id(operation_id)`, so a retry gets
-    the same item. The write time is the card's `decided_at`, which the builder takes
-    from the record (Issue #124, 2026-11-16). A photo line carries no record version,
-    so nothing is read.
+    `name`, `unit` and `location` (null unless said or filled in on the card, Issue
+    #188). The new item's `item_id` is B1's `resolve_inventory_item_id(operation_id)`,
+    so a retry gets the same item. The write time is the card's `decided_at`, which the
+    builder takes from the record (Issue #124, 2026-11-16). A photo line carries no
+    record version, so nothing is read.
     """
 
     def resolve(self, record: ApprovalRecord) -> tuple[AdjustmentInput, ...]:

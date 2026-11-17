@@ -206,6 +206,8 @@ CHANGE_NOT_THIS_LINE = "這一項不能在卡上修改。"
 CHANGE_LINE_REFUSED = "沒有出新卡："
 CHANGE_PHOTO_NO_DAY = "照片新增的品項沒有購買日期，不能改日期。"
 CHANGE_PHOTO_HAVE_NOW = "家裡現在已經有「{names}」，不會再新增一個。"
+CHANGE_SAME_NAME_TWICE = "同一張卡上有兩項都叫「{name}」，請改成不同的名字。"
+CHANGE_NO_NAME_OR_PLACE = "這一項不能改名稱或位置。"
 CHANGE_RECORDS_MOVED = "庫存或待購清單剛剛被改過，請再改一次。"
 ONE_CARD_PER_MESSAGE = json.dumps({"error": "card_already_made"})
 """A second `complete_purchase` in the same message: the first card stands."""
@@ -380,23 +382,30 @@ PHOTO_CARD_MADE = (
 
 
 def photo_item_operation(
-    *, name: str, quantity: int, unit: str, transaction_id: str | None = None
+    *,
+    name: str,
+    quantity: int,
+    unit: str,
+    location: str | None = None,
+    transaction_id: str | None = None,
 ) -> NewOperation:
     """One card line from a photo: "add this as a new inventory item" (Issue #124).
 
     Contract section 10: `create_item` with `name`, `quantity`, `unit` and `location`.
-    A photo gives no location, so `location` is None and the App shows 未填; confirming
-    accepts no location. There is no Shopping List entry, so no `shopping_item_id` and
-    no target versions; `transaction_id` is for the write that confirms it.
+    A photo gives no location, so `location` is None and the App shows 未填 until the
+    user fills one in on the card (Issue #188); confirming accepts no location. There
+    is no Shopping List entry, so no `shopping_item_id` and no target versions;
+    `transaction_id` is for the write that confirms it.
     """
+    place = f"，放在{location}" if location else ""
     return NewOperation(
         action=CREATE_ITEM,
-        description=f"會新增一個庫存品項：{name} {quantity} {unit}（照片辨識）",
+        description=f"會新增一個庫存品項：{name} {quantity} {unit}{place}（照片辨識）",
         values={
             "name": name,
             "quantity": quantity,
             "unit": unit,
-            "location": None,
+            "location": location,
             "transaction_id": transaction_id or uuid.uuid4().hex,
         },
     )
@@ -435,18 +444,46 @@ def said_item_operation(
     )
 
 
-def _new_item_again(op: Any, quantity: int) -> NewOperation:
-    """A photo or said new-item line again with another quantity, keeping the rest."""
-    name, unit = str(op.values.get("name")), str(op.values.get("unit"))
-    if op.description.endswith(SAID):
-        location = op.values.get("location")
-        return said_item_operation(
-            name=name,
-            quantity=quantity,
-            unit=unit,
-            location=location if isinstance(location, str) else None,
-        )
-    return photo_item_operation(name=name, quantity=quantity, unit=unit)
+@dataclass(frozen=True)
+class _NewItemLine:
+    """What a photo or said new-item line shows: the values 送出修改 can change."""
+
+    name: str
+    quantity: int
+    location: str | None
+
+
+def _new_item_line(op: Any) -> _NewItemLine:
+    location = op.values.get("location")
+    return _NewItemLine(
+        name=str(op.values.get("name")),
+        quantity=_whole(op.values.get("quantity")),
+        location=location if isinstance(location, str) else None,
+    )
+
+
+def _with_new_item_change(line: _NewItemLine, change: CardChange | None) -> _NewItemLine:
+    """The line with a 送出修改 applied: a field left out keeps its value (Issue #188)."""
+    if change is None:
+        return line
+    given = change.model_fields_set
+    return _NewItemLine(
+        name=change.name if "name" in given and change.name else line.name,
+        quantity=change.quantity if change.quantity is not None else line.quantity,
+        location=change.location if "location" in given else line.location,
+    )
+
+
+def _new_item_again(op: Any, line: _NewItemLine) -> NewOperation:
+    """A photo or said new-item line again with `line`'s values, keeping its unit and
+    where it came from (the description's source label)."""
+    make = said_item_operation if op.description.endswith(SAID) else photo_item_operation
+    return make(
+        name=line.name,
+        quantity=line.quantity,
+        unit=str(op.values.get("unit")),
+        location=line.location,
+    )
 
 
 @dataclass(frozen=True)
@@ -513,15 +550,17 @@ class PhotoCards:
         household_items: Sequence[InventoryItem],
     ) -> dict[str, Any]:
         """The new card for a 送出修改 on a photo or said new-item card (Issue #124, #162,
-        #168), sent as data.
+        #168, #188), sent as data.
 
-        Only `quantity` can change: these lines have no purchase day. Every line goes on
-        the new card with its name, unit and location (empty on a photo line), changed
-        lines with their new quantity; each line gets a new `operation_id` and
-        `transaction_id`, and the card records the one it replaces (section 7). A line
-        whose name or alias the household has by now is refused, so confirming never adds
-        a second item. Raises `CardChangeRefused` and stores nothing when a change does
-        not fit; the caller retires `old` once the new card is stored.
+        `name`, `quantity` and `location` can change, together in one change; a
+        `purchased_on` is refused, as these lines have no purchase day. Every line goes on
+        the new card with its unit and source, changed lines with their new values, the
+        rest as they were; each line gets a new `operation_id` and `transaction_id`, and
+        the card records the one it replaces (section 7). A line whose name (new or old)
+        is the name or alias of a household item by now is refused, so confirming does
+        not add a second item, and so are two lines with the same name. Raises
+        `CardChangeRefused` and stores nothing when a change does not fit; the caller
+        retires `old` once the new card is stored.
         """
         by_id = {op.operation_id: op for op in old.operations}
         changed: dict[str, CardChange] = {}
@@ -538,37 +577,26 @@ class PhotoCards:
         dated = [by_id[c.operation_id] for c in changes if "purchased_on" in c.model_fields_set]
         if dated:
             _refuse_lines([(op, CHANGE_PHOTO_NO_DAY) for op in dated])
-        items = []
-        for op in old.operations:
-            change = changed.get(op.operation_id)
-            quantity = _whole(op.values.get("quantity"))
-            if change is not None and change.quantity is not None:
-                quantity = change.quantity
-            items.append(
-                PhotoItem(
-                    name=str(op.values.get("name")),
-                    quantity=quantity,
-                    unit=str(op.values.get("unit")),
-                )
-            )
-        if all(
-            item.quantity == _whole(op.values.get("quantity"))
-            for item, op in zip(items, old.operations, strict=True)
-        ):
-            raise CardChangeRefused("nothing_changed", CHANGE_NOTHING)
-        have = []
-        for item, op in zip(items, old.operations, strict=True):
-            same = match_term(item.name, list(household_items))
-            if same.items:
-                names = "、".join(i.name for i in same.items)
-                have.append((op, CHANGE_PHOTO_HAVE_NOW.format(names=names)))
-        if have:
-            _refuse_lines(have)
-        # A said line keeps its location and wording (Issue #168); a photo line has none.
-        lines = [
-            _new_item_again(op, item.quantity)
-            for item, op in zip(items, old.operations, strict=True)
+        before = [_new_item_line(op) for op in old.operations]
+        after = [
+            _with_new_item_change(line, changed.get(op.operation_id))
+            for line, op in zip(before, old.operations, strict=True)
         ]
+        if after == before:
+            raise CardChangeRefused("nothing_changed", CHANGE_NOTHING)
+        refused = []
+        names = [normalize_term(line.name) for line in after]
+        for line, op, key in zip(after, old.operations, names, strict=True):
+            same = match_term(line.name, list(household_items))
+            if same.items:
+                have = "、".join(i.name for i in same.items)
+                refused.append((op, CHANGE_PHOTO_HAVE_NOW.format(names=have)))
+            elif names.count(key) > 1:
+                refused.append((op, CHANGE_SAME_NAME_TWICE.format(name=line.name)))
+        if refused:
+            _refuse_lines(refused)
+        # Each line keeps its unit and source wording (photo or said, Issue #168).
+        lines = [_new_item_again(op, line) for line, op in zip(after, old.operations, strict=True)]
         try:
             record = await self._approvals.save(
                 self._approvals.prepare(
@@ -823,6 +851,12 @@ class PurchaseCards:
                 CHANGE_NOT_THIS_CARD,
                 lines=[_refused(op, CHANGE_NOT_THIS_LINE) for op in not_here],
             )
+        # Name and place change only on a photo or said new-item card (Issue #188).
+        renamed = [
+            by_id[c.operation_id] for c in changes if {"name", "location"} & c.model_fields_set
+        ]
+        if renamed:
+            _refuse_lines([(op, CHANGE_NO_NAME_OR_PLACE) for op in renamed])
         if not self._dated and any("purchased_on" in item for item in before if item):
             raise CardChangeRefused("purchase_day_off", CHANGE_DAY_OFF)
         after = [

@@ -44,6 +44,7 @@ asks the user to say it again.
 | B1 design doc §6.2, §6.5 | `pending_approval` and `operation_receipt` records; batch rules |
 | #90 | Item-match card and new-item card formats, agreed with C2 (section 10) |
 | #175 | Item-match card: 「是」 writes the purchase in one card and remembers no alias; 「不是」 writes nothing; one unsure item per card; no photo item-match card (section 10) |
+| #188 | Photo and said new-item cards: name and location change on the card with `card_changes`, besides quantity (section 7.1) |
 
 ## 2. Approval record
 
@@ -274,6 +275,8 @@ and until then the sentence above keeps working.
   with only the changed fields. `message` is still required and is only the chat
   text. `quantity` is a whole number ≥ 1. `purchased_on` is a Taipei date
   `YYYY-MM-DD`; an explicit `null` sets the line back to today (no day on the card).
+  `name` and `location` (Issue #188) are text, trimmed; they change only a photo or
+  said new-item line (below). `location` `null` or blank sets it back to empty (未填).
   A field left out, and every line not listed, keeps its value.
 
 ```json
@@ -289,10 +292,17 @@ and until then the sentence above keeps working.
 }
 ```
 
+A photo or said new-item line (Issue #188):
+
+```json
+{"operation_id": "op-1", "name": "胃散", "quantity": 2, "location": "藥箱"}
+```
+
 - A malformed body is refused with 422 before anything runs: `card_changes` without
-  `replaces_approval_id`, an empty list, an entry without `quantity` or
-  `purchased_on`, `quantity` null, not a whole number or below 1, or a
-  `purchased_on` that is not a date.
+  `replaces_approval_id`, an empty list, an entry without `quantity`,
+  `purchased_on`, `name` or `location`, `quantity` null, not a whole number or below
+  1, a `purchased_on` that is not a date, a `name` that is null, blank or not text, or
+  a `location` that is not text or null.
 - Otherwise the reply is 200. The backend reads the stored original card (it is the
   authority, not the App), puts every line on a new card with the changes applied,
   read from the current records, and retires the original as in section 7. The
@@ -310,25 +320,32 @@ and until then the sentence above keeps working.
 | `nothing_changed` | Every value is the same as on the original |
 | `purchase_day_off` | A day is changed, or the original has one, while dated purchases are off (section 11) |
 | `future_date` | `purchased_on` is after today in Taipei |
-| `line_refused` | A line cannot go on a new card: it cannot be recorded with the current records, a photo line is given a day, or the line cannot be changed on the card. `lines` has one entry per refused line: its `operation_id` on the original, `shopping_item_id` for a line from the Shopping List, and `reason`. A new card never leaves a line out |
+| `line_refused` | A line cannot go on a new card: it cannot be recorded with the current records, a photo line is given a day, a purchase line is given a name or location (reason 這一項不能改名稱或位置。), or the line cannot be changed on the card. `lines` has one entry per refused line: its `operation_id` on the original, `shopping_item_id` for a line from the Shopping List, and `reason`. A new card never leaves a line out |
 
-Photo new-item cards (section 10, Issue #124) are changed the same way, only while
-photo cards are on:
+Photo new-item cards (section 10, Issue #124) and new-item cards the user said
+(`add_stock`, Issue #168) are changed the same way, only while photo cards are on:
 
-- Only `quantity` changes. A photo line has no purchase day, so a `purchased_on`
-  (even `null`) refuses it (`line_refused`), whether or not dated purchases are on.
-- Every line goes on the new card with its `name`, `unit` and `location` (null) as
-  on the original, a changed line with its new `quantity`, a line not listed with its
-  old one. The card keeps its presentation (`single_action` or `batch_action`).
-  Every line gets a new `operation_id` and `transaction_id`, and the card a new
-  `approval_id`; the original is retired as in section 7.
+- `quantity`, `name` and `location` change (Issue #188), alone or together in one
+  change; the result is one new card. A photo line has no purchase day, so a
+  `purchased_on` (even `null`) refuses it (`line_refused`), whether or not dated
+  purchases are on.
+- Every line goes on the new card with its `unit` and its source (（照片辨識） or
+  （使用者說的） in the description), a changed line with its new values, a line not
+  listed with its old ones. The description shows the location when there is one.
+  The card keeps its presentation (`single_action` or `batch_action`). Every line
+  gets a new `operation_id` and `transaction_id`, and the card a new `approval_id`;
+  the original is retired as in section 7. Confirming writes exactly the new card's
+  values.
 - Before the new card is stored, each line is checked against the household's items
-  again: a line whose name is now the name or alias of a household item is refused
-  (`line_refused`), so confirming never adds a second item.
+  again: a line whose name (new or kept) is now the name or alias of a household
+  item is refused (`line_refused`), so confirming does not add a second item. Two
+  lines with the same name are both refused, reason
+  同一張卡上有兩項都叫「<name>」，請改成不同的名字。
 - With photo cards off (no Cosmos, section 10), a photo card cannot be
   changed on the card: `line_refused`, each line with reason 這一項不能在卡上修改。
-- A photo card is changed only with `card_changes`. The sentence format in section 7
-  is for purchase cards: the Agent's card tool makes purchase cards only.
+- A photo card is changed with `card_changes`. The sentence format in section 7 goes
+  to the Agent, whose card tools make purchase cards (`complete_purchase`) and new-item
+  cards the user said (`add_stock`, Issue #168), not photo cards.
 
 ```json
 {
@@ -474,7 +491,8 @@ New-item cards from a photo (Issue #124; on with Cosmos since PR #172):
   item, `batch_action` for several, every line `create_item`
   (`backend/app/agent/cards.py`, `PhotoCards`).
 - `values`: `name`, `quantity` and `unit` from the photo, `location` null (the App
-  shows 未填; confirming accepts no location, Issue #124), and `transaction_id`. There
+  shows 未填 until the user fills it in on the card, Issue #188; confirming accepts no
+  location, Issue #124), and `transaction_id`. There
   is no `shopping_item_id` and no target version.
 - Items the household has, unsure items and items without a confirmed unit are only
   reported, as before. A photo item-match card (Issue #124 point 2) is not built.
@@ -503,8 +521,9 @@ New-item cards from a photo (Issue #124; on with Cosmos since PR #172):
   would need a check inside B1's batch.
 - As in section 8, a photo makes no card in a message that brings an open card back,
   or when the open cards cannot be listed; the photo is only reported.
-- The quantity can be changed on the card with `card_changes` (section 7.1); a new
-  card replaces the old one, and the user confirms again.
+- The name, quantity and location can be changed on the card with `card_changes`
+  (section 7.1, Issue #188); a new card replaces the old one, and the user confirms
+  again.
 - On in `get_read_agent` whenever cards are (Cosmos): confirming is written by
   B1's builder above. Without Cosmos a photo is only reported.
 
@@ -527,8 +546,8 @@ New-item cards from what the user says (Issue #168, 「我收到一瓶洗髮精�
 - Confirming is the photo card's path above: `PhotoInputResolver`, B1's
   `PhotoItemWriteBuilder`, C1's `plan_adjustment`; the Transaction reason is
   `adjustment` (C1 and B2 in Issue #168), at the card's `decided_at`.
-- The quantity can be changed with `card_changes` as on a photo card; the new card
-  keeps each line's location and wording.
+- The name, quantity and location can be changed with `card_changes` as on a photo
+  card (Issue #188); the new card keeps each line's unit and （使用者說的）.
 - On in `get_read_agent` whenever cards are (Cosmos); without Cosmos the tool is not
   offered.
 

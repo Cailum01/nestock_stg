@@ -331,6 +331,36 @@ def test_changing_the_quantity_keeps_the_location_and_wording():
     assert container.get(f"pending_approval:{old.approval_id}")["status"] == "cancelled"
 
 
+def test_a_changed_name_and_location_are_what_confirming_writes():
+    """Issue #188: the new card holds the changed values; confirming writes exactly those."""
+    container, reads, approvals = home()
+    old = said(reads, approvals, SHAMPOO)[0].pending_approval
+    the_agent = agent(reads, approvals)  # no model call
+
+    response = asyncio.run(
+        the_agent.respond(
+            AgentRequest(
+                household_id=HOME,
+                message="送出修改",
+                replaces_approval_id=old.approval_id,
+                card_changes=[
+                    CardChange(
+                        operation_id=old.operations[0].operation_id, name="洗髮乳", location=None
+                    )
+                ],
+            )
+        )
+    )
+
+    new = response.pending_approval
+    (line,) = new.operations
+    assert line.description == f"會新增一個庫存品項：洗髮乳 1 瓶{SAID}"
+    assert _confirm(approvals, new)["message"] == "已記錄：洗髮乳 +1 瓶（現在 1 瓶）"
+    (item,) = items_named(container, "洗髮乳")
+    assert item["location"] is None
+    assert items_named(container, "洗髮精") == []
+
+
 def test_the_tool_is_offered_only_with_cards():
     _, reads, approvals = home()
 

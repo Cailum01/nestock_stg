@@ -25,7 +25,6 @@ class PurchasePreview:
     inventory_item_id: str
     purchased_quantity: int
     unit: str
-    planned_quantity: int | None
     next_status: ShoppingStatus
     inventory_quantity_before: int
     inventory_quantity_after: int
@@ -36,7 +35,6 @@ class RemovalPreview:
     household_id: str
     shopping_item_id: str
     name: str
-    planned_quantity: int | None
     unit: str | None
 
 
@@ -51,7 +49,7 @@ def _quantity(value: int, label: str, *, positive: bool = True) -> int:
     return int(value)
 
 
-def _pending_item(household_id: str, shopping: ShoppingItem) -> int | None:
+def _pending_item(household_id: str, shopping: ShoppingItem) -> None:
     if not household_id.strip() or shopping.household_id != household_id:
         raise ShoppingPreviewError("Shopping item must belong to the requested household.")
     if not shopping.shopping_item_id.strip():
@@ -60,9 +58,6 @@ def _pending_item(household_id: str, shopping: ShoppingItem) -> int | None:
         raise ShoppingPreviewError("A provided shopping unit must not be empty.")
     if shopping.status != ShoppingStatus.PENDING:
         raise ShoppingPreviewError("Only a pending shopping item can be previewed.")
-    if shopping.quantity is None:
-        return None
-    return _quantity(shopping.quantity, "Planned shopping quantity")
 
 
 class ShoppingPreviewService:
@@ -84,7 +79,7 @@ class ShoppingPreviewService:
         cannot establish provenance, authorization, freshness or persistence.
         Unlinked purchases are deferred, not prohibited as a product feature.
         """
-        planned = _pending_item(household_id, shopping)
+        _pending_item(household_id, shopping)
         purchased = _quantity(purchased_quantity, "Purchased quantity")
         if resolved_inventory_item_id is not None and not resolved_inventory_item_id.strip():
             raise ShoppingPreviewError("The explicit resolved target must not be empty.")
@@ -116,7 +111,6 @@ class ShoppingPreviewService:
             inventory_item_id=inventory.item_id,
             purchased_quantity=purchased,
             unit=inventory.unit,
-            planned_quantity=planned,
             next_status=ShoppingStatus.COMPLETED,
             inventory_quantity_before=before,
             inventory_quantity_after=after,
@@ -124,11 +118,10 @@ class ShoppingPreviewService:
 
     def preview_removal(self, *, household_id: str, shopping: ShoppingItem) -> RemovalPreview:
         """Describe removal of a pending entry; never implies purchase or stock reversal."""
-        planned = _pending_item(household_id, shopping)
+        _pending_item(household_id, shopping)
         return RemovalPreview(
             household_id=household_id,
             shopping_item_id=shopping.shopping_item_id,
             name=shopping.name,
-            planned_quantity=planned,
             unit=shopping.unit,
         )

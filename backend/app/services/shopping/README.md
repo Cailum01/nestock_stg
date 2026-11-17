@@ -9,10 +9,12 @@ B1's `CosmosWriteRepository`.
 
 ## C1 decisions and implementation boundary
 
-- Shopping quantity is the user's original planned quantity. Actual purchased
-  quantity is a separate, explicitly supplied and approved value. Only that actual
-  value increments Inventory and becomes the purchase Transaction delta; completion
-  preserves the original Shopping quantity and does not create a remainder intent.
+- Shopping is a reminder of which items to buy; a planned quantity is not needed
+  to create or complete an intent. `ShoppingItem.quantity` and `unit` remain
+  optional legacy fields for compatibility. Purchase previews do not validate,
+  return, default, or use the legacy quantity as a limit. Completion preserves any
+  stored legacy values. Only the actual quantity explicitly supplied and approved
+  for a purchase increments Inventory and becomes the purchase Transaction delta.
 - One approval's selected writes are one household-scoped atomic batch. Each logical
   write keeps its stored operation identity across retries. Cancellation performs
   no Shopping, Inventory, Transaction, event, or receipt business write.
@@ -50,7 +52,7 @@ and `/agent/resume` returns 503 without saving changes. Plans are not approval.
 
 ### Direct Shopping additions (#52)
 
-Shopping represents purchase intent. A Direct App addition needs a name; planned
+Shopping represents purchase intent. A Direct App addition needs a name; legacy
 quantity and unit are optional and must not be fabricated. Direct App and Agent
 additions must use the shared C1 ShoppingService, with backend validation and a
 success response only after persistence succeeds. The App's explicit Add action is
@@ -67,7 +69,7 @@ in [`datalake/azure-data-platform-design.md`](../../../../datalake/azure-data-pl
 and its linked B1 decisions; this C1 document describes only the service handoff.
 
 `ShoppingIntentService.add(AddShoppingIntent)` now implements the C1 domain write:
-it validates a named pending intent, permits optional planned quantity and unit,
+it validates a named pending intent, permits omitted legacy quantity and unit,
 builds the authoritative `ShoppingItem` document, and calls B1's
 `execute_idempotent_batches`. This C1 proposal derives stable operation and item
 IDs from the household plus a caller-supplied request ID. Retrying the same request
@@ -96,16 +98,17 @@ pytest (751 passed, 30 deselected). The focused tests use a fake Cosmos batch
 client and do not write to live Cosmos or alter the 31-record `demo-household`
 baseline; they verify the internal service only, not the public HTTP or App flow.
 
-Per [Issue #27](https://github.com/nestock-app/nestock/issues/27), Shopping quantity
-is the original plan. Planning two bottles and actually buying one completes this
-Shopping task, keeps the planned quantity at two, adds one to Inventory and creates
-one purchase Transaction. No remaining pending intent is inferred. Completed
-entries disappear from the active list without hard deletion.
+Issue #180 clarifies that Shopping quantity is legacy data, not the meaning of a
+new Shopping intent. A purchase completes the selected intent regardless of its
+legacy quantity. Any stored legacy value is preserved for compatibility, while
+only the explicitly approved actual quantity updates Inventory and the purchase
+Transaction. No remaining pending intent is inferred. Completed entries disappear
+from the active list without hard deletion.
 
-Per [Issue #63](https://github.com/nestock-app/nestock/issues/63), counts use integer
-arithmetic. Shopping planned quantity/unit can be absent; no value of one or default
-unit is invented. Actual purchase quantity must be explicit and positive. Fractional,
-nonfinite, boolean and string counts fail. The current Pydantic models use integer
+Per [Issue #63](https://github.com/nestock-app/nestock/issues/63), actual purchase
+counts use integer arithmetic. Shopping's legacy quantity/unit can be absent; no
+value of one or default unit is invented. Actual purchase quantity must be explicit
+and positive. Fractional, nonfinite, boolean and string counts fail. The current Pydantic models use integer
 counts; no floating-point compatibility path is part of the contract.
 An actual unit must be resolved and match the Inventory target and any planned unit.
 There is no unit conversion or automatic purchase beyond an existing plan.
@@ -308,7 +311,7 @@ baseline
 → approval
 → confirm
 → Inventory 1 → 3
-→ Shopping completed (the original planned quantity remains 2)
+→ Shopping completed (the legacy quantity value remains 2)
 → exactly one new purchase Transaction for this operation
 → retry the same approval: no duplicate effect
 → cancel a separate approval: no business write
@@ -317,9 +320,9 @@ baseline
 
 The baseline is one `demo-household`: `seed-detergent` is confirmed Inventory
 quantity 1, and pending `seed-shopping-detergent` is linked to that same item ID
-with planned quantity 2 and unit `瓶`. The approval must use the stored card and
+with legacy quantity 2 and unit `瓶`. The approval must use the stored card and
 its fixed operation identity; confirmation must add exactly 2 confirmed bottles,
-complete that linked Shopping row, and preserve its planned quantity. “Exactly one
+complete that linked Shopping row, and preserve its legacy quantity value. “Exactly one
 Transaction” means exactly one new effective `purchase` Transaction associated with
 the confirmed operation, not that the baseline has no historical Transactions.
 
@@ -357,9 +360,10 @@ read-only checks.
 `tests.manual_test_shopping_cosmos` records the isolated backend/Cosmos portion of
 this contract in a fresh `c1-test-*` household. Its JSON result includes the core
 approval, operation and Transaction identities; it explicitly checks baseline
-quantity 1 / planned quantity 2, post-confirmation quantity 3 / completed Shopping
-with planned quantity still 2, one operation-bound purchase Transaction, a retry
-without duplicate effects, and a separate cancellation without a business write.
+Inventory quantity 1 / legacy Shopping quantity 2, post-confirmation Inventory
+quantity 3 / completed Shopping with the legacy value still 2, one operation-bound
+purchase Transaction, a retry without duplicate effects, and a separate cancellation
+without a business write.
 The isolated fixture deliberately uses the Final Demo's detergent identifiers
 (`seed-detergent` and `seed-shopping-detergent`) and values while keeping the write
 in its fresh test household. It intentionally does not reset `demo-household`; B1's
@@ -370,8 +374,8 @@ reset plus read-back is the separate final-Demo evidence for that last step.
 The Agent/resume backend flow supports existing Inventory targets linked from
 pending Shopping entries and stored `create_item` lines that create a new Inventory
 target. Both use an explicit positive whole-number purchase quantity independent
-of the planned quantity and require the same unit. C1's builder also supports the
-`same_item` purchase mapping without alias learning, but the Agent cannot issue
+of any legacy Shopping quantity and require the same unit. C1's builder also
+supports the `same_item` purchase mapping without alias learning, but the Agent cannot issue
 that card until A1 completes the approval and resolver integration in Issues #90
 and #175. C1's builder supports removal, but the Agent has no removal card. Unit
 conversion, media attachment retention, and historical purchase-time entry remain

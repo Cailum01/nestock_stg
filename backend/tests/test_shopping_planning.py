@@ -150,7 +150,7 @@ def test_fractional_member_aborts_entire_group_without_source_mutation():
     assert first.shopping.status == "pending"
 
 
-def test_actual_purchase_can_exceed_planned_quantity_in_group():
+def test_actual_purchase_is_independent_of_legacy_quantity_in_group():
     result = plan(purchase(planned=1, actual=3))
     assert result.transactions[0].quantity_delta == 3
     assert result.inventory_updates[0].record.quantity == 6

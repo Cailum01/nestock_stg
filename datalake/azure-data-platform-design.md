@@ -116,6 +116,13 @@ approval-gated workflow, not a variation of the purchase builder:
 - Each selected line's domain writes, operation receipt, and the completed
   approval commit in one household-partition transactional batch. Retries reuse
   the operation and item identities; an unselected line creates no records.
+- When a stored line includes a photo, B1 verifies its completed media mapping,
+  household, input ID, image reference, and ETag. The new Inventory item receives
+  the opaque `image_ref`, and an ETag-guarded mapping replacement removes its
+  orphan TTL in the same batch. Missing or stale mappings fail closed.
+- The mapping TTL update does not call A2's `retain_media`. Its post-commit
+  notification and failure/retry handling remain pending A2/B1 coordination
+  under Issue #176; do not treat the mapping update as that notification.
 - `POST /agent/messages` may store the pending approval but never writes domain
   data. Only `POST /agent/resume` may commit the values covered by that card.
 - Wiring the writer does not enable card generation or frontend handling; A1 and

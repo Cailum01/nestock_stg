@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
-from test_purchase_cards import HOME, FakeCosmosContainer, resume_app, setup
+from test_purchase_cards import HOME, FakeCosmosContainer, inventory, resume_app, setup
 from test_read_agent import PHOTO, ScriptedModel, _ask_photo, _call, _detected, _StubVision
 
 from app.agent import read_agent
@@ -103,6 +103,45 @@ def test_only_the_ticked_photo_lines_are_written():
     _confirm(approvals, card, ids=[mouse.operation_id])
 
     assert [d["name"] for d in _new_items(container, "滑鼠", "鍵盤")] == ["滑鼠"]
+
+
+def test_a_photo_item_added_after_the_card_is_not_added_twice():
+    """PR #187 B1 review: confirming reads the household's items again, as for add_stock."""
+    container, _, _ = setup()
+    reads, approvals = _app_approvals(container)
+    agent = _photo_agent(container, reads, approvals, _detected("滑鼠", unit="個"))
+    card = _ask_photo(agent, household_id=HOME).pending_approval
+    container.put(inventory(item_id="mouse", name="無線滑鼠", unit="個", aliases=["滑鼠"]))
+    transactions_before = container.of_type("transaction")
+
+    reply = _confirm(approvals, card)
+
+    assert reply["results"][0]["data"] == {"outcome": "needs_new_card"}
+    assert [d["item_id"] for d in container.of_type("inventory_item") if d["unit"] == "個"] == [
+        "mouse"
+    ]
+    assert container.of_type("transaction") == transactions_before
+
+
+def test_a_line_the_household_has_by_now_does_not_stop_the_other_ticked_lines():
+    """Only the ticked lines are checked: an unticked one the household has is left out."""
+    container, _, _ = setup()
+    reads, approvals = _app_approvals(container)
+    agent = _photo_agent(
+        container,
+        reads,
+        approvals,
+        _detected("滑鼠", unit="個"),
+        _detected("鍵盤", unit="個"),
+    )
+    card = _ask_photo(agent, household_id=HOME).pending_approval
+    mouse, _ = card.operations
+    container.put(inventory(item_id="keyboard", name="鍵盤", unit="個"))
+
+    reply = _confirm(approvals, card, ids=[mouse.operation_id])
+
+    assert reply["message"] == "已記錄：滑鼠 +1 個（現在 1 個）"
+    assert sorted(d["name"] for d in _new_items(container, "滑鼠", "鍵盤")) == ["滑鼠", "鍵盤"]
 
 
 def test_get_read_agent_gives_photo_cards_the_app_approval_service(monkeypatch):

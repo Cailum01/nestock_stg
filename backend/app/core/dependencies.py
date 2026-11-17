@@ -357,7 +357,8 @@ def _create_approval_service(
     A1's `CardInputResolver` turns purchase cards back into C1's inputs through the
     read repository; C1 reads whole stored documents through the raw reader so
     storage-only metadata survives replacements. New-item cards use A1's resolver
-    and B1's atomic no-Shopping writer.
+    and B1's atomic no-Shopping writer; the router reads the inventory again first, so
+    an item added since the card was made is not added twice (PR #187).
     """
     if read_repository is None or write_repository is None or document_reader is None:
         return None
@@ -369,5 +370,6 @@ def _create_approval_service(
     builder = CardWriteRouter(
         purchases=ShoppingWriteBuilder(document_reader, CardInputResolver(read_repository)),
         photo_items=PhotoItemWriteBuilder(PhotoInputResolver()),
+        household_items=read_repository,
     )
     return ApprovalService(write_repository, builder)

@@ -402,6 +402,53 @@ def photo_item_operation(
     )
 
 
+SAID = "（使用者說的）"
+"""Ends the description of a new-item line the user said (Issue #168), not a photo's."""
+
+
+def said_item_operation(
+    *,
+    name: str,
+    quantity: int,
+    unit: str,
+    location: str | None,
+    transaction_id: str | None = None,
+) -> NewOperation:
+    """One card line the user said: "add this as a new inventory item" (Issue #168).
+
+    The `add_stock` tool (`app/agent/stock_cards.py`) makes it: same `create_item`
+    format as a photo line (contract section 10), with the location the user said or
+    None (the App shows 未填). No Shopping List entry and no target versions, so it is
+    confirmed through the photo path: `PhotoInputResolver` and B1's writer.
+    """
+    place = f"，放在{location}" if location else ""
+    return NewOperation(
+        action=CREATE_ITEM,
+        description=f"會新增一個庫存品項：{name} {quantity} {unit}{place}{SAID}",
+        values={
+            "name": name,
+            "quantity": quantity,
+            "unit": unit,
+            "location": location,
+            "transaction_id": transaction_id or uuid.uuid4().hex,
+        },
+    )
+
+
+def _new_item_again(op: Any, quantity: int) -> NewOperation:
+    """A photo or said new-item line again with another quantity, keeping the rest."""
+    name, unit = str(op.values.get("name")), str(op.values.get("unit"))
+    if op.description.endswith(SAID):
+        location = op.values.get("location")
+        return said_item_operation(
+            name=name,
+            quantity=quantity,
+            unit=unit,
+            location=location if isinstance(location, str) else None,
+        )
+    return photo_item_operation(name=name, quantity=quantity, unit=unit)
+
+
 @dataclass(frozen=True)
 class PhotoItem:
     """A photo item with no household item of the same name or alias (Issue #124)."""
@@ -452,7 +499,8 @@ class PhotoCards:
 
     @staticmethod
     def made(record: ApprovalRecord) -> bool:
-        """Whether `record` is a photo new-item card: only `create_item` lines, no list entry."""
+        """Whether `record` is a new-item card without a list entry: only `create_item`
+        lines with no `shopping_item_id`, from a photo or said by the user (Issue #168)."""
         return bool(record.operations) and all(
             op.action == CREATE_ITEM and not op.values.get("shopping_item_id")
             for op in record.operations
@@ -464,15 +512,16 @@ class PhotoCards:
         changes: Sequence[CardChange],
         household_items: Sequence[InventoryItem],
     ) -> dict[str, Any]:
-        """The new card for a 送出修改 on a photo card, sent as data (Issue #124, #162).
+        """The new card for a 送出修改 on a photo or said new-item card (Issue #124, #162,
+        #168), sent as data.
 
-        Only `quantity` can change: a photo line has no purchase day. Every line goes on
-        the new card with its name, unit and empty location, changed lines with their new
-        quantity; each line gets a new `operation_id` and `transaction_id`, and the card
-        records the one it replaces (section 7). A line whose name or alias the household
-        has by now is refused, so confirming never adds a second item. Raises
-        `CardChangeRefused` and stores nothing when a change does not fit; the caller
-        retires `old` once the new card is stored.
+        Only `quantity` can change: these lines have no purchase day. Every line goes on
+        the new card with its name, unit and location (empty on a photo line), changed
+        lines with their new quantity; each line gets a new `operation_id` and
+        `transaction_id`, and the card records the one it replaces (section 7). A line
+        whose name or alias the household has by now is refused, so confirming never adds
+        a second item. Raises `CardChangeRefused` and stores nothing when a change does
+        not fit; the caller retires `old` once the new card is stored.
         """
         by_id = {op.operation_id: op for op in old.operations}
         changed: dict[str, CardChange] = {}
@@ -515,9 +564,10 @@ class PhotoCards:
                 have.append((op, CHANGE_PHOTO_HAVE_NOW.format(names=names)))
         if have:
             _refuse_lines(have)
+        # A said line keeps its location and wording (Issue #168); a photo line has none.
         lines = [
-            photo_item_operation(name=item.name, quantity=item.quantity, unit=item.unit)
-            for item in items
+            _new_item_again(op, item.quantity)
+            for item, op in zip(items, old.operations, strict=True)
         ]
         try:
             record = await self._approvals.save(

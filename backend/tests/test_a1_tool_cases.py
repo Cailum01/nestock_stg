@@ -4,8 +4,10 @@ Same layout as test_b2_tool_cases.py. A case with `photo: true` gets the same
 PHOTO_ATTACHED system message the Agent adds when a request carries a photo. A
 `complete_purchase` case with `shopping_list` is checked one turn later: the model
 must look up the shopping list first (prompt 買回來了 rule 1), gets those rows back,
-and its next turn is checked. The card tool is offered as the Agent offers it when
-Cosmos is configured.
+and its next turn is checked. An `add_stock` case with `inventory` works the same
+way with `list_inventory` (prompt 家裡多了東西 rule 1): the model gets those rows
+back the way the Agent shapes them, and its next turn is checked. Both card tools are
+offered as the Agent offers them when Cosmos is configured.
 The live test calls the model synchronously: `asyncio.run` per case with one
 shared model left its connection pool on a closed event loop, so every second
 case failed with "Event loop is closed" on Windows.
@@ -20,6 +22,8 @@ import pytest
 from app.agent.cards import PURCHASE_TOOL_SCHEMA
 from app.agent.llm import build_chat_model, load_azure_settings
 from app.agent.read_agent import PHOTO_ATTACHED, TOOL_SCHEMAS, load_system_prompt
+from app.agent.stock_cards import STOCK_TOOL_SCHEMA
+from app.services.item_matching import normalize_term
 
 CASES_PATH = Path(__file__).resolve().parents[2] / "evals" / "a1_tool_cases.json"
 CASES = json.loads(CASES_PATH.read_text(encoding="utf-8"))["cases"]
@@ -29,8 +33,9 @@ A1_TOOLS = {
     "analyze_photo",
     "search_purchase_options",
     "complete_purchase",
+    "add_stock",
 }
-OFFERED = [*TOOL_SCHEMAS, PURCHASE_TOOL_SCHEMA]
+OFFERED = [*TOOL_SCHEMAS, PURCHASE_TOOL_SCHEMA, STOCK_TOOL_SCHEMA]
 TOOLS = {schema["function"]["name"]: schema["function"] for schema in OFFERED}
 
 
@@ -97,6 +102,51 @@ def test_shopping_list_rows_go_with_purchase_cases():
         assert listed is None or listed in ids, case["id"]
 
 
+def test_inventory_rows_go_with_stock_cases():
+    for case in CASES:
+        rows = case.get("inventory")
+        if case["tool"] == "add_stock" and case["kind"] == "positive":
+            assert rows is not None, case["id"]
+        if rows is None:
+            continue
+        assert case["tool"] == "add_stock", case["id"]
+        assert "shopping_list" not in case, case["id"]
+        assert all({"item_id", "name", "unit"} <= row.keys() for row in rows), case["id"]
+
+
+def _inventory_answer(rows, args):
+    """`list_inventory` as `ReadAgent._inventory_answer` shapes it for the model."""
+    name = str(args.get("item_name") or "").strip()
+    if not name:
+        return {"inventory": rows}
+    key = normalize_term(name)
+    found = [
+        row
+        for row in rows
+        if normalize_term(row["name"]) == key
+        or any(normalize_term(alias) == key for alias in row.get("aliases", []))
+    ]
+    if found:
+        return {"item_name": name, "inventory": found}
+    household = [
+        {
+            k: row.get(k, []) if k == "aliases" else row[k]
+            for k in ("item_id", "name", "aliases", "unit")
+        }
+        for row in rows
+    ]
+    return {"item_name": name, "found": False, "household_items": household}
+
+
+def _looked_up(case, call):
+    """What the model gets back from a lookup in a case's first turn."""
+    if call["name"] == "list_shopping" and "shopping_list" in case:
+        return case["shopping_list"]
+    if call["name"] == "list_inventory" and "inventory" in case:
+        return _inventory_answer(case["inventory"], call.get("args") or {})
+    return []
+
+
 @pytest.fixture(scope="module")
 def live_model():
     settings = load_azure_settings()
@@ -115,13 +165,19 @@ def test_live_model_selects_the_expected_tools(live_model, case):
         messages.append(SystemMessage(PHOTO_ATTACHED))
     messages.append(HumanMessage(case["utterance"]))
     reply = live_model.invoke(messages)
-    if "shopping_list" in case:
+    lookup = (
+        "list_shopping"
+        if "shopping_list" in case
+        else "list_inventory"
+        if "inventory" in case
+        else None
+    )
+    if lookup is not None:
         first = {call["name"] for call in reply.tool_calls}
-        assert "list_shopping" in first, (case["id"], "looks up the list first", first)
+        assert lookup in first, (case["id"], "looks it up first", first)
         messages.append(reply)
         for call in reply.tool_calls:
-            rows = case["shopping_list"] if call["name"] == "list_shopping" else []
-            content = json.dumps(rows, ensure_ascii=False)
+            content = json.dumps(_looked_up(case, call), ensure_ascii=False)
             messages.append(ToolMessage(content, tool_call_id=call["id"]))
         reply = live_model.invoke(messages)
     calls = reply.tool_calls

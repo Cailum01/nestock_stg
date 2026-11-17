@@ -93,7 +93,7 @@ def build_pending_media_retention_work_item(
     image_ref: str,
     created_at: datetime,
 ) -> CreateDocument:
-    """Build the pending item for inclusion in the purchase's household batch."""
+    """Build the pending item for inclusion in a business write's household batch."""
     for value, label in (
         (household_id, "household_id"),
         (operation_id, "operation_id"),

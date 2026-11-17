@@ -150,12 +150,12 @@ def test_fractional_member_aborts_entire_group_without_source_mutation():
     assert first.shopping.status == "pending"
 
 
-def test_unresolved_workflow_aborts_group_instead_of_returning_partial_result():
-    first = purchase()
-    with pytest.raises(ShoppingDecisionRequired):
-        plan(first, purchase("2", actual=3))
-    assert first.shopping.status == "pending"
-    assert first.inventory.quantity == 3
+def test_actual_purchase_can_exceed_planned_quantity_in_group():
+    result = plan(purchase(planned=1, actual=3))
+    assert result.transactions[0].quantity_delta == 3
+    assert result.inventory_updates[0].record.quantity == 6
+    assert result.shopping_updates[0].record.status == "completed"
+    assert result.shopping_updates[0].record.quantity == 1
 
 
 @pytest.mark.parametrize("changes", [{"purchases": ()}, {"recorded_at": datetime(2026, 11, 3)}])

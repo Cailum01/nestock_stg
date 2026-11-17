@@ -502,8 +502,8 @@ quantity can be changed.
   `transaction_id`. There is no `location`: the purchase adds to an inventory item
   the household already has.
 - An entry linked to an inventory item gets a purchase line only if it is still
-  pending, its unit (when it has one) is the inventory unit, and the bought quantity
-  is not more than the listed quantity (when there is one). A pending entry not
+  pending and its unit (when it has one) is the inventory unit. The listed quantity
+  does not limit the bought quantity (Issue #178). A pending entry not
   linked to an inventory item gets a new-item line instead (section 10, PR #140).
   Other items are left off the card and the Agent says why.
 - A Shopping List entry may have no quantity or unit (Issue #52). Without a unit,

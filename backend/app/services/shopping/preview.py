@@ -86,8 +86,6 @@ class ShoppingPreviewService:
         """
         planned = _pending_item(household_id, shopping)
         purchased = _quantity(purchased_quantity, "Purchased quantity")
-        if planned is not None and purchased > planned:
-            raise ShoppingDecisionRequired("Purchases exceeding the list need an agreed workflow.")
         if resolved_inventory_item_id is not None and not resolved_inventory_item_id.strip():
             raise ShoppingPreviewError("The explicit resolved target must not be empty.")
         target_id = (

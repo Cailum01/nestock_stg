@@ -13,17 +13,21 @@ from app.models.agent import ApprovalPresentation, ResumeRequest
 from app.models.domain import InventoryItem, ShoppingItem
 from app.services.approvals import (
     ApprovalNotFound,
+    ApprovalRecord,
     ApprovalService,
+    ApprovalStatus,
     BatchTooLarge,
     NewOperation,
     ResumeOutcome,
+    StoredOperation,
+    StoredOption,
     TargetVersion,
 )
 from app.services.cosmos_read import CosmosDocumentMapper
 from app.services.cosmos_write import CosmosWriteRepository, ReplaceDocument
 from app.services.inventory_item_identity import resolve_inventory_item_id
 from app.services.shopping.planning import AdjustmentInput, NewInventoryTarget, PurchaseInput
-from app.services.shopping.preview import ShoppingPreviewError
+from app.services.shopping.preview import ShoppingDecisionRequired, ShoppingPreviewError
 from app.services.shopping.workflow import (
     RemovalInput,
     ResolvedShoppingChanges,
@@ -49,7 +53,10 @@ class StoredInputResolver:
         for selected_id, entry in zip(record.approved_operation_ids, selected):
             operation = next(op for op in record.operations if op.operation_id == selected_id)
             if isinstance(entry, PurchaseInput):
-                assert operation.values["purchased_quantity"] == entry.purchased_quantity
+                quantity_key = (
+                    "quantity" if operation.action == "confirm_item_match" else "purchased_quantity"
+                )
+                assert operation.values[quantity_key] == entry.purchased_quantity
                 assert operation.values["transaction_id"] == entry.transaction_id
         return ResolvedShoppingChanges(
             purchases=tuple(row for row in selected if isinstance(row, PurchaseInput)),
@@ -201,6 +208,89 @@ def setup_adjustment(*, save=True, quantity=2):
     )
 
 
+def setup_item_match(*, purchase_overrides=None):
+    container = FakeCosmosContainer()
+    resolver = StoredInputResolver()
+    builder = ShoppingWriteBuilder(container, resolver)
+    inventory = InventoryItem(
+        item_id="milk",
+        household_id=HOME,
+        name="洗潔精",
+        quantity=3,
+        unit="瓶",
+        aliases=["鮮奶"],
+        created_at=T0,
+        updated_at=T0,
+    )
+    shopping = ShoppingItem(
+        shopping_item_id="shopping-match",
+        household_id=HOME,
+        name="洗碗精",
+        quantity=1,
+        unit="瓶",
+        status="pending",
+        created_at=T0,
+        updated_at=T0,
+        item_id=None,
+    )
+    inventory_document = CosmosDocumentMapper.to_document(inventory)
+    shopping_document = CosmosDocumentMapper.to_document(shopping)
+    inventory_etag = container.put(inventory_document)
+    shopping_etag = container.put(shopping_document)
+    operation_id = "match-operation"
+    transaction_id = "match-transaction"
+    values = {
+        "user_term": "洗碗精",
+        "candidate_item_id": "milk",
+        "candidate_name": "洗潔精",
+        "shopping_item_id": "shopping-match",
+        "quantity": 2,
+        "unit": "瓶",
+        "transaction_id": transaction_id,
+    }
+    operation = StoredOperation(
+        operation_id=operation_id,
+        action="confirm_item_match",
+        description="把買回來的洗碗精 2 瓶加到洗潔精",
+        values=values,
+        targets=[
+            TargetVersion(record_id=shopping_document["id"], etag=shopping_etag),
+            TargetVersion(record_id=inventory_document["id"], etag=inventory_etag),
+        ],
+    )
+    purchase = PurchaseInput(
+        operation_id=operation_id,
+        transaction_id=transaction_id,
+        shopping=shopping,
+        shopping_etag=shopping_etag,
+        inventory=inventory,
+        inventory_etag=inventory_etag,
+        purchased_quantity=2,
+        purchased_unit="瓶",
+        resolved_inventory_item_id="milk",
+    )
+    if purchase_overrides:
+        purchase = replace(purchase, **purchase_overrides)
+    resolver.inputs[operation_id] = purchase
+    record = ApprovalRecord(
+        approval_id="match-approval",
+        household_id=HOME,
+        presentation=ApprovalPresentation.ITEM_MATCH,
+        operations=[operation],
+        options=[
+            StoredOption(option_id="same_item", values={"label": "是，加到洗潔精"}),
+            StoredOption(option_id="new_item", values={"label": "不是，這是新的東西"}),
+        ],
+        status=ApprovalStatus.CONFIRMED,
+        created_at=T0,
+        expires_at=T0 + timedelta(minutes=30),
+        decided_at=T0,
+        approved_operation_ids=[operation_id],
+        selected_option_id="same_item",
+    )
+    return SimpleNamespace(container=container, builder=builder, record=record, resolver=resolver)
+
+
 def request(h, *, approve=True, selected=None, household=HOME):
     return ResumeRequest(
         household_id=household,
@@ -239,6 +329,70 @@ def test_complete_purchase_merges_stock_and_commits_events_receipts_approval_ato
     assert retried.outcome == ResumeOutcome.ALREADY_COMPLETED
     assert retried.record.outcome == result.record.outcome
     assert len(h.container.batches) == before
+
+
+def test_same_item_match_plans_approved_purchase_without_learning_alias():
+    h = setup_item_match()
+    before_inventory = dict(h.container.get("inventory_item:milk"))
+    before_shopping = dict(h.container.get("shopping_item:shopping-match"))
+
+    plan = run(h.builder.build(h.record))
+
+    ((operation_id, writes),) = plan.operations_by_id.items()
+    transaction = next(
+        operation.document
+        for operation in writes
+        if operation.document.get("record_type") == "transaction"
+    )
+    event = next(
+        operation.document
+        for operation in writes
+        if operation.document.get("record_type") == "change_event"
+    )
+    inventory_update = next(
+        operation.document
+        for operation in plan.shared_operations
+        if operation.document.get("record_type") == "inventory_item"
+    )
+    assert operation_id == "match-operation"
+    assert transaction["item_id"] == "milk"
+    assert transaction["quantity_delta"] == 2
+    assert transaction["reason"] == "purchase"
+    assert event["shopping_item_id"] == "shopping-match"
+    assert event["item_id"] == "milk"
+    assert inventory_update["quantity"] == 5
+    assert inventory_update["aliases"] == ["鮮奶"]
+    assert plan.outcome[operation_id]["quantity_added"] == 2
+    assert plan.outcome[operation_id]["inventory_quantity"] == 5
+    assert h.container.get("inventory_item:milk") == before_inventory
+    assert h.container.get("shopping_item:shopping-match") == before_shopping
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("candidate_item_id", "other"), ("shopping_item_id", "other-shopping")],
+)
+def test_same_item_match_rejects_targets_other_than_the_stored_card(field, value):
+    h = setup_item_match()
+    operation = h.record.operations[0]
+    h.record = h.record.model_copy(
+        update={
+            "operations": [
+                operation.model_copy(update={"values": {**operation.values, field: value}})
+            ]
+        }
+    )
+
+    with pytest.raises(ShoppingPreviewError, match="stored item-match proposal"):
+        run(h.builder.build(h.record))
+
+
+def test_new_item_match_option_never_enters_purchase_writer():
+    h = setup_item_match()
+    h.record = h.record.model_copy(update={"selected_option_id": "new_item"})
+
+    with pytest.raises(ShoppingDecisionRequired, match="same-item match"):
+        run(h.builder.build(h.record))
 
 
 def test_new_inventory_and_existing_purchase_commit_together_with_stable_time_and_ids():

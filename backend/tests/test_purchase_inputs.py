@@ -188,13 +188,39 @@ def test_a_deleted_record_raises_target_changed(document_id):
         run(home.resolver.resolve(home.confirmed(card)))
 
 
-@pytest.mark.parametrize("action", ["confirm_item_match", "remove_shopping"])
-def test_lines_other_than_complete_purchase_are_refused(action):
+def test_lines_other_than_a_purchase_are_refused():
     home = Home()
-    card = home.card(home.line(action=action))
+    card = home.card(home.line(action="remove_shopping"))
 
     with pytest.raises(UnsupportedAction):
         run(home.resolver.resolve(home.confirmed(card)))
+
+
+def test_an_item_match_line_is_a_purchase_into_the_household_item_it_asked_about():
+    """Issue #175: 「是」 on 這是家裡的衛生紙嗎？ buys the entry into `candidate_item_id`."""
+    home = Home()
+    line = home.line(
+        action="confirm_item_match",
+        values={
+            "name": None,
+            "purchased_quantity": None,
+            "purchased_unit": None,
+            "item_id": None,
+            "user_term": "面紙",
+            "candidate_item_id": "tissue",
+            "candidate_name": "衛生紙",
+            "quantity": 2,
+            "unit": "包",
+        },
+    )
+
+    (purchase,) = run(home.resolver.resolve(home.confirmed(home.card(line)))).purchases
+
+    assert purchase.inventory == home.inventory
+    assert purchase.resolved_inventory_item_id == "tissue"
+    assert (purchase.purchased_quantity, purchase.purchased_unit) == (2, "包")
+    assert purchase.transaction_id == "tx-0"
+    assert purchase.new_inventory is None
 
 
 @pytest.mark.parametrize(

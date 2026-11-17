@@ -15,12 +15,14 @@ during implementation, but the rules below are decided. Public models stay in
 
 Current status: A1's service `backend/app/services/approvals.py` implements these
 rules and runs on B1's `CosmosWriteRepository`. With Cosmos configured,
-`POST /agent/resume` calls it; without Cosmos it returns 503. The Agent makes two
+`POST /agent/resume` calls it; without Cosmos it returns 503. The Agent makes three
 kinds of card. One is the v8 flow C purchase card (`complete_purchase`, section 11;
 read back by A1's `backend/app/services/purchase_inputs.py` and written through C1's
 `ShoppingWriteBuilder`), including new-item lines for entries not yet in inventory
-(section 10). The other is the new-item card from a photo (section 10, Issue #124;
-written through B1's `PhotoItemWriteBuilder`). Changing a card with 送出修改 is built (section 7, and sent as data in
+(section 10). Another is the item-match card for an entry that may be a household
+item under another name (section 10, Issue #175; also from `complete_purchase`,
+written as a purchase). The third is the new-item card from a photo (section 10,
+Issue #124; written through B1's `PhotoItemWriteBuilder`). Changing a card with 送出修改 is built (section 7, and sent as data in
 section 7.1), and an open card comes back with the next message (section 8). A
 purchase day the user says is built but off (section 11). Not built yet: the Agent making the
 new card by itself after a record changed (section 4 point 7); for now the reply
@@ -34,12 +36,13 @@ asks the user to say it again.
 | #41 (D-2) | Approval record in `household-data`, household partition, ETag, TTL |
 | #42 (D-3) | One `approval_id` per card, one `operation_id` per item; one atomic batch; partial selection; edits create a new card |
 | #48 | Option B: `pending → confirmed` is its own conditional update; `confirmed → completed` is in the batch; no stored `failed` status |
-| #36 | Item matching (four layers); confirmed aliases are written with the purchase |
+| #36 | Item matching (four layers); layer ④, remembering an alias, is not built (Issue #175) |
 | #44 | A2 returns observations only; A1 matches items |
 | #27, #28 | Purchase write contents; B1 storage boundary; recovery questions |
 | v8 §5, §12 | Plan B (persist pending approval, not a LangGraph checkpoint); three card types |
 | B1 design doc §6.2, §6.5 | `pending_approval` and `operation_receipt` records; batch rules |
 | #90 | Item-match card and new-item card formats, agreed with C2 (section 10) |
+| #175 | Item-match card: 「是」 writes the purchase in one card and remembers no alias; 「不是」 writes nothing; one unsure item per card; no photo item-match card (section 10) |
 
 ## 2. Approval record
 
@@ -51,11 +54,12 @@ Stored:
 
 - `approval_id`, `household_id`
 - `presentation`: `single_action` | `batch_action` | `purchase_options` |
-  `item_match` (format only so far, section 10)
+  `item_match` (section 10)
 - `operations`: for each item, `operation_id`, `action`, a display description, the exact
   resolved values shown to the user, the target records, and the version (ETag)
   of each target when the card was created
-- `options` (purchase options only): `option_id` and its displayed values
+- `options` (purchase options and item match only): `option_id` and its displayed
+  values
 - `status` (section 3)
 - `created_at`, `expires_at`, `decided_at`, `completed_at`
 - `selection`: `approved_operation_ids` or `selected_option_id`, fixed at the
@@ -179,7 +183,6 @@ A confirmation is written in two steps (#48):
 | Approval status `confirmed` → `completed` (ETag condition) | Inventory quantity (ETag condition) |
 | One `operation_receipt` per approved operation | Transaction |
 | | Shopping item status (purchase, C1) |
-| | New alias on an item (#36 layer ④) |
 | | New inventory item |
 
 Before writing, check the batch against Cosmos limits (100 operations). If it does
@@ -375,14 +378,14 @@ job or push notification (#39).
 | Removing a wrong alias | — | Not in MVP scope |
 | v8 §12 `partial_success` | — | Not used in the MVP: one batch is all-or-nothing (#42) |
 | How a new item's `item_id` is made | B1 + A1 | Decided in Issue #90: B1's `resolve_inventory_item_id(operation_id)` (PR #97), made when the user confirms; see section 10 |
-| Status of an `item_match` card answered with `new_item` | A1 | Decided with the confirm rules (section 10) |
+| Status of an `item_match` card answered with `new_item` | A1 | Decided in Issue #175: `cancelled` with reason `not_same_item`, nothing written (section 10) |
 
-## 10. Item-match and new-item cards (Issue #90)
+## 10. Item-match and new-item cards (Issue #90, #175)
 
 For a purchased item that may or may not be one the household already has (the
-user says 洗碗精, the household has 洗潔精). Agreed with C2 in Issue #90. The
-formats are fixed; the approval service refuses `item_match` cards until their
-confirm rules are built.
+user says 洗碗精, the household has 洗潔精). Formats agreed with C2 in Issue #90;
+the item-match confirm rules decided in Issue #175 (built in
+`backend/app/agent/cards.py` and the approval service).
 
 Every operation on every card carries `action`, a stable marker the App uses to
 choose how to show it. The App only shows the card and sends back the user's
@@ -390,20 +393,50 @@ choice; it never derives or changes values.
 
 Item match ("這是家裡的洗潔精嗎？"):
 
-- `presentation`: `item_match`, with one operation. When one purchase has several
-  items and only one is unsure, that item gets its own item-match card and the
-  others go on a normal card.
+- When: the user says a Shopping List entry was bought, the entry is not linked to
+  an inventory item, and it may be a household item: the model names the item it
+  thinks it is (`complete_purchase` item field `candidate_item_id`, #36 layer ③,
+  after looking at the inventory), or exactly one household item has the entry's
+  name or alias (layers ①②). Several items with that name or alias make no line.
+- `presentation`: `item_match`, with one operation. A card holds one unsure item
+  (one card per message, and no new card while one is open, section 8): when other
+  items come in the same message, they go on a normal card and the unsure item is
+  left off, with a reason telling the user to say it again after that card. With
+  only unsure items, the first gets the card and the others are left off the same
+  way.
 - `action`: `confirm_item_match`.
-- `values`: `user_term` (what the user said, 洗碗精), `candidate_item_id`,
-  `candidate_name` (洗潔精), `quantity`, `unit`.
+- `values` shown, and approved by 「是」: `user_term` (the list entry's name, 洗碗精),
+  `candidate_name` (洗潔精), `quantity`, `unit` (the entry's unit, or the item's
+  when the entry has none; a different unit makes no line).
+- `values` fixed but not shown: `candidate_item_id`, `shopping_item_id`,
+  `transaction_id`, and `purchased_at` on a dated purchase (section 11). Targets: the
+  versions of the shopping entry and of the candidate item, as on a purchase line.
+  C1's preview checks the purchase, with the candidate as its resolved target,
+  before the card is made.
 - `options`: exactly `{"option_id": "same_item", "label": "是，加到洗潔精"}` and
-  `{"option_id": "new_item", "label": "不是，這是新的東西"}`.
+  `{"option_id": "new_item", "label": "不是，這是新的東西"}`, in that order.
 - The reply uses the normal `ResumeRequest`, with no new fields:
-  - `approved: true`, `selected_option_id: "same_item"`: the quantity is added to
-    the matched item, and the user's word is remembered as its alias (#36 layer ④).
-  - `approved: true`, `selected_option_id: "new_item"`: this card writes nothing;
-    the reply's `pending_approval` is a new-item card.
+  - `approved: true`, `selected_option_id: "same_item"`: written like a purchase
+    line (section 11): A1's `CardWriteRouter` hands the card to C1's
+    `ShoppingWriteBuilder`, which checks the line against the card's values (PR
+    #183), and `CardInputResolver` reads `candidate_item_id` as the target
+    (`resolved_inventory_item_id`). The
+    quantity is added to that item, the entry becomes `completed` and keeps its
+    planned quantity, and one purchase Transaction uses the card's `transaction_id`,
+    all in one batch; a retry reuses the `operation_id`. No alias is remembered
+    (Issue #175), so the same word is asked about again next time. The reply is
+    已記錄：<candidate_name> +N <unit>（現在 N <unit>）.
+  - `approved: true`, `selected_option_id: "new_item"`: nothing is written; the card
+    becomes `cancelled` with reason `not_same_item`. The reply carries no card: it
+    asks the user to say the item again with how many and where it goes, which then
+    makes a new-item card. When `user_term` is the household item's own name, the
+    reply says the household already has it and no second item of that name is
+    added.
   - `approved: false`: nothing is written.
+  - A different answer than the first is refused (409) or gets the first one's reply.
+- The quantity cannot be changed on this card: `card_changes` refuses it
+  (`line_refused`); the user cancels and says it again.
+- A photo makes no item-match card (Issue #175 point 3).
 
 New item ("會新增一個庫存品項：洗碗精"):
 
@@ -421,10 +454,9 @@ bought and the entry is not linked to an inventory item (`complete_purchase`,
 - The line also carries `shopping_item_id` and `transaction_id`, and the version of
   the shopping entry only (the new item does not exist yet). The App does not show
   them. On a `batch_action` card it sits next to ordinary purchase lines.
-- No line is made when the household already has an item with the entry's name or
-  alias (#36 layers ①②); that would need the item-match card above, which is not
-  built yet. The Agent is also told to check for an item that is the same thing
-  under another name (layer ③) before it asks for the card.
+- When the entry may be a household item (the item-match rules above), the card is
+  an item-match card instead. The Agent is told to look at the inventory for the
+  same thing under another name (layer ③) before it asks for the card.
 - `unit` is the entry's unit, or the unit the user said when the entry has none.
   `location` is what the user said; without it no line is made, and the Agent asks
   where the item goes.

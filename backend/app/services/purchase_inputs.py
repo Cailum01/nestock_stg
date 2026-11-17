@@ -20,10 +20,15 @@ asked A1 to do that part (Issue #60, Issue #27). This module is only that step:
   `location`, `shopping_item_id`, `transaction_id`, and the version of the shopping
   entry only. It becomes C1's `NewInventoryTarget`; the new item's `item_id` comes
   from B1's `resolve_inventory_item_id(operation_id)`, so a retry gets the same item.
+- A `confirm_item_match` line (contract section 10, Issue #175) is on an item-match
+  card answered 「是」: a purchase of a Shopping List entry that is not linked yet,
+  into the household item the card asked about. `candidate_item_id` is the target,
+  `quantity` and `unit` what was bought, with the same two versions as a purchase
+  line; the router (`card_writes.py`) sends only 「是」 here.
 
-Not covered yet: removals (A1 has no removal card), the item-match card (Issue #90),
-and a different unit, which C1's plan refuses. Buying more than listed is resolved
-like any other line; the listed quantity is not a limit (Issue #178).
+Not covered yet: removals (A1 has no removal card) and a different unit, which C1's
+plan refuses. Buying more than listed is resolved like any other line; the listed
+quantity is not a limit (Issue #178).
 
 Photo new-item cards (Issue #124, contract section 10) have no Shopping List entry,
 so they are not purchases: `PhotoInputResolver` below turns them into C1's
@@ -39,7 +44,12 @@ from datetime import datetime
 from typing import Protocol
 
 from app.models.domain import InventoryItem, ShoppingItem
-from app.services.approvals import ApprovalRecord, StoredOperation, TargetChanged
+from app.services.approvals import (
+    CONFIRM_ITEM_MATCH,
+    ApprovalRecord,
+    StoredOperation,
+    TargetChanged,
+)
 from app.services.cosmos_read import MappedDocument
 from app.services.inventory_item_identity import resolve_inventory_item_id
 from app.services.shopping.planning import AdjustmentInput, NewInventoryTarget, PurchaseInput
@@ -87,11 +97,28 @@ class CardInputResolver:
     ) -> PurchaseInput:
         if operation.action == CREATE_ITEM:
             return await self._new_item_input(record, operation)
-        if operation.action != COMPLETE_PURCHASE:
-            raise UnsupportedAction(f"No purchase input for action {operation.action!r}.")
+        if operation.action == COMPLETE_PURCHASE:
+            return await self._existing_item_input(
+                record, operation, "item_id", "purchased_quantity", "purchased_unit"
+            )
+        if operation.action == CONFIRM_ITEM_MATCH:
+            return await self._existing_item_input(
+                record, operation, "candidate_item_id", "quantity", "unit"
+            )
+        raise UnsupportedAction(f"No purchase input for action {operation.action!r}.")
+
+    async def _existing_item_input(
+        self,
+        record: ApprovalRecord,
+        operation: StoredOperation,
+        item_key: str,
+        quantity_key: str,
+        unit_key: str,
+    ) -> PurchaseInput:
+        """A purchase into an existing inventory item; both records must be unchanged."""
         values = operation.values
         shopping_item_id = _text(values, "shopping_item_id")
-        item_id = _text(values, "item_id")
+        item_id = _text(values, item_key)
 
         shopping, shopping_etag = _unchanged(
             operation,
@@ -120,8 +147,8 @@ class CardInputResolver:
             shopping_etag=shopping_etag,
             inventory=inventory,
             inventory_etag=inventory_etag,
-            purchased_quantity=_count(values, "purchased_quantity"),
-            purchased_unit=_text(values, "purchased_unit"),
+            purchased_quantity=_count(values, quantity_key),
+            purchased_unit=_text(values, unit_key),
             resolved_inventory_item_id=item_id,
             purchased_at=_optional_time(values, "purchased_at"),
         )

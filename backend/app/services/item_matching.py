@@ -6,8 +6,10 @@ Layers implemented here, cheapest first:
 
 Layer 3 (the Agent's model compares an unmatched name with the household item
 list) happens inside the Agent's normal model call; this service only reports
-"no match" and hands over the item list. Layer 4 (remember the user's term as an
-alias on confirmation) is a write and waits for the approval flow (Issue #48).
+"no match" and hands over the item list. The model then names the item it thinks
+it is, and the user answers an item-match card (contract section 10, Issue #175).
+Layer 4 (remember the user's term as an alias on confirmation) is not built: Issue
+#175 decided that 「是」 remembers no alias.
 
 This service only reads, through the same household-scoped services as the API
 routes. It never writes and never asks A2 to read inventory (Issue #44).

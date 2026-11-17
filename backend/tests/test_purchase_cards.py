@@ -780,17 +780,18 @@ def test_a_new_item_sits_on_one_card_with_ordinary_purchases_and_both_are_writte
     [
         ([paste()], {"location": None}, NEEDS_LOCATION),
         ([paste()], {"unit": "支"}, OTHER_UNIT),
-        ([inventory("paste", "牙膏", 0, "條"), paste()], {}, ALREADY_HAVE.format(names="牙膏")),
         (
-            [inventory("paste", "高露潔", 1, "條", aliases=["牙膏"]), paste()],
+            [inventory("paste", "牙膏", 0, "條"), inventory("paste-2", "牙膏", 1, "條"), paste()],
             {},
-            ALREADY_HAVE.format(names="高露潔"),
+            ALREADY_HAVE.format(names="牙膏、牙膏"),
         ),
     ],
 )
 def test_no_new_item_line_without_location_matching_unit_or_when_the_household_has_it(
     records, item, reason
 ):
+    """One household item with the entry's name or alias makes an item-match card
+    instead (Issue #175, `test_item_match_cards.py`); several cannot be told apart."""
     container, reader, approvals = setup(inventory(), *records)
 
     response, model = new_item_card(reader, approvals, **item)

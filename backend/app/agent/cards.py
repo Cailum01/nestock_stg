@@ -148,7 +148,6 @@ TODAY_NOTE = (
 
 NOT_ON_LIST = "待購清單上找不到這一筆，可能已經買過或被刪掉。"
 NOT_LINKED = "這樣東西還沒有對應到庫存裡的品項，現在還不能從對話記錄購買。"
-MORE_THAN_LISTED = "買的數量比待購清單上多，現在還不能記錄。"
 OTHER_UNIT = "待購清單和庫存用的單位不同，現在還不能記錄。"
 ALREADY_HAVE = "家裡已經有「{names}」，但待購清單上這一筆沒有連到它，現在還不能從對話記錄。"
 NEEDS_UNIT = "待購清單上沒寫單位，請使用者說買了幾個什麼（例如 2 瓶）。"
@@ -740,8 +739,7 @@ class PurchaseCards:
         entry = shopping.record
         if not entry.item_id:
             return await self._new_item_line(household_id, shopping, item, purchased_at)
-        if entry.quantity is not None and quantity > entry.quantity:
-            return None, MORE_THAN_LISTED
+        # Issue #178: the list's planned quantity does not cap what was bought.
         inventory = await self._reader.read_inventory_item_with_etag(
             household_id=household_id, item_id=entry.item_id
         )
@@ -766,8 +764,6 @@ class PurchaseCards:
     ) -> tuple[NewOperation | None, str]:
         """A list entry the household does not have yet becomes a `create_item` line."""
         entry = shopping.record
-        if entry.quantity is not None and item.quantity > entry.quantity:
-            return None, MORE_THAN_LISTED
         same = match_term(entry.name, await self._reader.list_inventory(household_id))
         if same.items:
             return None, ALREADY_HAVE.format(names="、".join(i.name for i in same.items))

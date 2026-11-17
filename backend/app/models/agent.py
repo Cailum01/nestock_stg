@@ -35,18 +35,29 @@ class CardChange(ContractModel):
 
     A field left out stays as it is on the card. `purchased_on` is a Taipei date;
     an explicit null sets the line back to today (no purchase day on the card).
+    `name` and `location` change a new-item line from a photo or said by the user
+    (Issue #188), trimmed; `location` null or blank sets it back to empty (未填).
     """
 
     operation_id: str = Field(min_length=1)
     quantity: int | None = Field(default=None, ge=1, strict=True)
     purchased_on: date | None = None
+    name: str | None = None
+    location: str | None = None
+
+    @field_validator("name", "location")
+    @classmethod
+    def _trimmed(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
 
     @model_validator(mode="after")
     def _changes_something(self) -> Self:
         if "quantity" in self.model_fields_set and self.quantity is None:
             raise ValueError("quantity cannot be null; leave it out to keep it.")
-        if not {"quantity", "purchased_on"} & self.model_fields_set:
-            raise ValueError("Each change needs quantity or purchased_on.")
+        if "name" in self.model_fields_set and self.name is None:
+            raise ValueError("name cannot be null or blank; leave it out to keep it.")
+        if not {"quantity", "purchased_on", "name", "location"} & self.model_fields_set:
+            raise ValueError("Each change needs quantity, purchased_on, name or location.")
         return self
 
 

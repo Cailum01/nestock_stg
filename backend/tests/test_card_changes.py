@@ -233,8 +233,52 @@ def test_a_card_that_cannot_change_any_more_gets_no_card():
             "replaces_approval_id": "a",
             "card_changes": [{"operation_id": "op", "purchased_on": "11/9"}],
         },
+        {"replaces_approval_id": "a", "card_changes": [{"operation_id": "op", "name": None}]},
+        {"replaces_approval_id": "a", "card_changes": [{"operation_id": "op", "name": "  "}]},
+        {"replaces_approval_id": "a", "card_changes": [{"operation_id": "op", "name": 3}]},
+        {"replaces_approval_id": "a", "card_changes": [{"operation_id": "op", "location": 3}]},
     ],
 )
 def test_a_malformed_change_is_rejected_before_anything_runs(fields):
     with pytest.raises(ValidationError):
         AgentRequest(household_id=HOME, message="送出修改", **fields)
+
+
+def test_name_and_location_are_trimmed_and_a_blank_location_is_empty():
+    """Issue #188: `location` null or blank sets it back to empty (未填)."""
+    request = AgentRequest(
+        household_id=HOME,
+        message="送出修改",
+        replaces_approval_id="a",
+        card_changes=[
+            {"operation_id": "op-1", "name": " 胃散 ", "location": " 藥箱 "},
+            {"operation_id": "op-2", "location": "  "},
+            {"operation_id": "op-3", "location": None},
+        ],
+    )
+
+    first, second, third = request.card_changes
+    assert (first.name, first.location) == ("胃散", "藥箱")
+    assert second.location is None and "location" in second.model_fields_set
+    assert third.location is None and "location" in third.model_fields_set
+
+
+@pytest.mark.parametrize("field", [{"name": "面紙"}, {"location": "客廳"}])
+def test_a_purchase_line_name_or_location_cannot_change(field):
+    """Issue #188: only a photo or said new-item card changes its name and place."""
+    container, reader, approvals = setup()
+    old = make_card(reader, approvals, TISSUE)
+    (line,) = old.operations
+
+    response = change(reader, approvals, old, {"operation_id": line.operation_id, **field})
+
+    assert code(response) == "line_refused"
+    assert response.results[0].data["lines"] == [
+        {
+            "operation_id": line.operation_id,
+            "shopping_item_id": "tissue-1",
+            "reason": "這一項不能改名稱或位置。",
+        }
+    ]
+    assert response.pending_approval == old
+    assert cards(container) == {old.approval_id: "pending"}

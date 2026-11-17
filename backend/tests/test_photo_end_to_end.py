@@ -15,9 +15,10 @@ from test_purchase_cards import HOME, FakeCosmosContainer, inventory, resume_app
 from test_read_agent import PHOTO, ScriptedModel, _ask_photo, _call, _detected, _StubVision
 
 from app.agent import read_agent
-from app.agent.cards import PhotoCards
+from app.agent.cards import PhotoCards, PurchaseCards
 from app.agent.read_agent import ReadAgent, load_system_prompt
 from app.core.dependencies import _create_approval_service
+from app.models.agent import AgentRequest
 from app.services.cosmos_read import (
     CosmosInventoryService,
     CosmosReadRepository,
@@ -142,6 +143,39 @@ def test_a_line_the_household_has_by_now_does_not_stop_the_other_ticked_lines():
 
     assert reply["message"] == "已記錄：滑鼠 +1 個（現在 1 個）"
     assert sorted(d["name"] for d in _new_items(container, "滑鼠", "鍵盤")) == ["滑鼠", "鍵盤"]
+
+
+def test_a_photo_card_changed_on_the_card_writes_the_changed_values():
+    """Issue #188: name and location changed with 送出修改 are what confirming writes."""
+    container, _, _ = setup()
+    reads, approvals = _app_approvals(container)
+    agent = _photo_agent(container, reads, approvals, _detected("張國周強胃散", unit="罐"))
+    card = _ask_photo(agent, household_id=HOME).pending_approval
+    changer = ReadAgent(
+        ScriptedModel(),  # no model call
+        QueryTools(CosmosInventoryService(reads), CosmosShoppingService(reads)),
+        load_system_prompt(),
+        purchases=PurchaseCards(reads, approvals),
+        photo_cards=PhotoCards(approvals),
+    )
+    change = {"operation_id": card.operations[0].operation_id, "name": "胃散", "location": "藥箱"}
+
+    new = asyncio.run(
+        changer.respond(
+            AgentRequest(
+                household_id=HOME,
+                message="送出修改",
+                replaces_approval_id=card.approval_id,
+                card_changes=[change],
+            )
+        )
+    ).pending_approval
+    reply = _confirm(approvals, new)
+
+    assert reply["message"] == "已記錄：胃散 +1 罐（現在 1 罐）"
+    (item,) = _new_items(container, "胃散")
+    assert item["location"] == "藥箱"
+    assert _new_items(container, "張國周強胃散") == []
 
 
 def test_get_read_agent_gives_photo_cards_the_app_approval_service(monkeypatch):

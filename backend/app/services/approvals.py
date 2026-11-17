@@ -67,6 +67,13 @@ MAX_BATCH_OPERATIONS = 100
 
 RECORD_TYPE = "pending_approval"
 
+CONFIRM_ITEM_MATCH = "confirm_item_match"
+"""`action` of the one line on an item-match card (contract section 10, Issue #175)."""
+SAME_ITEM = "same_item"
+"""Item-match option 「是」: the purchase is written to the matched household item."""
+NEW_ITEM = "new_item"
+"""Item-match option 「不是」: nothing is written and the card is closed (Issue #175)."""
+
 
 class ApprovalStatus(StrEnum):
     PENDING = "pending"
@@ -83,6 +90,8 @@ class CancelReason(StrEnum):
     """The Agent replaced the card with a new one (PR #47 sections 6 and 7)."""
     REPLACE_FAILED = "replace_failed"
     """A 送出修改 card whose original could not be cancelled (section 7): never shown."""
+    NOT_SAME_ITEM = "not_same_item"
+    """The user answered an item-match card with 「不是」 (section 10): nothing written."""
 
 
 class TargetVersion(ContractModel):
@@ -436,7 +445,15 @@ class ApprovalService:
         is not known yet, so `created_at` stands in for it: the time changes values on
         the writes, not how many writes there are.
         """
-        option_ids: list[str | None] = [option.option_id for option in record.options]
+        option_ids: list[str | None] = [
+            option.option_id
+            for option in record.options
+            # An item-match card's 「不是」 writes nothing (section 10), so only 「是」 counts.
+            if not (
+                record.presentation is ApprovalPresentation.ITEM_MATCH
+                and option.option_id == NEW_ITEM
+            )
+        ]
         for option_id in option_ids or [None]:
             trial = record.model_copy(
                 update={
@@ -591,6 +608,9 @@ class ApprovalService:
                     "decided_at": now,
                 }
             )
+            if record.presentation is ApprovalPresentation.ITEM_MATCH and option_id == NEW_ITEM:
+                # Section 10: 「不是」 writes nothing; the card is closed (Issue #175).
+                return await self._cancel(selected, etag, CancelReason.NOT_SAME_ITEM)
             plan = await self._plan(selected, etag)
             if isinstance(plan, ResumeResult):
                 return plan
@@ -687,7 +707,9 @@ class ApprovalService:
         ):
             return await self._record_expired(record, etag)
         update: dict[str, object] = {"status": ApprovalStatus.CANCELLED, "cancel_reason": reason}
-        if reason is CancelReason.USER:
+        if reason is CancelReason.USER or (
+            reason is CancelReason.NOT_SAME_ITEM and record.decided_at is None
+        ):
             update["decided_at"] = now
         cancelled = record.model_copy(update=update)
         try:
@@ -846,13 +868,19 @@ def _check_card_shape(
     operations: Sequence[NewOperation],
     options: Sequence[NewOption],
 ) -> None:
-    """The three card types (v8 section 12).
+    """The three card types (v8 section 12), and the item-match card (section 10).
 
-    The item_match card (Issue #90) has an agreed format but no confirm rules yet,
-    so it is refused here.
+    An item-match card (Issue #90, #175) has one `confirm_item_match` line and exactly
+    the options `same_item` (「是」) and `new_item` (「不是」), in that order.
     """
     if presentation is ApprovalPresentation.ITEM_MATCH:
-        raise ValueError("Item-match cards are not supported yet.")
+        if len(operations) != 1 or operations[0].action != CONFIRM_ITEM_MATCH:
+            raise ValueError("An item-match card has exactly one confirm_item_match line.")
+        if [option.option_id for option in options] != [SAME_ITEM, NEW_ITEM]:
+            raise ValueError("An item-match card has exactly the options same_item, new_item.")
+        if any("option_id" in option.values for option in options):
+            raise ValueError("Option values must not contain option_id; the card sets it.")
+        return
     if not operations:
         raise ValueError("A card needs at least one operation.")
     if presentation is ApprovalPresentation.PURCHASE_OPTIONS:
@@ -889,10 +917,11 @@ def _selection_for(record: ApprovalRecord, request: ResumeRequest) -> tuple[list
         if unknown:
             raise InvalidSelection("approved_operation_ids must be on this card.")
         return [op for op in record.operation_ids if op in set(ids)], None
+    # Purchase-options and item-match cards: exactly one option on the card.
     if ids is not None:
-        raise InvalidSelection("A purchase-options card takes selected_option_id only.")
+        raise InvalidSelection("This card takes selected_option_id only.")
     if option_id is None:
-        raise InvalidSelection("Choose one purchase option.")
+        raise InvalidSelection("Choose one option on the card.")
     if option_id not in {option.option_id for option in record.options}:
         raise InvalidSelection("selected_option_id must be on this card.")
     return record.operation_ids, option_id

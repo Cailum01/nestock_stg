@@ -12,18 +12,27 @@ happens only in `POST /agent/resume` after the user confirms
 A list entry not linked to an inventory item is a thing the household does not have
 yet (Issue #90): its line is a `create_item` line (`new_item_operation` below,
 contract section 10) that adds a new inventory item with the confirmed name,
-quantity, unit and location. When the household already has an item with that name
-or alias, no line is made; the item-match card that would ask "is it this one?" has
-no confirm rules yet.
+quantity, unit and location. When it may be a household item after all, the card is
+an item-match card instead (`item_match_operation`, contract section 10, Issue #175):
+"這是家裡的洗潔精嗎？". That is the case when the model names the item it thinks it is
+(`candidate_item_id`, a different name for the same thing) or when exactly one
+household item has the entry's name or alias. 「是」 writes the purchase into that
+item, as a purchase card would, and remembers no alias; 「不是」 writes nothing. An
+item-match card holds one item only: with other items in the same message, the
+ordinary items go on the card and the user is asked to say the unsure one again
+afterwards.
 
 A purchase day the user says (「昨天買的」, A1-50) is built but off
 (`dated_purchases`; `NESTOCK_DATED_PURCHASES=1` turns it on for local testing): the
 App does not show it on the card yet, and a card may only hold values the user sees
 (HITL rule 4).
 
-Not covered yet: items that are not on the list, the item-match card (Issue #90),
-buying more than listed, a different unit, spreading more items than one batch holds
-over several cards, changing a card (Issue #91), and reminding the user of open cards.
+Buying more than listed makes a card with what was bought; the listed quantity is not
+a limit (Issue #178).
+
+Not covered yet: items that are not on the list, a different unit, spreading more
+items than one batch holds over several cards, changing a card (Issue #91), and
+reminding the user of open cards.
 """
 
 from __future__ import annotations
@@ -46,18 +55,23 @@ from app.models.agent import (
 )
 from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus
 from app.services.approvals import (
+    CONFIRM_ITEM_MATCH,
+    NEW_ITEM,
+    SAME_ITEM,
     ApprovalRecord,
     ApprovalService,
     ApprovalStatus,
     BatchTooLarge,
+    CancelReason,
     NewOperation,
+    NewOption,
     ResumeOutcome,
     ResumeResult,
     TargetChanged,
     TargetVersion,
 )
 from app.services.cosmos_read import MappedDocument
-from app.services.item_matching import match_term
+from app.services.item_matching import match_term, normalize_term
 from app.services.purchase_inputs import COMPLETE_PURCHASE, CREATE_ITEM, PurchaseRecordReader
 from app.services.purchase_time import (
     TAIPEI,
@@ -112,6 +126,14 @@ PURCHASE_TOOL_SCHEMA: dict[str, Any] = {
                                     "使用者說要放在哪裡。"
                                 ),
                             },
+                            "candidate_item_id": {
+                                "type": "string",
+                                "description": (
+                                    "只有待購清單上那一筆沒有 item_id，而你查過庫存、判斷它可能就是"
+                                    "家裡已有的某一樣（名字不同，例如洗碗精和洗潔精）時才填："
+                                    "家裡那一樣的 item_id。會出一張比對卡問使用者是不是同一樣。"
+                                ),
+                            },
                         },
                         "required": ["shopping_item_id", "quantity"],
                     },
@@ -148,9 +170,25 @@ TODAY_NOTE = (
 
 NOT_ON_LIST = "待購清單上找不到這一筆，可能已經買過或被刪掉。"
 NOT_LINKED = "這樣東西還沒有對應到庫存裡的品項，現在還不能從對話記錄購買。"
-MORE_THAN_LISTED = "買的數量比待購清單上多，現在還不能記錄。"
 OTHER_UNIT = "待購清單和庫存用的單位不同，現在還不能記錄。"
 ALREADY_HAVE = "家裡已經有「{names}」，但待購清單上這一筆沒有連到它，現在還不能從對話記錄。"
+NO_SUCH_ITEM = "家裡的庫存找不到 candidate_item_id 這個品項；請重新查庫存。"
+MATCH_LATER = (
+    "可能是家裡的「{candidate}」，這張卡先不放這一樣。"
+    "請使用者確認完這張卡之後，再說一次這一樣，會出比對卡問是不是同一樣。"
+)
+ITEM_MATCH_MADE = (
+    "已出一張比對卡，問使用者「{term}」是不是家裡的「{candidate}」。"
+    "請使用者在卡上選「是」或「不是」：選「是」才會記到{candidate}；"
+    "選「不是」不會記錄，要新增成新的品項，使用者要再說一次買了幾個、放在哪裡。"
+)
+NOT_SAME_ITEM_REPLY = (
+    "好，「{term}」不是家裡的「{candidate}」，沒有記錄任何東西。"
+    "要新增成新的品項，請再說一次買了幾個、放在哪裡（例如「{term} {quantity} {unit}，放在廚房」）。"
+)
+NOT_SAME_ITEM_SAME_NAME = (
+    "好，沒有記錄任何東西。家裡已經有同名的「{candidate}」，不會再新增一個同名的品項。"
+)
 NEEDS_UNIT = "待購清單上沒寫單位，請使用者說買了幾個什麼（例如 2 瓶）。"
 NEEDS_LOCATION = "這是家裡還沒有的東西，要說放在哪裡，才能新增到庫存。"
 UNREADABLE_DAY = "看不懂是哪一天買的，請使用者說日期（例如 11/15）。"
@@ -274,6 +312,64 @@ def new_item_operation(
         },
         targets=[TargetVersion(record_id=shopping.document_id, etag=shopping.etag)],
     )
+
+
+def item_match_operation(
+    *,
+    shopping: MappedDocument[ShoppingItem],
+    inventory: MappedDocument[InventoryItem],
+    quantity: int,
+    transaction_id: str | None = None,
+    purchased_at: datetime | None = None,
+) -> NewOperation:
+    """The one line of an item-match card: "這是家裡的洗潔精嗎？" (Issue #175).
+
+    Contract section 10. Shown: `user_term` (the list entry's name), `candidate_name`,
+    `quantity` and `unit`; 「是」 approves exactly these. Fixed but not shown:
+    `candidate_item_id`, `shopping_item_id`, `transaction_id` and both versions, so
+    「是」 writes the same purchase a purchase card would, into the candidate item.
+    C1's preview checks the purchase first, with the candidate as its resolved target;
+    a purchase it would refuse never reaches a card. No alias is remembered.
+    """
+    if shopping.etag is None or inventory.etag is None:
+        raise ValueError("Both records must be read with their ETag.")
+    unit = inventory.record.unit if shopping.record.unit is None else None
+    preview = ShoppingPreviewService().preview_purchase(
+        household_id=shopping.record.household_id,
+        shopping=shopping.record,
+        inventory=inventory.record,
+        purchased_quantity=quantity,
+        purchased_unit=unit,
+        resolved_inventory_item_id=inventory.record.item_id,
+    )
+    candidate = inventory.record.name
+    bought = _bought(purchased_at).rstrip("，")
+    return NewOperation(
+        action=CONFIRM_ITEM_MATCH,
+        description=f"這是家裡的{candidate}嗎？" + (f"（{bought}）" if bought else ""),
+        values={
+            "user_term": shopping.record.name,
+            "candidate_item_id": inventory.record.item_id,
+            "candidate_name": candidate,
+            "quantity": quantity,
+            "unit": preview.unit,
+            "shopping_item_id": shopping.record.shopping_item_id,
+            "transaction_id": transaction_id or uuid.uuid4().hex,
+            **_purchased_at_value(purchased_at),
+        },
+        targets=[
+            TargetVersion(record_id=shopping.document_id, etag=shopping.etag),
+            TargetVersion(record_id=inventory.document_id, etag=inventory.etag),
+        ],
+    )
+
+
+def item_match_options(candidate_name: str) -> list[NewOption]:
+    """Exactly 「是」 and 「不是」 (contract section 10); the App shows each `label`."""
+    return [
+        NewOption(option_id=SAME_ITEM, values={"label": f"是，加到{candidate_name}"}),
+        NewOption(option_id=NEW_ITEM, values={"label": "不是，這是新的東西"}),
+    ]
 
 
 PHOTO_CARD_MADE = (
@@ -517,6 +613,7 @@ class _Requested:
     unit: str | None = None
     location: str | None = None
     purchased_on: str | None = None
+    candidate_item_id: str | None = None
 
 
 class PurchaseCards:
@@ -646,7 +743,13 @@ class PurchaseCards:
         requested = _requested_items(args.get("items"), dated=self._dated)
         if not requested:
             return json.dumps({"error": "no_items"}), None
-        lines, left_out = await self._lines(household_id, requested)
+        lines, matches, left_out = await self._lines(household_id, requested)
+        if matches and not lines:
+            # Issue #175: an item-match card holds one item; any others are said again.
+            first, *later = matches
+            left_out.extend(_said_later(match) for match in later)
+            return await self._propose_match(household_id, first, left_out, replaces_approval_id)
+        left_out.extend(_said_later(match) for match in matches)
         if not lines:
             return json.dumps({"card": None, "not_on_card": left_out}, ensure_ascii=False), None
         record, error = await self._store(household_id, lines, replaces_approval_id)
@@ -656,6 +759,28 @@ class PurchaseCards:
         view = {
             "card": {"lines": [line.description for line in lines]},
             "not_on_card": left_out,
+        }
+        return json.dumps(view, ensure_ascii=False), card.model_dump(mode="json")
+
+    async def _propose_match(
+        self,
+        household_id: str,
+        line: NewOperation,
+        left_out: list[dict[str, Any]],
+        replaces_approval_id: str | None,
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Store the item-match card for one unsure item (contract section 10)."""
+        candidate = str(line.values["candidate_name"])
+        record, error = await self._store(
+            household_id, [line], replaces_approval_id, options=item_match_options(candidate)
+        )
+        if record is None:
+            return error, None
+        card = ApprovalService.to_pending_approval(record)
+        view = {
+            "card": {"item_match": line.description},
+            "not_on_card": left_out,
+            "note": ITEM_MATCH_MADE.format(term=line.values["user_term"], candidate=candidate),
         }
         return json.dumps(view, ensure_ascii=False), card.model_dump(mode="json")
 
@@ -707,8 +832,17 @@ class PurchaseCards:
         ]
         if after == before:
             raise CardChangeRefused("nothing_changed", CHANGE_NOTHING)
-        lines, left_out = await self._lines(
+        lines, matches, left_out = await self._lines(
             old.household_id, _requested_items(after, dated=self._dated)
+        )
+        # A list entry the household has by now is not made an item-match card here: the
+        # changed card keeps the lines it had (Issue #175 makes item-match cards one item).
+        left_out.extend(
+            {
+                "shopping_item_id": match.values["shopping_item_id"],
+                "reason": ALREADY_HAVE.format(names=match.values["candidate_name"]),
+            }
+            for match in matches
         )
         if left_out:
             by_entry = {str(op.values.get("shopping_item_id")): op for op in old.operations}
@@ -722,33 +856,50 @@ class PurchaseCards:
 
     async def _lines(
         self, household_id: str, requested: Sequence[_Requested]
-    ) -> tuple[list[NewOperation], list[dict[str, Any]]]:
-        """Card lines for the requested items, and the items left off with why."""
+    ) -> tuple[list[NewOperation], list[NewOperation], list[dict[str, Any]]]:
+        """(card lines, item-match lines, the items left off with why).
+
+        An item-match line (`confirm_item_match`) is for an item that may be a household
+        item under another name (Issue #175); it never shares a card with other lines.
+        """
         lines: list[NewOperation] = []
+        matches: list[NewOperation] = []
         left_out: list[dict[str, Any]] = []
         for item in requested:
             line, reason = await self._line(household_id, item)
             if line is None:
                 left_out.append({"shopping_item_id": item.shopping_item_id, "reason": reason})
+            elif line.action == CONFIRM_ITEM_MATCH:
+                matches.append(line)
             else:
                 lines.append(line)
-        return lines, left_out
+        return lines, matches, left_out
 
     async def _store(
-        self, household_id: str, lines: list[NewOperation], replaces_approval_id: str | None
+        self,
+        household_id: str,
+        lines: list[NewOperation],
+        replaces_approval_id: str | None,
+        *,
+        options: Sequence[NewOption] = (),
     ) -> tuple[ApprovalRecord | None, str]:
-        """Store the pending card: (record, "") or (None, the error for the model)."""
-        presentation = (
-            ApprovalPresentation.SINGLE_ACTION
-            if len(lines) == 1
-            else ApprovalPresentation.BATCH_ACTION
-        )
+        """Store the pending card: (record, "") or (None, the error for the model).
+
+        With `options` it is an item-match card (one line, 「是」 and 「不是」).
+        """
+        if options:
+            presentation = ApprovalPresentation.ITEM_MATCH
+        elif len(lines) == 1:
+            presentation = ApprovalPresentation.SINGLE_ACTION
+        else:
+            presentation = ApprovalPresentation.BATCH_ACTION
         try:
             record = await self._approvals.save(
                 self._approvals.prepare(
                     household_id=household_id,
                     presentation=presentation,
                     operations=lines,
+                    options=options,
                     replaces_approval_id=replaces_approval_id,
                 )
             )
@@ -790,8 +941,7 @@ class PurchaseCards:
         entry = shopping.record
         if not entry.item_id:
             return await self._new_item_line(household_id, shopping, item, purchased_at)
-        if entry.quantity is not None and quantity > entry.quantity:
-            return None, MORE_THAN_LISTED
+        # Issue #178: the list's planned quantity does not cap what was bought.
         inventory = await self._reader.read_inventory_item_with_etag(
             household_id=household_id, item_id=entry.item_id
         )
@@ -814,11 +964,24 @@ class PurchaseCards:
         item: _Requested,
         purchased_at: datetime | None = None,
     ) -> tuple[NewOperation | None, str]:
-        """A list entry the household does not have yet becomes a `create_item` line."""
+        """A list entry not linked to an inventory item: a new item, or maybe a household one.
+
+        It may be a household item when the model names one (`candidate_item_id`) or when
+        exactly one household item has the entry's name or alias; the line is then an
+        item-match line (Issue #175). Several such items cannot be told apart, so no line
+        is made. Otherwise it becomes a `create_item` line.
+        """
         entry = shopping.record
-        if entry.quantity is not None and item.quantity > entry.quantity:
-            return None, MORE_THAN_LISTED
+        if item.candidate_item_id is not None:
+            return await self._match_line(
+                household_id, shopping, item, item.candidate_item_id, NO_SUCH_ITEM, purchased_at
+            )
         same = match_term(entry.name, await self._reader.list_inventory(household_id))
+        if len(same.items) == 1:
+            already = ALREADY_HAVE.format(names=same.items[0].name)
+            return await self._match_line(
+                household_id, shopping, item, same.items[0].item_id, already, purchased_at
+            )
         if same.items:
             return None, ALREADY_HAVE.format(names="、".join(i.name for i in same.items))
         if entry.unit is not None and item.unit is not None and item.unit != entry.unit:
@@ -840,6 +1003,45 @@ class PurchaseCards:
             return None, f"這一筆現在還不能記錄：{error}"
         return line, ""
 
+    async def _match_line(
+        self,
+        household_id: str,
+        shopping: MappedDocument[ShoppingItem],
+        item: _Requested,
+        candidate_item_id: str,
+        missing: str,
+        purchased_at: datetime | None,
+    ) -> tuple[NewOperation | None, str]:
+        """The item-match line for one unsure item (contract section 10, Issue #175)."""
+        candidate = await self._reader.read_inventory_item_with_etag(
+            household_id=household_id, item_id=candidate_item_id
+        )
+        if candidate is None:
+            return None, missing
+        listed_unit = shopping.record.unit
+        if (listed_unit is not None and listed_unit != candidate.record.unit) or (
+            item.unit is not None and item.unit != candidate.record.unit
+        ):
+            return None, OTHER_UNIT
+        try:
+            line = item_match_operation(
+                shopping=shopping,
+                inventory=candidate,
+                quantity=item.quantity,
+                purchased_at=purchased_at,
+            )
+        except (ShoppingPreviewError, ValueError) as error:
+            return None, f"這一筆現在還不能記錄：{error}"
+        return line, ""
+
+
+def _said_later(match: NewOperation) -> dict[str, Any]:
+    """An unsure item left off a card with other items: said again afterwards (#175)."""
+    return {
+        "shopping_item_id": match.values["shopping_item_id"],
+        "reason": MATCH_LATER.format(candidate=match.values["candidate_name"]),
+    }
+
 
 def _not_replaced_because(record: ApprovalRecord | None) -> str | None:
     """None when the old card is cancelled as `replaced`; otherwise why it is not."""
@@ -853,9 +1055,10 @@ def _not_replaced_because(record: ApprovalRecord | None) -> str | None:
 def _requested_items(value: Any, *, dated: bool = False) -> list[_Requested]:
     """The model's items, each shopping entry once, quantities as whole numbers ≥ 1.
 
-    `unit` and `location` are optional words, and so is `purchased_on`, which is read
-    only with dated purchases on. Blank text counts as not said: the real model fills
-    unused optional fields with "" (seen on Azure OpenAI, 2026-11-13).
+    `unit`, `location` and `candidate_item_id` are optional words, and so is
+    `purchased_on`, which is read only with dated purchases on. Blank text counts as
+    not said: the real model fills unused optional fields with "" (seen on Azure
+    OpenAI, 2026-11-13).
     """
     if not isinstance(value, list):
         return []
@@ -867,7 +1070,7 @@ def _requested_items(value: Any, *, dated: bool = False) -> list[_Requested]:
         shopping_item_id = str(item.get("shopping_item_id") or "").strip()
         quantity = item.get("quantity")
         day = item.get("purchased_on") if dated else None
-        words = [item.get("unit"), item.get("location"), day]
+        words = [item.get("unit"), item.get("location"), day, item.get("candidate_item_id")]
         if (
             not shopping_item_id
             or shopping_item_id in seen
@@ -878,8 +1081,10 @@ def _requested_items(value: Any, *, dated: bool = False) -> list[_Requested]:
         ):
             return []
         seen.add(shopping_item_id)
-        unit, location, purchased_on = ((w or "").strip() or None for w in words)
-        requested.append(_Requested(shopping_item_id, quantity, unit, location, purchased_on))
+        unit, location, purchased_on, candidate = ((w or "").strip() or None for w in words)
+        requested.append(
+            _Requested(shopping_item_id, quantity, unit, location, purchased_on, candidate)
+        )
     return requested
 
 
@@ -978,7 +1183,12 @@ RESUME_MESSAGES = {
 
 
 def resume_response(result: ResumeResult) -> AgentResponse:
-    """What the App shows after the user answers a card. "Done" only when written (#52)."""
+    """What the App shows after the user answers a card. "Done" only when written (#52).
+
+    An item-match card answered 「不是」 is closed with nothing written (section 10): the
+    reply says so and asks for the item again with where it goes, unless the household
+    already has an item of that name, which is never added twice.
+    """
     if result.written and result.record is not None:
         return AgentResponse(
             message="已記錄：" + "、".join(_written_lines(result.record)),
@@ -995,6 +1205,12 @@ def resume_response(result: ResumeResult) -> AgentResponse:
             ],
         )
     message = RESUME_MESSAGES.get(result.outcome)
+    if (
+        result.outcome is ResumeOutcome.CANCELLED
+        and result.record is not None
+        and result.record.cancel_reason is CancelReason.NOT_SAME_ITEM
+    ):
+        message = _not_same_item_message(result.record)
     if message is None:
         raise RuntimeError(f"Unexpected resume outcome {result.outcome.value}.")
     return AgentResponse(
@@ -1009,6 +1225,21 @@ def resume_response(result: ResumeResult) -> AgentResponse:
     )
 
 
+def _not_same_item_message(record: ApprovalRecord) -> str:
+    """The reply to 「不是」 on an item-match card (Issue #175)."""
+    values = record.operations[0].values
+    term = str(values.get("user_term"))
+    candidate = str(values.get("candidate_name"))
+    if normalize_term(term) == normalize_term(candidate):
+        return NOT_SAME_ITEM_SAME_NAME.format(candidate=candidate)
+    return NOT_SAME_ITEM_REPLY.format(
+        term=term,
+        candidate=candidate,
+        quantity=_number(values.get("quantity")),
+        unit=values.get("unit"),
+    )
+
+
 def _written_lines(record: ApprovalRecord) -> Sequence[str]:
     outcome = record.outcome or {}
     lines = []
@@ -1016,7 +1247,9 @@ def _written_lines(record: ApprovalRecord) -> Sequence[str]:
         written = outcome.get(operation.operation_id)
         if not isinstance(written, dict):
             continue
-        line = f"{operation.values.get('name')} +{_number(written.get('quantity_added'))}"
+        # An item-match line is written into the household item it asked about.
+        name = operation.values.get("name") or operation.values.get("candidate_name")
+        line = f"{name} +{_number(written.get('quantity_added'))}"
         line += f" {written.get('unit')}（現在 {_number(written.get('inventory_quantity'))}"
         line += f" {written.get('unit')}）"
         lines.append(line)

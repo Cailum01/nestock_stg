@@ -113,9 +113,11 @@ def test_unlinked_purchase_is_an_explicit_gap_not_an_inferred_match():
         preview(*items()[:1], None)
 
 
-def test_over_purchase_is_deferred_without_clamping_actual_quantity():
-    with pytest.raises(ShoppingDecisionRequired):
-        preview(*items(), purchased=3)
+def test_actual_purchase_can_exceed_list_quantity_without_clamping():
+    result = preview(*items(planned=1), purchased=3)
+    assert result.planned_quantity == 1
+    assert result.purchased_quantity == 3
+    assert result.inventory_quantity_after == 6
 
 
 @pytest.mark.parametrize("planned,stock", [(0, 3), (-1, 3), (2, -1)])

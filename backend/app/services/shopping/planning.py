@@ -209,10 +209,9 @@ class ShoppingPlanService:
                     _identity(target.location, "New Inventory location")
                 if purchase.resolved_inventory_item_id not in (None, target.item_id):
                     raise ShoppingPreviewError("New target and resolved target must agree.")
-                planned = _pending_item(household_id, purchase.shopping)
+                # Validate the entry; its planned quantity is not a purchase ceiling.
+                _pending_item(household_id, purchase.shopping)
                 quantity = _quantity(purchase.purchased_quantity, "Purchased quantity")
-                if planned is not None and quantity > planned:
-                    raise ShoppingDecisionRequired("Purchases exceeding the list need resolution.")
                 if purchase.purchased_unit not in (None, target.unit) or (
                     purchase.shopping.unit is not None and purchase.shopping.unit != target.unit
                 ):

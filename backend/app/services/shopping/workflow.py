@@ -69,6 +69,8 @@ def _replacement(source, record):
 class ShoppingWriteBuilder:
     """Plan C1 purchase/removal/adjustment writes; never execute or authorize."""
 
+    ITEM_MATCH_SAME_ITEM = "same_item"
+
     def __init__(
         self,
         reader: ShoppingDocumentReader,
@@ -87,11 +89,25 @@ class ShoppingWriteBuilder:
         if record.presentation not in (
             ApprovalPresentation.SINGLE_ACTION,
             ApprovalPresentation.BATCH_ACTION,
+            ApprovalPresentation.ITEM_MATCH,
         ):
             raise ShoppingPreviewError("This builder handles resolved domain-change cards only.")
         if record.decided_at is None:
             raise ShoppingPreviewError("A fixed confirmation time is required.")
-        selected = record.approved_operation_ids or []
+        if record.presentation is ApprovalPresentation.ITEM_MATCH:
+            option_ids = {option.option_id for option in record.options}
+            if (
+                record.selected_option_id != self.ITEM_MATCH_SAME_ITEM
+                or self.ITEM_MATCH_SAME_ITEM not in option_ids
+            ):
+                raise ShoppingDecisionRequired(
+                    "Only a confirmed same-item match can enter the purchase writer."
+                )
+            if len(record.operations) != 1:
+                raise ShoppingPreviewError("An item-match purchase must contain one operation.")
+            selected = record.operation_ids
+        else:
+            selected = record.approved_operation_ids or []
         if not selected or len(set(selected)) != len(selected):
             raise ShoppingPreviewError("A non-empty, unique fixed selection is required.")
         stored = {op.operation_id: op for op in record.operations}
@@ -102,6 +118,12 @@ class ShoppingWriteBuilder:
         ids = [entry.operation_id for entry in inputs]
         if len(set(ids)) != len(ids) or set(ids) != set(selected):
             raise ShoppingPreviewError("Resolved operations must exactly match fixed selection.")
+        if record.presentation is ApprovalPresentation.ITEM_MATCH:
+            if len(changes.purchases) != 1 or changes.removals or changes.adjustments:
+                raise ShoppingPreviewError("A same-item match must resolve to one purchase.")
+            self._validate_item_match_purchase(
+                stored[changes.purchases[0].operation_id], changes.purchases[0]
+            )
         order = {op.operation_id: index for index, op in enumerate(record.operations)}
         changes = ResolvedShoppingChanges(
             purchases=tuple(sorted(changes.purchases, key=lambda row: order[row.operation_id])),
@@ -359,3 +381,35 @@ class ShoppingWriteBuilder:
         return DomainWritePlan(
             operations_by_id=by_id, shared_operations=tuple(shared), outcome=outcomes
         )
+
+    @staticmethod
+    def _validate_item_match_purchase(operation, purchase: PurchaseInput) -> None:
+        """Bind a match-card purchase to its displayed, stored values.
+
+        A `same_item` answer authorizes the purchase shown on that card. Matching
+        does not persist an alias; that would require a separately displayed and
+        approved write under the current C1/B1 decision.
+        """
+        values = operation.values
+        quantity = values.get("quantity")
+        if (
+            operation.action != "confirm_item_match"
+            or purchase.inventory is None
+            or not isinstance(values.get("user_term"), str)
+            or not values.get("user_term", "").strip()
+            or values.get("candidate_item_id") != purchase.inventory.item_id
+            or values.get("candidate_name") != purchase.inventory.name
+            or values.get("quantity") != purchase.purchased_quantity
+            or isinstance(quantity, bool)
+            or not isinstance(quantity, int)
+            or not isinstance(values.get("unit"), str)
+            or values.get("unit") != purchase.purchased_unit
+            or values.get("transaction_id") != purchase.transaction_id
+            or values.get("shopping_item_id") != purchase.shopping.shopping_item_id
+            or purchase.shopping.name != values.get("user_term")
+            or purchase.shopping.item_id is not None
+            or purchase.resolved_inventory_item_id != purchase.inventory.item_id
+        ):
+            raise ShoppingPreviewError(
+                "Matched purchase inputs must match the exact stored item-match proposal."
+            )

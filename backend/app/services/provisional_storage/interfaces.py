@@ -69,6 +69,12 @@ class MediaStorageService(Protocol):
         """Mark media and derived artifacts as attached to domain records to exempt orphan purge."""
         ...
 
+    async def unretain_media(
+        self, household_id: str, image_ref: str, ttl_seconds: int = 86400
+    ) -> bool:
+        """Release attached retention status, restoring orphan expiration window."""
+        ...
+
     async def cleanup_expired_blobs(self, now: datetime | None = None) -> list[str]:
         """Purge expired orphan media and derived artifacts not attached to domain records."""
         ...

@@ -455,11 +455,17 @@ errors, and exhausted retries become durable `needs_attention` items without
 changing the already-completed purchase. Retries never route back through
 `ApprovalService` or replay domain writes.
 
-The adapter and worker have offline coverage against the formal #191 port shape.
-They are not yet wired into production composition: A1's `CardInputResolver` does
-not provide `media_attachments`, and an A2 `retain_media` implementation plus worker
-scheduling/composition is not enabled here. Do not treat this as purchase attachment
-or Blob lifecycle end-to-end acceptance.
+`MediaRetentionPostCommitTrigger.after_resume(...)` is C1's post-commit orchestration
+seam. The A1/API caller passes the `ResumeResult` and household only after
+`ApprovalService.resume()` returns. Non-written outcomes are ignored; completed and
+already-completed outcomes run the household-scoped on-demand worker. Worker/query
+failures are logged and leave the durable item pending, so they do not turn a
+completed purchase into an API failure or replay its domain writes.
+
+The adapter, worker and trigger are not yet invoked by production `/agent/resume`
+composition. A1/API still needs to call this C1 seam after resume, and production
+composition must supply the B1 work-item store and A2 `retain_media` port. Do not
+treat the seam alone as purchase attachment or Blob lifecycle end-to-end acceptance.
 
 ## Isolated live acceptance
 

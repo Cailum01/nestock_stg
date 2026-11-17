@@ -174,6 +174,12 @@ void main() {
             {'operation_id': 'operation-1', 'quantity': 3},
             {'operation_id': 'operation-2', 'purchased_on': '2026-11-14'},
             {'operation_id': 'operation-3', 'purchased_on': null},
+            {
+              'operation_id': 'operation-4',
+              'name': '胃散',
+              'quantity': 2,
+              'location': null,
+            },
           ],
         });
         return http.Response.bytes(
@@ -188,6 +194,12 @@ void main() {
         CardChange(operationId: 'operation-1', quantity: 3),
         CardChange(operationId: 'operation-2', purchasedOn: '2026-11-14'),
         CardChange(operationId: 'operation-3', resetPurchasedOn: true),
+        CardChange(
+          operationId: 'operation-4',
+          name: '胃散',
+          quantity: 2,
+          clearLocation: true,
+        ),
       ],
     );
   });

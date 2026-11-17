@@ -154,6 +154,12 @@ bool _isPhotoCreateItemOperation(OperationView operation) =>
     operation.action == 'create_item' &&
     !_isPurchaseWorkflowOperation(operation);
 
+/// Photo and said-new-item cards share this contract. Shopping-backed
+/// `create_item` operations are purchase workflow lines and remain read-only
+/// except for their dedicated purchase quantity editor.
+bool _isEditableNewItemOperation(OperationView operation) =>
+    _isPhotoCreateItemOperation(operation);
+
 class _PurchaseValues {
   const _PurchaseValues({
     required this.operation,
@@ -745,20 +751,32 @@ class _SingleActionApprovalCard extends StatelessWidget {
       allowExclusion: false,
       onCancel: busy ? null : () => onDecision(approved: false),
       onConfirm: busy ? null : () => onDecision(approved: true),
-      editableFields: operation.action == 'create_item'
-          ? const {ConfirmationDraftField.quantity}
+      editableFields: _isEditableNewItemOperation(operation)
+          ? const {
+              ConfirmationDraftField.name,
+              ConfirmationDraftField.quantity,
+              ConfirmationDraftField.location,
+            }
           : null,
       onSubmitChanges: item == null || busy
           ? null
           : (drafts) {
-              if (operation.action == 'create_item') {
-                final quantity = drafts.single.quantity;
-                if (quantity == quantity.truncateToDouble() &&
-                    quantity != item.quantity) {
+              if (_isEditableNewItemOperation(operation)) {
+                final edited = drafts.single;
+                final quantity = edited.quantity;
+                final name = edited.name != item.name ? edited.name : null;
+                final quantityChanged =
+                    quantity == quantity.truncateToDouble() &&
+                    quantity != item.quantity;
+                final locationChanged = edited.location != item.location;
+                if (name != null || quantityChanged || locationChanged) {
                   onSubmitCardChanges?.call([
                     CardChange(
                       operationId: operation.id,
-                      quantity: quantity.toInt(),
+                      name: name,
+                      quantity: quantityChanged ? quantity.toInt() : null,
+                      location: locationChanged ? edited.location : null,
+                      clearLocation: locationChanged && edited.location == null,
                     ),
                   ]);
                 }
@@ -892,7 +910,9 @@ class _CreateItemBatchApprovalCard extends StatefulWidget {
 class _CreateItemBatchApprovalCardState
     extends State<_CreateItemBatchApprovalCard> {
   late final Set<String> _selectedOperationIds;
+  late final Map<String, TextEditingController> _nameControllers;
   late final Map<String, TextEditingController> _quantityControllers;
+  late final Map<String, TextEditingController> _locationControllers;
   final Set<String> _editingOperationIds = {};
 
   @override
@@ -901,17 +921,33 @@ class _CreateItemBatchApprovalCardState
     _selectedOperationIds = widget.approval.operations
         .map((operation) => operation.id)
         .toSet();
+    _nameControllers = {
+      for (final operation in widget.approval.operations)
+        operation.id: TextEditingController(
+          text: operation.values['name'] as String? ?? '',
+        ),
+    };
     _quantityControllers = {
       for (final operation in widget.approval.operations)
         operation.id: TextEditingController(
           text: _quantityText(operation.values['quantity'] as num),
         ),
     };
+    _locationControllers = {
+      for (final operation in widget.approval.operations)
+        operation.id: TextEditingController(
+          text: _locationText(operation.values['location']),
+        ),
+    };
   }
 
   @override
   void dispose() {
-    for (final controller in _quantityControllers.values) {
+    for (final controller in [
+      ..._nameControllers.values,
+      ..._quantityControllers.values,
+      ..._locationControllers.values,
+    ]) {
       controller.dispose();
     }
     super.dispose();
@@ -920,24 +956,43 @@ class _CreateItemBatchApprovalCardState
   List<CardChange> get _changes {
     final changes = <CardChange>[];
     for (final operation in widget.approval.operations) {
+      final name = _nameControllers[operation.id]!.text.trim();
       final quantity = int.tryParse(
         _quantityControllers[operation.id]!.text.trim(),
       );
-      if (quantity != null &&
-          quantity >= 1 &&
-          quantity != operation.values['quantity']) {
-        changes.add(CardChange(operationId: operation.id, quantity: quantity));
+      if (name.isEmpty || quantity == null || quantity < 1) continue;
+      final originalName = operation.values['name'] as String? ?? '';
+      final originalLocation = _normalizedLocation(
+        operation.values['location'],
+      );
+      final location = _normalizedLocation(
+        _locationControllers[operation.id]!.text,
+      );
+      final nameChanged = name != originalName.trim();
+      final quantityChanged = quantity != operation.values['quantity'];
+      final locationChanged = location != originalLocation;
+      if (nameChanged || quantityChanged || locationChanged) {
+        changes.add(
+          CardChange(
+            operationId: operation.id,
+            name: nameChanged ? name : null,
+            quantity: quantityChanged ? quantity : null,
+            location: locationChanged ? location : null,
+            clearLocation: locationChanged && location == null,
+          ),
+        );
       }
     }
     return changes;
   }
 
-  bool get _hasInvalidEditedQuantity => _editingOperationIds.any((id) {
+  bool get _hasInvalidEditedDraft => _editingOperationIds.any((id) {
+    if (_nameControllers[id]!.text.trim().isEmpty) return true;
     final quantity = int.tryParse(_quantityControllers[id]!.text.trim());
     return quantity == null || quantity < 1;
   });
 
-  bool get _hasUnsentDraft => _changes.isNotEmpty || _hasInvalidEditedQuantity;
+  bool get _hasUnsentDraft => _changes.isNotEmpty || _hasInvalidEditedDraft;
 
   @override
   Widget build(BuildContext context) => HandDrawnCardShell(
@@ -964,6 +1019,7 @@ class _CreateItemBatchApprovalCardState
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(_createItemLabel(operation)),
+                Text(_createItemLocationLabel(operation)),
                 if (widget.changeErrors[operation.id] case final error?)
                   Text(
                     error,
@@ -983,17 +1039,35 @@ class _CreateItemBatchApprovalCardState
                         setState(() => _editingOperationIds.add(operation.id)),
               icon: const Icon(Icons.edit_outlined),
             ),
+            subtitle: _editingOperationIds.contains(operation.id)
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      TextField(
+                        key: Key('create-item-name-${operation.id}'),
+                        controller: _nameControllers[operation.id],
+                        onChanged: (_) => setState(() {}),
+                        decoration: const InputDecoration(labelText: '品名'),
+                      ),
+                      TextField(
+                        key: Key('create-item-quantity-${operation.id}'),
+                        controller: _quantityControllers[operation.id],
+                        keyboardType: TextInputType.number,
+                        onChanged: (_) => setState(() {}),
+                        decoration: const InputDecoration(labelText: '數量'),
+                      ),
+                      TextField(
+                        key: Key('create-item-location-${operation.id}'),
+                        controller: _locationControllers[operation.id],
+                        onChanged: (_) => setState(() {}),
+                        decoration: const InputDecoration(labelText: '位置'),
+                      ),
+                    ],
+                  )
+                : null,
           ),
-          if (_editingOperationIds.contains(operation.id))
-            TextField(
-              key: Key('create-item-quantity-${operation.id}'),
-              controller: _quantityControllers[operation.id],
-              keyboardType: TextInputType.number,
-              onChanged: (_) => setState(() {}),
-              decoration: const InputDecoration(labelText: '數量'),
-            ),
         ],
-        if (_changes.isNotEmpty && !widget.busy)
+        if (_changes.isNotEmpty && !_hasInvalidEditedDraft && !widget.busy)
           Align(
             alignment: Alignment.centerRight,
             child: OutlinedButton(
@@ -1047,6 +1121,18 @@ String _createItemLabel(OperationView operation) {
   return name is String && quantity is num && unit is String
       ? '$name ${_quantityText(quantity)} $unit'
       : operation.description;
+}
+
+String _createItemLocationLabel(OperationView operation) {
+  final location = _normalizedLocation(operation.values['location']);
+  return '位置：${location ?? '未填'}';
+}
+
+String _locationText(Object? value) => _normalizedLocation(value) ?? '';
+
+String? _normalizedLocation(Object? value) {
+  final location = value is String ? value.trim() : '';
+  return location.isEmpty ? null : location;
 }
 
 class _GenericBatchApprovalCard extends StatefulWidget {

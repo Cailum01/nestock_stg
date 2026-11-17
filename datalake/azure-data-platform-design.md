@@ -741,12 +741,13 @@ does not authorize test writes or other cloud connections.
 Use the partition key and record type in queries. Add composite/range indexes only
 when a concrete query and measured workload justify them. Keep indexing policy in
 one reviewed configuration. The household Transaction query's
-`created_at DESC, transaction_id ASC` ordering requires a Cosmos composite index
-with those paths and sort directions before the query is deployed. Keep the
-definition in [cosmos-indexing-policy.json](./cosmos-indexing-policy.json) and
-apply/verify it on every environment's `household-data` container. The shared
-development container has this index applied. No feature-keyword index is
-required by the selected Transaction contract.
+`created_at DESC, transaction_id ASC` ordering and media-retention work query's
+`next_attempt_at ASC, created_at ASC` ordering each require a Cosmos composite
+index with those paths and sort directions before the query is deployed. Keep
+the definitions in [cosmos-indexing-policy.json](./cosmos-indexing-policy.json)
+and apply/verify them on every environment's `household-data` container. The
+shared development container has both indexes applied. No feature-keyword index
+is required by the selected Transaction contract.
 
 The proposed single `/household_id` partition is supported by B2's current
 estimate of approximately 700–3,000 transactions per household per year, or

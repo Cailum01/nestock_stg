@@ -47,8 +47,11 @@ from app.agent.cards import (
     OPEN_CARD_FIRST,
     OPEN_CARDS_UNKNOWN,
     PHOTO_CARD_MADE,
+    PHOTO_KEPT,
+    PHOTO_NOT_READY,
     PURCHASE_TOOL_SCHEMA,
     CardChangeRefused,
+    CardPhoto,
     PhotoCards,
     PhotoItem,
     PurchaseCards,
@@ -64,7 +67,7 @@ from app.core.dependencies import (
 )
 from app.models.agent import AgentRequest, AgentResponse, AgentResult, ResultKind
 from app.models.commerce import PurchaseOption
-from app.models.domain import InventoryItem, ShoppingItem
+from app.models.domain import InventoryItem, MediaProcessingStatus, ShoppingItem
 from app.models.vision import SceneType, VisionAnalysisResult
 from app.services.approvals import ApprovalRecord, ApprovalService, CardNotChangeable
 from app.services.commerce.biggo import BigGoCommerceProvider
@@ -734,13 +737,46 @@ class ReadAgent:
         model_view, data = _vision_view(result, matches, household_items)
         card = None
         if self._photo_cards is not None and may_make_card:
-            card = await self._photo_cards.propose(household_id, _new_photo_items(result, matches))
+            new_items = _new_photo_items(result, matches)
+            photo = await self._card_photo(state) if new_items else None
+            card = await self._photo_cards.propose(household_id, new_items, photo)
             if card is not None:
                 model_view["new_item_card"] = {
                     "lines": [operation["description"] for operation in card["operations"]],
                     "note": PHOTO_CARD_MADE,
+                    "photo": PHOTO_KEPT if photo is not None and photo.ready else PHOTO_NOT_READY,
                 }
         return json.dumps(model_view, ensure_ascii=False), data, card
+
+    async def _card_photo(self, state: _State) -> CardPhoto | None:
+        """The request's photo for a card to keep (Issue #176), or None without a photo.
+
+        Read after recognition, so the card holds the mapping as it is when the card is
+        made: `input_id` and its ETag come from the mapping only when it is completed and
+        is this household's; otherwise the photo is not `ready` and no card keeps it.
+        """
+        image_ref = state.get("image_ref")
+        if not image_ref or self._media is None:
+            return None
+        household_id = state["household_id"]
+        try:
+            snapshot = await self._media.get_media_snapshot(household_id, image_ref)
+        except Exception:  # the mapping could not be read; the card keeps no photo
+            logger.warning(
+                "Photo mapping could not be read for image_ref=%s", image_ref, exc_info=True
+            )
+            snapshot = None
+        if (
+            snapshot is None
+            or not snapshot.etag
+            or snapshot.record.status is not MediaProcessingStatus.COMPLETED
+            or snapshot.record.household_id != household_id
+            or snapshot.record.image_ref != image_ref
+        ):
+            return CardPhoto(image_ref=image_ref)
+        return CardPhoto(
+            image_ref=image_ref, input_id=snapshot.record.input_id, mapping_etag=snapshot.etag
+        )
 
     async def _search_prices(self, args: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
         """Run A2's price search. Read only: no price or option is stored."""
@@ -772,6 +808,7 @@ class ReadAgent:
             state["household_id"],
             call.get("args") or {},
             replaces_approval_id=state.get("replaces_approval_id"),
+            photo=await self._card_photo(state),
         )
 
     async def _propose_stock(

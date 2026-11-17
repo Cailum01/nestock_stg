@@ -4,10 +4,15 @@ import 'agent_view_data.dart';
 ///
 /// `resetPurchasedOn` deliberately distinguishes an omitted purchase day from
 /// an explicit JSON null, which tells the backend to use today's default.
+/// `clearLocation` likewise sends an explicit `location: null` rather than
+/// omitting the field on eligible new-item cards.
 class CardChange {
   factory CardChange({
     required String operationId,
+    String? name,
     int? quantity,
+    String? location,
+    bool clearLocation = false,
     String? purchasedOn,
     bool resetPurchasedOn = false,
   }) {
@@ -21,6 +26,17 @@ class CardChange {
     if (quantity != null && quantity < 1) {
       throw ArgumentError.value(quantity, 'quantity', 'must be at least one');
     }
+    final normalizedName = name?.trim();
+    if (normalizedName != null && normalizedName.isEmpty) {
+      throw ArgumentError.value(name, 'name', 'must not be blank');
+    }
+    final normalizedLocation = location?.trim();
+    if (normalizedLocation != null && normalizedLocation.isEmpty) {
+      throw ArgumentError.value(location, 'location', 'must not be blank');
+    }
+    if (normalizedLocation != null && clearLocation) {
+      throw ArgumentError('A location cannot be set and cleared together.');
+    }
     if (purchasedOn != null && !_isCalendarDay(purchasedOn)) {
       throw ArgumentError.value(
         purchasedOn,
@@ -31,12 +47,20 @@ class CardChange {
     if (purchasedOn != null && resetPurchasedOn) {
       throw ArgumentError('A purchase date cannot be set and reset together.');
     }
-    if (quantity == null && purchasedOn == null && !resetPurchasedOn) {
+    if (normalizedName == null &&
+        quantity == null &&
+        normalizedLocation == null &&
+        !clearLocation &&
+        purchasedOn == null &&
+        !resetPurchasedOn) {
       throw ArgumentError('A card change needs at least one changed field.');
     }
     return CardChange._(
       operationId: operationId.trim(),
+      name: normalizedName,
       quantity: quantity,
+      location: normalizedLocation,
+      includesLocation: normalizedLocation != null || clearLocation,
       purchasedOn: purchasedOn,
       includesPurchasedOn: purchasedOn != null || resetPurchasedOn,
     );
@@ -44,19 +68,27 @@ class CardChange {
 
   const CardChange._({
     required this.operationId,
+    required this.name,
     required this.quantity,
+    required this.location,
+    required this.includesLocation,
     required this.purchasedOn,
     required this.includesPurchasedOn,
   });
 
   final String operationId;
+  final String? name;
   final int? quantity;
+  final String? location;
+  final bool includesLocation;
   final String? purchasedOn;
   final bool includesPurchasedOn;
 
   Map<String, dynamic> toJson() => {
     'operation_id': operationId,
+    if (name != null) 'name': name,
     if (quantity != null) 'quantity': quantity,
+    if (includesLocation) 'location': location,
     if (includesPurchasedOn) 'purchased_on': purchasedOn,
   };
 }

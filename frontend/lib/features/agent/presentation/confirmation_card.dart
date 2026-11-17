@@ -259,9 +259,15 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
   bool get _hasInvalidQuantity =>
       _quantities.any((controller) => !_isValidQuantity(controller.text));
 
+  bool get _hasInvalidName =>
+      (widget.editableFields == null ||
+          widget.editableFields!.contains(ConfirmationDraftField.name)) &&
+      _names.any((controller) => controller.text.trim().isEmpty);
+
   /// Draft state is intentionally separate from its serialized value: an
   /// invalid active quantity can otherwise normalize back to the stored value.
-  bool get _hasUnsentDraft => _hasChanges || _hasInvalidQuantity;
+  bool get _hasUnsentDraft =>
+      _hasChanges || _hasInvalidQuantity || _hasInvalidName;
 
   String? _normalizedLocation(String value) {
     final location = value.trim();
@@ -327,7 +333,8 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
             const SizedBox(width: 8),
             if (widget.onSubmitChanges != null &&
                 _hasChanges &&
-                !_hasInvalidQuantity) ...[
+                !_hasInvalidQuantity &&
+                !_hasInvalidName) ...[
               OutlinedButton(
                 key: const Key('confirmation-submit-changes'),
                 onPressed: () => widget.onSubmitChanges!(_drafts),

@@ -13,6 +13,7 @@ class _ApprovalEditClient implements AgentClient {
   final _CardChangeResponse response;
   final List<(String message, String? replacesApprovalId)> sends = [];
   final List<(String approvalId, List<CardChange> changes)> cardChanges = [];
+  final List<String> resumedApprovalIds = [];
 
   @override
   Future<AgentReply> send(String message, {String? replacesApprovalId}) async {
@@ -31,6 +32,8 @@ class _ApprovalEditClient implements AgentClient {
       approvalId: 'approval-new',
       operationId: 'operation-new',
       description: '新卡：會新增一個庫存品項：衛生紙',
+      name: '新版衛生紙',
+      location: '藥箱',
     );
   }
 
@@ -80,6 +83,8 @@ class _ApprovalEditClient implements AgentClient {
       approvalId: 'approval-new',
       operationId: 'operation-new',
       description: '新卡：會新增一個庫存品項：衛生紙',
+      name: '新版衛生紙',
+      location: '藥箱',
     );
   }
 
@@ -89,13 +94,18 @@ class _ApprovalEditClient implements AgentClient {
     required bool approved,
     String? selectedOptionId,
     List<String>? approvedOperationIds,
-  }) async => const AgentReply(message: '完成');
+  }) async {
+    resumedApprovalIds.add(approvalId);
+    return const AgentReply(message: '完成');
+  }
 }
 
 AgentReply _reply({
   required String approvalId,
   required String operationId,
   required String description,
+  String name = '衛生紙',
+  String? location = '浴室櫃',
 }) => AgentReply(
   message: '請確認。',
   approval: ApprovalView(
@@ -106,11 +116,11 @@ AgentReply _reply({
         id: operationId,
         action: 'create_item',
         description: description,
-        values: const {
-          'name': '衛生紙',
+        values: {
+          'name': name,
           'quantity': 2,
           'unit': '包',
-          'location': '浴室櫃',
+          'location': location,
         },
       ),
     ],
@@ -254,6 +264,51 @@ void main() {
       isNotNull,
     );
   });
+
+  testWidgets(
+    'new-item edit confirms the replacement approval, not the old card',
+    (tester) async {
+      final client = _ApprovalEditClient(
+        response: _CardChangeResponse.replacement,
+      );
+      await tester.pumpWidget(
+        NestockApp(agentClient: client, catalog: const DemoCatalog()),
+      );
+      final input = find.descendant(
+        of: find.byKey(const Key('composer')),
+        matching: find.byType(TextField),
+      );
+      await tester.enterText(input, '收到新東西');
+      await tester.tap(find.byKey(const Key('paw-send')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('confirmation-edit-0')));
+      await tester.pump();
+      await tester.enterText(
+        find.byKey(const Key('confirmation-name-0')),
+        '新版衛生紙',
+      );
+      await tester.enterText(
+        find.byKey(const Key('confirmation-location-0')),
+        '藥箱',
+      );
+      await tester.tap(find.byKey(const Key('confirmation-submit-changes')));
+      await tester.pumpAndSettle();
+
+      expect(client.cardChanges.single.$1, 'approval-old');
+      expect(client.cardChanges.single.$2.single.toJson(), {
+        'operation_id': 'operation-old',
+        'name': '新版衛生紙',
+        'location': '藥箱',
+      });
+      expect(find.text('新版衛生紙'), findsAtLeastNWidgets(1));
+      expect(find.text('藥箱'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('confirmation-confirm')));
+      await tester.pumpAndSettle();
+
+      expect(client.resumedApprovalIds, ['approval-new']);
+    },
+  );
 
   testWidgets('replacement batch restores selection before confirmation', (
     tester,

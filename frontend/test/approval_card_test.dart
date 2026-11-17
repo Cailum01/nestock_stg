@@ -79,6 +79,8 @@ void main() {
       expect(find.text('你說的是：洗碗精'), findsOneWidget);
       expect(find.text('家中品項：洗潔精'), findsOneWidget);
       expect(find.text('item-cleanser'), findsNothing);
+      expect(find.byKey(const Key('confirmation-name-0')), findsNothing);
+      expect(find.byKey(const Key('confirmation-location-0')), findsNothing);
 
       await tester.tap(find.byKey(const Key('approval-option-new_item')));
 
@@ -87,65 +89,76 @@ void main() {
     },
   );
 
-  testWidgets('create item permits only a structured quantity edit', (
-    tester,
-  ) async {
-    List<CardChange>? changes;
-    bool? decision;
-    await pumpCard(
-      tester,
-      const ApprovalView(
-        id: 'approval-create-1',
-        presentation: ApprovalPresentation.singleAction,
-        operations: [
-          OperationView(
-            id: 'operation-create-1',
-            action: 'create_item',
-            description: '會新增一個庫存品項：洗碗精',
-            values: {
-              'name': '洗碗精',
-              'quantity': 1,
-              'unit': '瓶',
-              'location': '廚房櫃子',
-            },
-          ),
-        ],
-      ),
-      onCardChanges: (value) => changes = value,
-      onDecision: ({
-        required approved,
-        selectedOptionId,
-        approvedOperationIds,
-      }) => decision = approved,
-    );
+  testWidgets(
+    'photo create item submits structured name quantity and location changes',
+    (tester) async {
+      List<CardChange>? changes;
+      bool? decision;
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-create-1',
+          presentation: ApprovalPresentation.singleAction,
+          operations: [
+            OperationView(
+              id: 'operation-create-1',
+              action: 'create_item',
+              description: '會新增一個庫存品項：洗碗精',
+              values: {
+                'name': '洗碗精',
+                'quantity': 1,
+                'unit': '瓶',
+                'location': '廚房櫃子',
+              },
+            ),
+          ],
+        ),
+        onCardChanges: (value) => changes = value,
+        onDecision: ({
+          required approved,
+          selectedOptionId,
+          approvedOperationIds,
+        }) => decision = approved,
+      );
 
-    expect(find.text('確認建立庫存品項'), findsOneWidget);
-    expect(find.text('會新增一個庫存品項：洗碗精'), findsOneWidget);
-    expect(find.text('洗碗精'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('confirmation-edit-0')));
-    await tester.pump();
-    await tester.enterText(
-      find.byKey(const Key('confirmation-quantity-0')),
-      '3',
-    );
-    await tester.pump();
-    expect(find.byKey(const Key('confirmation-unit-0')), findsNothing);
-    expect(find.byKey(const Key('confirmation-location-0')), findsNothing);
-    expect(
-      tester
-          .widget<FilledButton>(find.byKey(const Key('confirmation-confirm')))
-          .onPressed,
-      isNull,
-    );
-    await tester.tap(find.byKey(const Key('confirmation-cancel')));
-    expect(decision, isFalse);
-    await tester.tap(find.byKey(const Key('confirmation-submit-changes')));
+      expect(find.text('確認建立庫存品項'), findsOneWidget);
+      expect(find.text('會新增一個庫存品項：洗碗精'), findsOneWidget);
+      expect(find.text('洗碗精'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('confirmation-edit-0')));
+      await tester.pump();
+      expect(find.byKey(const Key('confirmation-name-0')), findsOneWidget);
+      await tester.enterText(
+        find.byKey(const Key('confirmation-quantity-0')),
+        '3',
+      );
+      await tester.enterText(
+        find.byKey(const Key('confirmation-name-0')),
+        '洗手乳',
+      );
+      await tester.enterText(
+        find.byKey(const Key('confirmation-location-0')),
+        '浴室櫃',
+      );
+      await tester.pump();
+      expect(find.byKey(const Key('confirmation-unit-0')), findsNothing);
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('confirmation-confirm')))
+            .onPressed,
+        isNull,
+      );
+      await tester.tap(find.byKey(const Key('confirmation-cancel')));
+      expect(decision, isFalse);
+      await tester.tap(find.byKey(const Key('confirmation-submit-changes')));
 
-    expect(changes!.single.toJson(), {
-      'operation_id': 'operation-create-1',
-      'quantity': 3,
-    });
-  });
+      expect(changes!.single.toJson(), {
+        'operation_id': 'operation-create-1',
+        'name': '洗手乳',
+        'quantity': 3,
+        'location': '浴室櫃',
+      });
+    },
+  );
 
   testWidgets(
     'create item without a location uses a display placeholder and keeps approval decisions unchanged',
@@ -237,7 +250,7 @@ void main() {
     }
   });
 
-  testWidgets('create item preserves a valid location and never submits 未填', (
+  testWidgets('create item can clear a location with an explicit null', (
     tester,
   ) async {
     List<CardChange>? changes;
@@ -267,15 +280,15 @@ void main() {
     await tester.tap(find.byKey(const Key('confirmation-edit-0')));
     await tester.pump();
     await tester.enterText(
-      find.byKey(const Key('confirmation-quantity-0')),
-      '2',
+      find.byKey(const Key('confirmation-location-0')),
+      '',
     );
     await tester.pump();
     await tester.tap(find.byKey(const Key('confirmation-submit-changes')));
 
     expect(changes!.single.toJson(), {
       'operation_id': 'operation-create-valid-location',
-      'quantity': 2,
+      'location': null,
     });
   });
 
@@ -317,6 +330,49 @@ void main() {
     expect(changes!.single.toJson(), {
       'operation_id': 'operation-create-blank-edit',
       'quantity': 2,
+    });
+  });
+
+  testWidgets('said new-item card exposes name and location editing', (
+    tester,
+  ) async {
+    List<CardChange>? changes;
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-said-new-item',
+        presentation: ApprovalPresentation.singleAction,
+        operations: [
+          OperationView(
+            id: 'operation-said-new-item',
+            action: 'create_item',
+            description: '會新增一個庫存品項：洗髮精（使用者說的）',
+            values: {
+              'name': '洗髮精',
+              'quantity': 1,
+              'unit': '瓶',
+              'location': null,
+            },
+          ),
+        ],
+      ),
+      onCardChanges: (value) => changes = value,
+    );
+
+    await tester.tap(find.byKey(const Key('confirmation-edit-0')));
+    await tester.pump();
+    expect(find.byKey(const Key('confirmation-name-0')), findsOneWidget);
+    expect(find.byKey(const Key('confirmation-location-0')), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const Key('confirmation-location-0')),
+      '浴室',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('confirmation-submit-changes')));
+
+    expect(changes!.single.toJson(), {
+      'operation_id': 'operation-said-new-item',
+      'location': '浴室',
     });
   });
 
@@ -424,6 +480,68 @@ void main() {
     );
   });
 
+  testWidgets(
+    'batch photo create items submit only changed name quantity and location',
+    (tester) async {
+      List<CardChange>? changes;
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-create-batch-edit',
+          presentation: ApprovalPresentation.batchAction,
+          operations: [
+            OperationView(
+              id: 'operation-create-batch-edit',
+              action: 'create_item',
+              description: '建立庫存品項：滑鼠',
+              values: {
+                'name': '滑鼠',
+                'quantity': 1,
+                'unit': '個',
+                'location': null,
+              },
+            ),
+          ],
+        ),
+        onCardChanges: (value) => changes = value,
+      );
+
+      await tester.tap(
+        find.byKey(
+          const Key('create-item-edit-quantity-operation-create-batch-edit'),
+        ),
+      );
+      await tester.pump();
+      await tester.enterText(
+        find.byKey(const Key('create-item-name-operation-create-batch-edit')),
+        '無線滑鼠',
+      );
+      await tester.enterText(
+        find.byKey(
+          const Key('create-item-quantity-operation-create-batch-edit'),
+        ),
+        '2',
+      );
+      await tester.enterText(
+        find.byKey(
+          const Key('create-item-location-operation-create-batch-edit'),
+        ),
+        '書桌抽屜',
+      );
+      await tester.pump();
+      await tester.tap(
+        find.byKey(const Key('create-item-submit-card-changes')),
+      );
+
+      expect(changes!.single.toJson(), {
+        'operation_id': 'operation-create-batch-edit',
+        'name': '無線滑鼠',
+        'quantity': 2,
+        'location': '書桌抽屜',
+      });
+    },
+  );
+
   test('edit messages are stable and only include changed fields', () {
     const original = ConfirmationItemView(
       name: '衛生紙',
@@ -527,6 +645,7 @@ void main() {
       expect(find.text('位置'), findsNothing);
       expect(find.byKey(const Key('confirmation-name-0')), findsNothing);
       expect(find.byKey(const Key('confirmation-unit-0')), findsNothing);
+      expect(find.byKey(const Key('confirmation-location-0')), findsNothing);
       await tester.tap(find.byKey(const Key('purchase-edit-quantity')));
       await tester.pump();
       await tester.enterText(

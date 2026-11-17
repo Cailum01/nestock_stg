@@ -4,6 +4,14 @@ import pytest
 from azure.core.exceptions import HttpResponseError, ServiceRequestError
 from test_shopping_workflow import run
 
+from app.models.agent import ApprovalPresentation
+from app.services.approvals import (
+    ApprovalRecord,
+    ApprovalStatus,
+    ResumeOutcome,
+    ResumeResult,
+    StoredOperation,
+)
 from app.services.media_retention_work import (
     MediaRetentionWorkItem as B1WorkRecord,
 )
@@ -17,7 +25,9 @@ from app.services.provisional_storage.error_classifier import (
 )
 from app.services.shopping.media_handoff import (
     B1MediaRetentionWorkItemAdapter,
+    MediaRetentionPostCommitTrigger,
     MediaRetentionRetryWorker,
+    MediaRetentionRun,
     MediaRetentionWorkItem,
     NewMediaRetentionWorkItem,
     media_retention_work_item_id,
@@ -25,6 +35,40 @@ from app.services.shopping.media_handoff import (
 
 HOUSEHOLD = "household-a"
 NOW = datetime(2026, 11, 17, 12, 0, tzinfo=UTC)
+
+
+class FakePostCommitWorker:
+    def __init__(self, result=None, error=None):
+        self.result = result or MediaRetentionRun(completed=1)
+        self.error = error
+        self.calls = []
+
+    async def process_pending(self, *, household_id):
+        self.calls.append(household_id)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def completed_resume_result(household_id=HOUSEHOLD, outcome=ResumeOutcome.COMPLETED):
+    operation = StoredOperation(
+        operation_id="purchase-op-1",
+        action="complete_purchase",
+        description="purchase",
+        values={},
+    )
+    record = ApprovalRecord(
+        approval_id="approval-1",
+        household_id=household_id,
+        presentation=ApprovalPresentation.SINGLE_ACTION,
+        operations=[operation],
+        status=ApprovalStatus.COMPLETED,
+        created_at=NOW,
+        expires_at=NOW + timedelta(minutes=30),
+        decided_at=NOW,
+        approved_operation_ids=[operation.operation_id],
+    )
+    return ResumeResult(outcome=outcome, record=record)
 
 
 class FakeWorkItemStore:
@@ -301,3 +345,68 @@ def test_unknown_exception_is_manual_action_by_default():
 
     assert store.manual == [(work, "storage_fatal_error", NOW)]
     assert store.retries == []
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [ResumeOutcome.CANCELLED, ResumeOutcome.NEEDS_NEW_CARD, ResumeOutcome.NOT_WRITTEN],
+)
+def test_post_commit_trigger_skips_resume_results_without_a_committed_write(outcome):
+    worker = FakePostCommitWorker()
+    trigger = MediaRetentionPostCommitTrigger(worker)
+
+    result = run(
+        trigger.after_resume(
+            household_id=HOUSEHOLD,
+            result=completed_resume_result(outcome=outcome),
+        )
+    )
+
+    assert result is None
+    assert worker.calls == []
+
+
+@pytest.mark.parametrize("outcome", [ResumeOutcome.COMPLETED, ResumeOutcome.ALREADY_COMPLETED])
+def test_post_commit_trigger_runs_due_work_for_written_result(outcome):
+    worker = FakePostCommitWorker(MediaRetentionRun(completed=1, retry_scheduled=2))
+    trigger = MediaRetentionPostCommitTrigger(worker)
+
+    result = run(
+        trigger.after_resume(
+            household_id=HOUSEHOLD,
+            result=completed_resume_result(outcome=outcome),
+        )
+    )
+
+    assert result == MediaRetentionRun(completed=1, retry_scheduled=2)
+    assert worker.calls == [HOUSEHOLD]
+
+
+def test_post_commit_trigger_skips_a_result_from_another_household():
+    worker = FakePostCommitWorker()
+    trigger = MediaRetentionPostCommitTrigger(worker)
+
+    result = run(
+        trigger.after_resume(
+            household_id=HOUSEHOLD,
+            result=completed_resume_result(household_id="household-b"),
+        )
+    )
+
+    assert result is None
+    assert worker.calls == []
+
+
+def test_post_commit_trigger_does_not_fail_a_completed_resume_if_worker_fails():
+    worker = FakePostCommitWorker(error=RuntimeError("work-item store unavailable"))
+    trigger = MediaRetentionPostCommitTrigger(worker)
+
+    result = run(
+        trigger.after_resume(
+            household_id=HOUSEHOLD,
+            result=completed_resume_result(),
+        )
+    )
+
+    assert result is None
+    assert worker.calls == [HOUSEHOLD]

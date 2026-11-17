@@ -7,6 +7,7 @@ every quantity, unit, target, timestamp and stable ID to the server-stored card.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC
 from typing import Protocol
 
 from app.models.agent import ApprovalPresentation
@@ -22,6 +23,11 @@ from app.services.approvals import (
 from app.services.cosmos_read import CosmosDocumentMapper
 from app.services.cosmos_write import CreateDocument, ReplaceDocument, change_event_create
 from app.services.shopping.media import MediaAttachment, MediaRetentionPlanner
+from app.services.shopping.media_handoff import (
+    MediaRetentionWorkItemWriter,
+    NewMediaRetentionWorkItem,
+    media_retention_work_item_id,
+)
 from app.services.shopping.planning import AdjustmentInput, PurchaseInput, ShoppingPlanService
 from app.services.shopping.preview import ShoppingDecisionRequired, ShoppingPreviewError
 
@@ -77,11 +83,13 @@ class ShoppingWriteBuilder:
         resolver: ShoppingInputResolver,
         *,
         media_retention: MediaRetentionPlanner | None = None,
+        media_work_items: MediaRetentionWorkItemWriter | None = None,
     ):
         self._reader = reader
         self._resolver = resolver
         self._plans = ShoppingPlanService()
         self._media_retention = media_retention
+        self._media_work_items = media_work_items
 
     async def build(self, record: ApprovalRecord) -> DomainWritePlan:
         if record.status not in (ApprovalStatus.PENDING, ApprovalStatus.CONFIRMED):
@@ -174,9 +182,9 @@ class ShoppingWriteBuilder:
             or not attachments.keys() <= purchase_ids
         ):
             raise ShoppingPreviewError("One attachment may belong to each selected purchase only.")
-        if attachments and self._media_retention is None:
+        if attachments and (self._media_retention is None or self._media_work_items is None):
             raise ShoppingDecisionRequired(
-                "Configure the B1 retention port before attaching media."
+                "Configure B1 retention and durable work-item ports before attaching media."
             )
         for operation_id, attachment in attachments.items():
             if stored[operation_id].values.get("image_ref") != attachment.image_ref:
@@ -234,6 +242,7 @@ class ShoppingWriteBuilder:
             transactions = {tx.operation_id: tx for tx in plan.transactions}
             images_by_item = {}
             retention_by_id = {}
+            work_items_by_operation = {}
             for purchase in changes.purchases:
                 attachment = attachments.get(purchase.operation_id)
                 if attachment is None:
@@ -270,6 +279,46 @@ class ShoppingWriteBuilder:
                 if doc_id in retention_by_id and retention_by_id[doc_id] != operation:
                     raise ShoppingPreviewError("Shared media mapping updates must agree.")
                 retention_by_id[doc_id] = operation
+                work_item_id = media_retention_work_item_id(attachment.operation_id)
+                work_item = self._media_work_items.create_pending(
+                    NewMediaRetentionWorkItem(
+                        id=work_item_id,
+                        household_id=record.household_id,
+                        operation_id=attachment.operation_id,
+                        approval_id=record.approval_id,
+                        image_ref=attachment.image_ref,
+                        created_at=record.decided_at,
+                        updated_at=record.decided_at,
+                    )
+                )
+                expected_work_item = {
+                    "id": work_item_id,
+                    "record_type": "media_retention_work_item",
+                    "household_id": record.household_id,
+                    "operation_id": attachment.operation_id,
+                    "approval_id": record.approval_id,
+                    "image_ref": attachment.image_ref,
+                    "created_at": record.decided_at.astimezone(UTC)
+                    .isoformat(timespec="microseconds")
+                    .replace("+00:00", "Z"),
+                    "updated_at": record.decided_at.astimezone(UTC)
+                    .isoformat(timespec="microseconds")
+                    .replace("+00:00", "Z"),
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "next_attempt_at": record.decided_at.astimezone(UTC)
+                    .isoformat(timespec="microseconds")
+                    .replace("+00:00", "Z"),
+                    "last_error_code": None,
+                }
+                if not isinstance(work_item, CreateDocument) or any(
+                    work_item.document.get(key) != value
+                    for key, value in expected_work_item.items()
+                ):
+                    raise ShoppingPreviewError(
+                        "B1 work item must bind the exact pending attachment and operation."
+                    )
+                work_items_by_operation[attachment.operation_id] = work_item
 
             def with_image(item):
                 image_ref = images_by_item.get(item.item_id)
@@ -305,6 +354,8 @@ class ShoppingWriteBuilder:
                     writes.append(
                         CreateDocument(CosmosDocumentMapper.to_document(creates[tx.operation_id]))
                     )
+                if tx.operation_id in work_items_by_operation:
+                    writes.append(work_items_by_operation[tx.operation_id])
                 by_id[tx.operation_id] = tuple(writes)
                 outcomes[tx.operation_id] = {
                     "shopping_item_id": update.record.shopping_item_id,

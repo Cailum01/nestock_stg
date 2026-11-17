@@ -8,7 +8,12 @@ from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 from app.models.domain import MediaFailureReason
-from app.models.vision import DetectedItem, SceneType, VisionAnalysisResult
+from app.models.vision import (
+    DetectedItem,
+    ImageComparisonResult,
+    SceneType,
+    VisionAnalysisResult,
+)
 from app.services.normalizer import ItemNormalizer
 from app.services.provisional_storage.interfaces import MediaStorageService
 
@@ -70,6 +75,10 @@ class VisionService(Protocol):
         self, household_id: str, image_ref: str, scene_type: SceneType | None = None
     ) -> VisionAnalysisResult: ...
 
+    async def compare_images(
+        self, household_id: str, image_ref_a: str, image_ref_b: str
+    ) -> ImageComparisonResult: ...
+
 
 class MockVisionService:
     """Mock vision provider for local development and deterministic testing (pure observation)."""
@@ -89,6 +98,36 @@ class MockVisionService:
         scene = scene_type or SceneType.SINGLE_ITEM
         return VisionAnalysisResult(
             image_ref=image_ref.strip(), scene_type=scene, detected_items=[item], raw_text=raw_name
+        )
+
+    async def compare_images(
+        self, household_id: str, image_ref_a: str, image_ref_b: str
+    ) -> ImageComparisonResult:
+        del household_id
+        if not image_ref_a or not image_ref_a.strip():
+            raise ValueError("image_ref_a must be a non-empty string reference.")
+        if not image_ref_b or not image_ref_b.strip():
+            raise ValueError("image_ref_b must be a non-empty string reference.")
+        clean_a = image_ref_a.strip()
+        clean_b = image_ref_b.strip()
+        if clean_a == clean_b:
+            return ImageComparisonResult(
+                image_ref_a=clean_a,
+                image_ref_b=clean_b,
+                is_same_item=True,
+                similarity_score=1.0,
+                confidence=1.0,
+                reasoning="Identical image reference provided (short-circuit).",
+                visual_differences=[],
+            )
+        return ImageComparisonResult(
+            image_ref_a=clean_a,
+            image_ref_b=clean_b,
+            is_same_item=True,
+            similarity_score=0.88,
+            confidence=0.95,
+            reasoning="Mock visual comparison: items share identical brand and packaging features.",
+            visual_differences=[],
         )
 
 
@@ -279,3 +318,18 @@ class AzureOpenAIVisionService:
         )
         self._results_cache[cache_key] = result
         return result
+
+    async def compare_images(
+        self, household_id: str, image_ref_a: str, image_ref_b: str
+    ) -> ImageComparisonResult:
+        from app.services.vision_comparison import compare_two_images
+
+        return await compare_two_images(
+            media_storage=self.media_storage,
+            settings=self.settings,
+            household_id=household_id,
+            image_ref_a=image_ref_a,
+            image_ref_b=image_ref_b,
+            mock_fallback=self.mock_fallback,
+            fallback_service=self._fallback_service,
+        )

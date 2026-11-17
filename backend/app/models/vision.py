@@ -55,3 +55,15 @@ class VisionAnalysisResult(ContractModel):
     scene_type: SceneType
     detected_items: list[DetectedItem] = Field(default_factory=list)
     raw_text: str | None = None
+
+
+class ImageComparisonResult(ContractModel):
+    """Encapsulates objective visual comparison between two image references."""
+
+    image_ref_a: str = Field(min_length=1)
+    image_ref_b: str = Field(min_length=1)
+    is_same_item: bool
+    similarity_score: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    reasoning: str | None = None
+    visual_differences: list[str] = Field(default_factory=list)

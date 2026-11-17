@@ -48,11 +48,10 @@ def preview(shopping, inventory, purchased=1, household="demo-household"):
     )
 
 
-def test_partial_purchase_completes_task_and_preserves_plan_without_mutation():
+def test_partial_purchase_completes_task_and_preserves_legacy_fields_without_mutation():
     shopping, inventory = items()
     before = (shopping.model_dump(), inventory.model_dump())
     result = preview(shopping, inventory)
-    assert result.planned_quantity == 2
     assert result.next_status == ShoppingStatus.COMPLETED
     assert not hasattr(result, "remaining_quantity")
     assert result.inventory_quantity_before == 3
@@ -65,7 +64,6 @@ def test_partial_purchase_completes_task_and_preserves_plan_without_mutation():
 def test_full_purchase_proposes_completed_without_changing_original():
     shopping, inventory = items()
     result = preview(shopping, inventory, purchased=2)
-    assert result.planned_quantity == 2
     assert result.next_status == ShoppingStatus.COMPLETED
     assert result.inventory_quantity_after == 5
     assert shopping.status == ShoppingStatus.PENDING
@@ -113,33 +111,30 @@ def test_unlinked_purchase_is_an_explicit_gap_not_an_inferred_match():
         preview(*items()[:1], None)
 
 
-def test_actual_purchase_can_exceed_list_quantity_without_clamping():
+def test_actual_purchase_is_independent_of_legacy_quantity():
     result = preview(*items(planned=1), purchased=3)
-    assert result.planned_quantity == 1
     assert result.purchased_quantity == 3
     assert result.inventory_quantity_after == 6
 
 
-@pytest.mark.parametrize("planned,stock", [(0, 3), (-1, 3), (2, -1)])
-def test_invalid_snapshot_quantity_rejected(planned, stock):
+@pytest.mark.parametrize("planned", [0, -1])
+def test_legacy_planned_quantity_does_not_affect_purchase_preview(planned):
+    shopping, inventory = items(planned=planned)
+    result = preview(shopping, inventory, purchased=3)
+    assert result.purchased_quantity == 3
+    assert result.inventory_quantity_after == 6
+
+
+def test_invalid_confirmed_inventory_quantity_is_rejected():
+    shopping, inventory = items(stock=-1)
     with pytest.raises(ShoppingPreviewError):
-        preview(*items(planned=planned, stock=stock))
+        preview(shopping, inventory)
 
 
-@pytest.mark.parametrize(
-    "target,field,value",
-    [
-        ("shopping", "quantity", 0.5),
-        ("inventory", "quantity", 0.5),
-        ("inventory", "quantity", True),
-    ],
-)
-def test_fractional_or_boolean_snapshot_count_is_not_silently_coerced(target, field, value):
+@pytest.mark.parametrize("field,value", [("quantity", 0.5), ("quantity", True)])
+def test_invalid_confirmed_inventory_count_is_not_silently_coerced(field, value):
     shopping, inventory = items()
-    if target == "shopping":
-        shopping = shopping.model_copy(update={field: value})
-    else:
-        inventory = inventory.model_copy(update={field: value})
+    inventory = inventory.model_copy(update={field: value})
     with pytest.raises(ShoppingPreviewError):
         preview(shopping, inventory)
 
@@ -151,7 +146,6 @@ def test_removal_only_describes_pending_entry_without_reversing_purchase():
         household_id="demo-household", shopping=shopping
     )
     assert result.shopping_item_id == shopping.shopping_item_id
-    assert result.planned_quantity == 1
     assert (shopping.model_dump(), inventory.model_dump()) == before
     assert not hasattr(result, "inventory_quantity_after")
 
@@ -164,7 +158,7 @@ def test_removal_validates_scope_and_state(changes):
 
 
 @pytest.mark.parametrize("planned,unit", [(None, None), (None, "瓶"), (2, None)])
-def test_optional_plan_fields_are_preserved_and_actual_purchase_is_explicit(planned, unit):
+def test_optional_legacy_fields_are_preserved_and_actual_purchase_is_explicit(planned, unit):
     shopping, inventory = items()
     # Transitional snapshot until #64 lands; combined validation also runs on its models.
     shopping = shopping.model_copy(update={"quantity": planned, "unit": unit})
@@ -175,7 +169,6 @@ def test_optional_plan_fields_are_preserved_and_actual_purchase_is_explicit(plan
         purchased_quantity=1,
         purchased_unit="瓶",
     )
-    assert result.planned_quantity == planned
     assert result.unit == "瓶"
     assert result.next_status == ShoppingStatus.COMPLETED
     assert result.inventory_quantity_after == 4
@@ -186,7 +179,6 @@ def test_optional_plan_fields_are_preserved_and_actual_purchase_is_explicit(plan
         household_id="demo-household",
         shopping=shopping,
     )
-    assert removed.planned_quantity == planned
     assert removed.unit == unit
 
 
@@ -230,7 +222,6 @@ def test_name_only_intent_uses_explicit_resolved_target_without_guessing_or_crea
         resolved_inventory_item_id="milk",
     )
     assert result.inventory_quantity_after == 6
-    assert result.planned_quantity is None
     assert shopping.item_id is None
     with pytest.raises(ShoppingPreviewError, match="resolved target"):
         ShoppingPreviewService().preview_purchase(

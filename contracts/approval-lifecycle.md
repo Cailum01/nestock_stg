@@ -493,6 +493,14 @@ New-item cards from a photo (Issue #124; on with Cosmos since PR #172):
   `get_approval_service`. Without a photo builder it refuses a photo card, so
   nothing is stored or written. The reply after confirming is 已記錄：<name> +N
   <unit>（現在 N <unit>） per line, like a purchase.
+- Before handing a card to that builder, the router reads the household's items
+  again (PR #187 B1 review): a line in `approved_operation_ids` whose name is now the
+  name or alias of a household item (#36 layers ①②, as when the card was made) stops
+  the write. Nothing is written, the card is cancelled (`replaced`) and the reply is
+  `needs_new_card`; said again, the household has it. The item a line creates itself
+  does not count, so a retry is not refused. The read and the batch are not one
+  step, so a same-name item written in between can still slip through; closing that
+  would need a check inside B1's batch.
 - As in section 8, a photo makes no card in a message that brings an open card back,
   or when the open cards cannot be listed; the photo is only reported.
 - The quantity can be changed on the card with `card_changes` (section 7.1); a new
@@ -512,9 +520,10 @@ New-item cards from what the user says (Issue #168, 「我收到一瓶洗髮精�
   `transaction_id`; no `shopping_item_id` and no target version. `location` is what
   the user said, or null (the App shows 未填). The description ends with （使用者說的）.
 - An item whose name or alias the household already has gets no line (#36 layers
-  ①②), so confirming never adds a second item; adding to an item the household
-  has is not covered. When the model thinks it may be a household item under another
-  name, the prompt has it ask the user first and call the tool only for a new thing.
+  ①②), and confirming checks again as on a photo card, so confirming does not add a
+  second item; adding to an item the household has is not covered. When the model
+  thinks it may be a household item under another name, the prompt has it ask the
+  user first and call the tool only for a new thing.
 - Confirming is the photo card's path above: `PhotoInputResolver`, B1's
   `PhotoItemWriteBuilder`, C1's `plan_adjustment`; the Transaction reason is
   `adjustment` (C1 and B2 in Issue #168), at the card's `decided_at`.

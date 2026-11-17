@@ -24,7 +24,7 @@ from test_purchase_cards import (
     tool_results,
 )
 
-from app.agent.cards import CARD_CHANGED, SAID, PhotoCards, PurchaseCards
+from app.agent.cards import CARD_CHANGED, RESUME_MESSAGES, SAID, PhotoCards, PurchaseCards
 from app.agent.read_agent import ReadAgent, load_system_prompt
 from app.agent.stock_cards import (
     ADD_STOCK,
@@ -34,7 +34,10 @@ from app.agent.stock_cards import (
     StockCards,
 )
 from app.models.agent import AgentRequest, ApprovalPresentation, CardChange
+from app.services.approvals import ApprovalRecord, ResumeOutcome
+from app.services.card_writes import CardWriteRouter
 from app.services.cosmos_read import CosmosInventoryService, CosmosShoppingService
+from app.services.inventory_item_identity import resolve_inventory_item_id
 from app.tools.queries import QueryTools
 
 SHAMPOO = {"name": "洗髮精", "quantity": 1, "unit": "瓶", "location": "浴室"}
@@ -119,6 +122,53 @@ def test_confirming_writes_the_new_item_once_as_an_adjustment():
     (event,) = [d for d in container.of_type("change_event") if d["item_id"] == item["item_id"]]
     assert event["shopping_item_id"] is None
     assert container.of_type("shopping_item") == shopping_before  # no Shopping row
+
+
+@pytest.mark.parametrize(
+    ("name", "aliases"), [("洗髮精", None), ("洗髮乳", ["洗髮精"])], ids=["same name", "alias"]
+)
+def test_an_item_added_after_the_card_is_not_added_twice(name, aliases):
+    """PR #187 B1 review: the card is checked when made, and again when confirmed.
+
+    The same item is added another way between the card and the confirm: nothing is
+    written, the card is cancelled and the user is asked to say it again.
+    """
+    container, reads, approvals = home()
+    card = said(reads, approvals, SHAMPOO)[0].pending_approval
+    container.put(inventory(item_id="added", name=name, unit="瓶", aliases=aliases))
+    items_before = container.of_type("inventory_item")
+    transactions_before = container.of_type("transaction")
+
+    reply = _confirm(approvals, card)
+
+    assert reply["message"] == RESUME_MESSAGES[ResumeOutcome.NEEDS_NEW_CARD]
+    assert reply["results"][0]["data"] == {"outcome": "needs_new_card"}
+    assert container.of_type("inventory_item") == items_before
+    assert container.of_type("transaction") == transactions_before
+    assert container.of_type("change_event") == []
+    stored = container.get(f"pending_approval:{card.approval_id}")
+    assert (stored["status"], stored["cancel_reason"]) == ("cancelled", "replaced")
+    # Saying it again: the household has it, so no card (rule 2 of 家裡多了東西).
+    again, _ = said(reads, approvals, SHAMPOO)
+    assert again.pending_approval is None
+
+
+def test_the_item_a_line_creates_itself_does_not_stop_it():
+    """Only other items count: reading back the line's own new item is not a duplicate."""
+    container, reads, approvals = home()
+    card = said(reads, approvals, SHAMPOO)[0].pending_approval
+    (line,) = card.operations
+    own = inventory(item_id=resolve_inventory_item_id(line.operation_id), name="洗髮精", unit="瓶")
+    container.put(own)
+    record = ApprovalRecord.from_document(container.get(f"pending_approval:{card.approval_id}"))
+    record = record.model_copy(update={"approved_operation_ids": record.operation_ids})
+
+    class _Planned:
+        async def build(self, record):
+            return "planned"
+
+    router = CardWriteRouter(purchases=_Planned(), photo_items=_Planned(), household_items=reads)
+    assert asyncio.run(router.build(record)) == "planned"
 
 
 def test_no_location_said_leaves_it_empty_and_confirms():

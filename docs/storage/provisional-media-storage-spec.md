@@ -78,7 +78,7 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
    - 雲端路徑規則：`households/{household_id}/media/{input_id}.jpg`。
    - 衍生工件規則：`households/{household_id}/media/{input_id}/derived/{artifact_name}`。
    - 安全規範：內建 10MB 大小熔斷、逾時防護、例外不吞噬傳播、COMPLETED 等冪保護與樂觀並發 ETag 重試防護。
-   - 支援邊界 (Support Boundary)：採用目錄前綴物理隔離架構（Prefix-based Lifecycle Isolation）。孤兒暫存媒體存於 `staging/` 前綴，業務附著媒體原子遷移至 `attached/` 前綴。全環境原生相容階層命名空間 (Hierarchical Namespace, HNS / ADLS Gen2) 帳戶（如 `stnestockdev20261101`）與標準 GPv2 帳戶，徹底拔除對 Blob Index Tags 之依賴，以 Azure 原生 Lifecycle 前綴排程確定性保障 24h 孤兒清理與附著媒體永久保留。
+   - 支援邊界 (Support Boundary)：採用目錄前綴物理隔離架構（Prefix-based Lifecycle Isolation）。孤兒暫存媒體存於 `staging/` 前綴，業務附著媒體原子遷移至 `attached/` 前綴。全環境原生相容階層命名空間 (Hierarchical Namespace, HNS / ADLS Gen2) 帳戶（如 `stnestockdev20261101`）與標準 GPv2 帳戶，徹底拔除對 Blob Index Tags 之依賴，以 Azure 原生 Lifecycle 前綴排程確定性保障 24h 孤兒清理與附著媒體永久保留（註：業務附件在儲存端之永久保留需待 Issue #98 §4 之流程接線完成方告生效，詳見 §4.1 限制聲明）。
 2. **`LocalStagingMediaStorage` (`local_staging_adapter.py`) - [DEV_FALLBACK]**：
    - 記憶體字典快取，支援無雲端環境或離線單元測試。
    - 介面、狀態轉移與防禦行為 100% 保持與 Azure Blob Storage 對齊。
@@ -152,6 +152,10 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
 3. **解除保留與寬限期 (`unretain_media`)**：當商品刪除或換圖解除附件時，適配器將檔案移回 `staging/` 前綴並執行時間戳刷新（重設 `CreationTime`），使 Azure 原生排程之 `daysAfterCreationGreaterThan: 1` 重新自該時刻起算，保證享有完整的 24 小時寬限期。
 4. **階層命名空間 (HNS) 原生相容**：無論儲存帳戶是否啟用階層命名空間 (HNS / ADLS Gen2)，前綴清理規則均 100% 確定生效，完全不需要 Blob Index Tags，且服務端無需維運任何刪除排程器，完全滿足 §8.2 基礎架構清理不變量。
 5. **政策測試模擬說明**：單元測試中的 `simulate_azure_lifecycle_policy_purge` 僅為本地對 Azure Lifecycle 前綴過濾與時間差的 Mock 邏輯模擬驗證；生產環境之生命週期清理完全由雲端 Azure Storage Lifecycle Management 原生政策引擎執行，應用服務端零刪除排程與背景定時迴圈。
+6. **PR #155 邊界與業務附件保護限制聲明 (Scope Boundary & Business Attachment Caveat)**：
+   - 本規格書與 PR #155 之儲存適配器實作（`AzureBlobMediaStorage` / `BaseMediaStorageLifecycle`）已完備 `retain_media`、`unretain_media`、實體時間戳刷新（寬限期重算）與跨實例／重啟時向 Cosmos DB 查詢還原上下文（Stateless Recovery）之底層儲存能力。
+   - **明確限制本 PR 不宣稱真實業務附件受到端到端保護**：目前 C1 購物核准流程（`ShoppingWorkflowBuilder`）僅在 Cosmos 交易批次中清除 Mapping 之 TTL，尚未接線呼叫 `retain_media`（即批次提交後缺少 Post-Commit Handoff 呼叫）。在端到端真實工作流中，已確認商品之照片實體仍停留在 `staging/` 前綴下，受限於雲端 Lifecycle 政策。
+   - **依賴與接續規劃**：依據 Issue #98 之先後順序，端到端之 Post-Commit Handoff、重試佇列與真實 Approval Workflow 整合驗證，明確界定由後續之「步驟 4：C1、A2 完成購買流程接線」專屬處理。本 PR 嚴格聚焦於 A2 儲存適配器之能力交付與規格對齊，不做超出當前實現範圍之端到端宣稱。
 ---
 
 ## 5. 實體雲端驗證紀錄 (Physical Verification Audit)

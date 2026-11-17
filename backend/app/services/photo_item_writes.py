@@ -7,15 +7,20 @@ from typing import Protocol
 from pydantic import JsonValue
 
 from app.models.agent import ApprovalPresentation
-from app.models.domain import TransactionReason
+from app.models.domain import MediaProcessingStatus, TransactionReason
 from app.services.approvals import (
     ApprovalRecord,
     ApprovalStatus,
     DomainWritePlan,
+    TargetChanged,
 )
 from app.services.cosmos_read import CosmosDocumentMapper
-from app.services.cosmos_write import CreateDocument, change_event_create
+from app.services.cosmos_write import CreateDocument, ReplaceDocument, change_event_create
 from app.services.inventory_item_identity import resolve_inventory_item_id
+from app.services.media_mapping import (
+    MediaMappingPort,
+    build_media_mapping_retention_update,
+)
 from app.services.shopping.planning import (
     AdjustmentInput,
     AdjustmentPlan,
@@ -55,9 +60,11 @@ class PhotoItemWriteBuilder:
         self,
         resolver: PhotoAdjustmentInputResolver,
         planner: AdjustmentPlanner | None = None,
+        media_mapping_storage: MediaMappingPort | None = None,
     ) -> None:
         self._resolver = resolver
         self._planner = planner or ShoppingPlanService()
+        self._media_mapping_storage = media_mapping_storage
 
     async def build(self, record: ApprovalRecord) -> DomainWritePlan:
         if record.status not in (ApprovalStatus.PENDING, ApprovalStatus.CONFIRMED):
@@ -110,6 +117,7 @@ class PhotoItemWriteBuilder:
         outcomes: dict[str, dict[str, JsonValue]] = {}
         transaction_ids: set[str] = set()
         item_ids: set[str] = set()
+        retention_by_input: dict[str, ReplaceDocument] = {}
 
         for adjustment in adjustments:
             operation = stored_by_id[adjustment.operation_id]
@@ -142,6 +150,37 @@ class PhotoItemWriteBuilder:
             inventory = plan.inventory_create.record
             transaction = plan.transaction
             event = plan.change_event
+            media_values = _photo_media_values(operation.values)
+            if media_values is not None:
+                input_id, image_ref, mapping_etag = media_values
+                if self._media_mapping_storage is None:
+                    raise ShoppingPreviewError(
+                        "Configure B1 media mapping storage before attaching a photo."
+                    )
+                mapping = await self._media_mapping_storage.find_completed_by_image_ref(
+                    household_id=record.household_id,
+                    image_ref=image_ref,
+                )
+                if (
+                    mapping is None
+                    or mapping.record.household_id != record.household_id
+                    or mapping.record.input_id != input_id
+                    or mapping.record.image_ref != image_ref
+                    or mapping.record.status is not MediaProcessingStatus.COMPLETED
+                    or mapping.etag != mapping_etag
+                ):
+                    raise TargetChanged(f"input:{input_id}")
+                retention = build_media_mapping_retention_update(mapping, ttl_seconds=None)
+                previous = retention_by_input.get(input_id)
+                if previous is not None and previous != retention:
+                    raise ShoppingPreviewError("Photo mapping updates must agree.")
+                retention_by_input[input_id] = retention
+                if inventory.image_ref not in (None, image_ref):
+                    raise ShoppingPreviewError(
+                        "The new inventory item already has a different photo."
+                    )
+                inventory = inventory.model_copy(update={"image_ref": image_ref})
+
             operations_by_id[plan.operation_id] = (
                 CreateDocument(CosmosDocumentMapper.to_document(inventory)),
                 CreateDocument(CosmosDocumentMapper.to_document(transaction)),
@@ -155,7 +194,11 @@ class PhotoItemWriteBuilder:
                 "unit": inventory.unit,
             }
 
-        return DomainWritePlan(operations_by_id=operations_by_id, outcome=outcomes)
+        return DomainWritePlan(
+            operations_by_id=operations_by_id,
+            shared_operations=tuple(retention_by_input.values()),
+            outcome=outcomes,
+        )
 
     @staticmethod
     def _validate_plan(
@@ -198,3 +241,25 @@ class PhotoItemWriteBuilder:
             or event.recorded_at != record.decided_at
         ):
             raise ShoppingPreviewError("The adjustment plan does not match the approved card.")
+
+
+def _photo_media_values(
+    values: dict[str, JsonValue],
+) -> tuple[str, str, str] | None:
+    image_ref = values.get("image_ref")
+    input_id = values.get("input_id")
+    mapping_etag = values.get("mapping_etag")
+    if image_ref is None and input_id is None and mapping_etag is None:
+        return None
+    if (
+        not isinstance(input_id, str)
+        or not input_id.strip()
+        or not isinstance(image_ref, str)
+        or not image_ref.strip()
+        or not isinstance(mapping_etag, str)
+        or not mapping_etag.strip()
+    ):
+        raise ShoppingPreviewError(
+            "Photo attachments require stored image_ref, input_id and mapping_etag values."
+        )
+    return input_id, image_ref, mapping_etag

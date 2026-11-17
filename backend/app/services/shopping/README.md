@@ -344,11 +344,11 @@ reset plus read-back is the separate final-Demo evidence for that last step.
 
 The currently integrated Agent route supports existing Inventory targets linked
 from pending Shopping entries, with an explicit positive whole-number purchase
-quantity no larger than the planned quantity and the same unit. The C1 planner and
+quantity independent of the planned quantity and the same unit. The C1 planner and
 builder also support confirmed new Inventory targets and removal, but A1's stored
-card resolver does not yet expose those journeys. Purchases above the pending amount,
-unit conversion, media attachment retention, and historical purchase-time entry
-remain unsupported in the Agent/App flow; they do not fall back to unapproved writes.
+card resolver does not yet expose those journeys. Unit conversion, media attachment
+retention, and historical purchase-time entry remain unsupported in the Agent/App
+flow; they do not fall back to unapproved writes.
 
 The route is backend integration, not App E2E: C2 still needs to connect the Android
 approval-card and retry/cancel flows to the Agent API. Production evidence also still

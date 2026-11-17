@@ -400,13 +400,14 @@ decision index remains stale; do not change shared contracts here.
 `MediaAttachment(operation_id, input_id, image_ref, mapping_etag)`. This is a
 provisional internal handoff, not an App/wire schema. `image_ref` must be shown in
 the stored operation values and the exact `input:<input_id>` ETag must be one of
-its targets. A2/B1 must confirm this handoff before enabling it in composition.
+its targets. The formal A1 `CardInputResolver` and production composition do not yet
+provide these bindings, so purchase-card attachment remains disabled there.
 
 Media is opt-in through `ShoppingWriteBuilder(..., media_retention=...)`.
 `B1MediaRetentionPlanner(mapping_storage)` uses PR #97's completed, household-
 scoped lookup and `build_media_mapping_retention_update(..., ttl_seconds=None)`.
 It plans only: mapping retention is never written on its own. PR #97 is now merged
-in main (11e078f); enabling attachment requires its port and explicit composition.
+in main (11e078f).
 
 A completed mapping's retention replace joins the shared household batch with
 the actual Inventory image_ref attachment, Shopping, Transaction, event, receipt
@@ -426,6 +427,29 @@ schema or assumption that removal of Shopping detaches Inventory is invented.
 
 Only the mapping TTL is covered here. Blob retention/deletion and A2 processing
 composition are separate owner work; a mapping update does not prove Blob cleanup.
+
+## Post-commit media handoff (#98, C1 orchestration draft)
+
+When a purchase has an attachment, `ShoppingWriteBuilder` now requires a B1
+`MediaRetentionWorkItemWriter`. It adds one deterministic pending work item to the
+purchase operation's writes, in the same household batch as the purchase, Inventory
+attachment, mapping retention update, receipt and completed approval. The stable
+record ID is `media_retention:` plus the SHA-256 of the stable `operation_id`; its
+creation/update times come from the stored approval's `decided_at`, so an uncertain-
+result retry produces identical documents. The record stores `approval_id` and
+`image_ref`, but not `input_id` or mapping ETag. The writer is a narrow B1 port, not a
+Cosmos document adapter.
+
+`MediaRetentionRetryWorker` processes only pending work items. It invokes A2's
+idempotent `retain_media`; success marks the item complete. Transient HTTP 429/500/503
+and connection/timeouts are retried after jittered 1/2/4-second delays. Missing or
+purged media, other errors, and exhausted retries become durable `needs_attention`
+items without changing the already-completed purchase. B1's port supplies due-pending
+household queries and ETag-guarded state updates; records include `attempt_count`,
+`next_attempt_at`, `last_error_code`, and `updated_at`. It never routes retries back
+through `ApprovalService` or replays domain writes. A2 confirmed the idempotent success
+and error categories in #98. B1's port implementation and production composition are
+still pending, so this worker is not yet active in the application.
 
 ## Isolated live acceptance
 

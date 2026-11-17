@@ -151,6 +151,7 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
 2. **附著保留 (`retain_media`)**：當下游業務（如購物完成或庫存確認）持久化時，將原始圖與衍生工件原子遷移至保留前綴（儲存帳戶層級：`media/attached/households/{hid}/...`；容器相對路徑：`attached/households/{hid}/...`），因脫離 `staging/` 前綴，永久排除於 Lifecycle 自動清理之外。
 3. **解除保留與寬限期 (`unretain_media`)**：當商品刪除或換圖解除附件時，適配器將檔案移回 `staging/` 前綴並執行時間戳刷新（重設 `CreationTime`），使 Azure 原生排程之 `daysAfterCreationGreaterThan: 1` 重新自該時刻起算，保證享有完整的 24 小時寬限期。
 4. **階層命名空間 (HNS) 原生相容**：無論儲存帳戶是否啟用階層命名空間 (HNS / ADLS Gen2)，前綴清理規則均 100% 確定生效，完全不需要 Blob Index Tags，且服務端無需維運任何刪除排程器，完全滿足 §8.2 基礎架構清理不變量。
+5. **政策測試模擬說明**：單元測試中的 `simulate_azure_lifecycle_policy_purge` 僅為本地對 Azure Lifecycle 前綴過濾與時間差的 Mock 邏輯模擬驗證；生產環境之生命週期清理完全由雲端 Azure Storage Lifecycle Management 原生政策引擎執行，應用服務端零刪除排程與背景定時迴圈。
 ---
 
 ## 5. 實體雲端驗證紀錄 (Physical Verification Audit)

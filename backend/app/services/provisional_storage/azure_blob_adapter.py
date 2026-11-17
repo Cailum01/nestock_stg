@@ -297,7 +297,8 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
                 if await self._blob_exists(legacy):
                     await self._move_blob(legacy, attached_raw)
 
-            await self._set_blob_metadata(attached_raw, meta)
+            if await self._blob_exists(attached_raw):
+                await self._set_blob_metadata(attached_raw, meta)
 
             if rec.get("artifact_ref"):
                 art_ref = str(rec["artifact_ref"])
@@ -309,7 +310,8 @@ class AzureBlobMediaStorage(BaseMediaStorageLifecycle):
                     legacy_art = self._ref_to_blob_path(art_ref)
                     if await self._blob_exists(legacy_art):
                         await self._move_blob(legacy_art, attached_art)
-                await self._set_blob_metadata(attached_art, meta)
+                if await self._blob_exists(attached_art):
+                    await self._set_blob_metadata(attached_art, meta)
 
     async def _delete_media_and_artifact(
         self, hid: str, image_ref: str, rec: dict[str, Any]

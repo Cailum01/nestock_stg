@@ -98,6 +98,15 @@ class MediaMappingPort(Protocol):
         failure_reason: MediaFailureReason | None = None,
     ) -> MediaMappingSnapshot: ...
 
+    async def update_retention(
+        self,
+        *,
+        household_id: str,
+        input_id: str,
+        expected_etag: str,
+        ttl_seconds: int | None,
+    ) -> MediaMappingSnapshot: ...
+
 
 class CosmosMediaMappingStorage:
     """Offline-testable media mapping storage over B1's Cosmos repositories."""
@@ -230,6 +239,44 @@ class CosmosMediaMappingStorage:
                     if_match_etag=expected_etag,
                 ),
             ),
+        )
+        saved = await self._read_repository.read_media_input_mapping_with_etag(
+            household_id=household_id,
+            input_id=input_id,
+        )
+        if saved is None:
+            raise RuntimeError("Updated media mapping could not be read back.")
+        return self._snapshot(saved)
+
+    async def update_retention(
+        self,
+        *,
+        household_id: str,
+        input_id: str,
+        expected_etag: str,
+        ttl_seconds: int | None,
+    ) -> MediaMappingSnapshot:
+        if not expected_etag:
+            raise ValueError("expected_etag must not be empty.")
+        if ttl_seconds is not None and (
+            isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or ttl_seconds <= 0
+        ):
+            raise ValueError("ttl_seconds must be a positive integer or None.")
+
+        current = await self._read_repository.read_media_input_mapping_with_etag(
+            household_id=household_id,
+            input_id=input_id,
+        )
+        if current is None:
+            raise MediaMappingNotFound(f"Media mapping {input_id!r} does not exist.")
+        snapshot = self._snapshot(current)
+        if snapshot.etag != expected_etag:
+            raise BatchOperationConflict(0)
+
+        replace_op = build_media_mapping_retention_update(snapshot, ttl_seconds=ttl_seconds)
+        await self._write_client.execute_batch(
+            partition_key=household_id,
+            operations=(replace_op,),
         )
         saved = await self._read_repository.read_media_input_mapping_with_etag(
             household_id=household_id,

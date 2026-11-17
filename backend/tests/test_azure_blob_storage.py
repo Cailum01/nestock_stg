@@ -1163,3 +1163,110 @@ async def test_azure_blob_unretain_preserves_content_settings(blob_storage, fake
     assert final_props.creation_time >= init_creation
     # 核心不變量：MIME / HTTP Content-Type 必須 100% 完整保留
     assert final_props.content_settings.content_type == "image/jpeg"
+
+
+@pytest.mark.anyio
+async def test_retain_media_survives_restart_via_cosmos_mapping(fake_blob_service, mapping_port):
+    """驗證 retain_media 在服務重啟或無本機快取時，能自動自 Cosmos Mapping 恢復並搬移 Blob。"""
+    storage_1 = AzureBlobMediaStorage(
+        blob_service_client=fake_blob_service,
+        container_name="media",
+        mapping_port=mapping_port,
+        auto_process=False,
+    )
+    req = UploadAuthorizationRequest(
+        household_id="home-dev",
+        filename="restart_test.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=8,
+    )
+    auth = await storage_1.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
+    await storage_1.receive_staged_upload(token, b"restart1")
+    await storage_1.begin_processing("home-dev", auth.image_ref)
+    await storage_1.complete_processing("home-dev", auth.image_ref, '{"vision": "ok"}')
+
+    # 模擬服務重啟 / 跨 Replica 分流：建立全新實例 storage_2，記憶體紀錄為空
+    storage_2 = AzureBlobMediaStorage(
+        blob_service_client=fake_blob_service,
+        container_name="media",
+        mapping_port=mapping_port,
+        auto_process=False,
+    )
+    assert ("home-dev", auth.image_ref) not in storage_2._retention_records
+
+    # 執行 retain_media：必須自動自 Cosmos snapshot 恢復並成功搬移至 attached/
+    assert await storage_2.retain_media("home-dev", auth.image_ref) is True
+
+    container = fake_blob_service.get_container_client("media")
+    attached_path = f"attached/{auth.image_ref.removeprefix('blob://').lstrip('/')}"
+    staging_path = f"staging/{auth.image_ref.removeprefix('blob://').lstrip('/')}"
+    assert attached_path in container._blobs
+    assert staging_path not in container._blobs
+
+    # 冪等性驗證：已在 attached/ 再次呼叫 retain_media 依然回傳 True
+    assert await storage_2.retain_media("home-dev", auth.image_ref) is True
+
+
+@pytest.mark.anyio
+async def test_unretain_media_restores_cosmos_mapping_ttl_and_grace_period(
+    fake_blob_service, mapping_port, fake_cosmos
+):
+    """驗證 unretain_media 解除保留時，會將 Cosmos Mapping 的 TTL 從永久還原為 24 小時。"""
+    storage = AzureBlobMediaStorage(
+        blob_service_client=fake_blob_service,
+        container_name="media",
+        mapping_port=mapping_port,
+        auto_process=False,
+    )
+    req = UploadAuthorizationRequest(
+        household_id="home-dev",
+        filename="unretain_ttl.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=6,
+    )
+    auth = await storage.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
+    await storage.receive_staged_upload(token, b"unret1")
+    await storage.begin_processing("home-dev", auth.image_ref)
+    await storage.complete_processing("home-dev", auth.image_ref, '{"vision": "ok"}')
+
+    # 1. 模擬業務附加保留：透過 B1 retention update 將 Mapping 設為永久保留 (ttl_seconds=None)
+    snap = await mapping_port.find_by_image_ref(household_id="home-dev", image_ref=auth.image_ref)
+    assert snap is not None
+    perm_op = build_media_mapping_retention_update(snap, ttl_seconds=None)
+    await fake_cosmos.execute_batch(partition_key="home-dev", operations=(perm_op,))
+
+    snap_perm = await mapping_port.find_by_image_ref(
+        household_id="home-dev", image_ref=auth.image_ref
+    )
+    assert snap_perm.record.ttl_seconds is None
+
+    # 執行 retain 將 Blob 移入 attached/
+    await storage.retain_media("home-dev", auth.image_ref)
+    container = fake_blob_service.get_container_client("media")
+    attached_path = f"attached/{auth.image_ref.removeprefix('blob://').lstrip('/')}"
+    assert attached_path in container._blobs
+
+    # 2. 模擬跨 Replica 實例 2 執行 unretain_media
+    storage_replica = AzureBlobMediaStorage(
+        blob_service_client=fake_blob_service,
+        container_name="media",
+        mapping_port=mapping_port,
+        auto_process=False,
+    )
+    unretained = await storage_replica.unretain_media("home-dev", auth.image_ref, ttl_seconds=86400)
+    assert unretained is True
+
+    # 3. 關鍵斷言：Blob 移回 staging/
+    staging_path = f"staging/{auth.image_ref.removeprefix('blob://').lstrip('/')}"
+    assert staging_path in container._blobs
+    assert attached_path not in container._blobs
+
+    # 4. 關鍵斷言：Cosmos DB Mapping 的 TTL 恢復為 86400 秒，且 ETag 遞增
+    snap_restored = await mapping_port.find_by_image_ref(
+        household_id="home-dev", image_ref=auth.image_ref
+    )
+    assert snap_restored is not None
+    assert snap_restored.record.ttl_seconds == 86400
+    assert snap_restored.etag != snap_perm.etag

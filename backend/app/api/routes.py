@@ -36,7 +36,12 @@ from app.models.storage import (
     UploadAuthorizationRequest,
     UploadAuthorizationResponse,
 )
-from app.services.approvals import ApprovalNotFound, ApprovalService, InvalidSelection
+from app.services.approvals import (
+    ApprovalNotFound,
+    ApprovalService,
+    InvalidSelection,
+    ResumeOutcome,
+)
 from app.services.commerce import BaseCommerceProvider
 from app.services.interfaces import InventoryService, ShoppingService
 from app.services.provisional_storage.interfaces import MediaStorageService
@@ -165,8 +170,10 @@ async def agent_resume(
 
     After the reply, C1's post-commit trigger moves the confirmed photos out of staging
     (Issue #176, PR #201) in the background, so the user does not wait for it. It runs
-    only after a written result; a failure leaves the work item pending for later and
-    never changes the reply.
+    only after the first write (`completed`): a repeated confirm (`already_completed`)
+    does not start a second run of the same work at the same time (PR #203 A2 review).
+    A failure leaves the work item pending for the next written confirm in the
+    household and never changes the reply.
     """
     if approvals is None:
         raise HTTPException(503, "Approval cards need Cosmos; no changes were saved.")
@@ -180,7 +187,7 @@ async def agent_resume(
         response = resume_response(result)
     except RuntimeError as error:  # receipts without completion: stop and report (§6)
         raise HTTPException(500, "Write state needs checking; nothing more was written.") from error
-    if retention is not None and result.written:
+    if retention is not None and result.outcome is ResumeOutcome.COMPLETED:
         background.add_task(
             retention.after_resume, household_id=request.household_id, result=result
         )

@@ -21,7 +21,12 @@ from test_card_photos import (
 )
 from test_purchase_cards import HOME, resume_app
 
-from app.core.dependencies import _create_media_retention_trigger, get_media_retention_trigger
+from app.core import dependencies
+from app.core.dependencies import (
+    _create_media_retention_trigger,
+    _reset_media_retention_trigger_for_test,
+    get_media_retention_trigger,
+)
 from app.services.cosmos_write import CosmosWriteRepository
 from app.services.shopping.media_handoff import MediaRetentionPostCommitTrigger
 
@@ -144,27 +149,58 @@ def test_a_failed_move_keeps_the_reply_and_the_work_item(monkeypatch):
     assert item["attempt_count"] == 1
 
 
+class _Recording(MediaRetentionPostCommitTrigger):
+    """Records each start instead of running the worker."""
+
+    def __init__(self, calls: list) -> None:
+        self.calls = calls
+
+    async def after_resume(self, *, household_id, result):
+        self.calls.append((household_id, result.outcome.value))
+
+
+def _recording_app(approvals, calls):
+    app = resume_app(approvals)
+    trigger = _Recording(calls)
+    app.dependency_overrides[get_media_retention_trigger] = lambda: trigger
+    return app
+
+
 def test_a_cancelled_card_does_not_start_the_trigger(monkeypatch):
     container, approvals, card = _photo_card(monkeypatch)
     calls = []
 
-    class Recording(MediaRetentionPostCommitTrigger):
-        def __init__(self) -> None:
-            pass
-
-        async def after_resume(self, *, household_id, result):
-            calls.append((household_id, result.outcome.value))
-
-    app = resume_app(approvals)
-    app.dependency_overrides[get_media_retention_trigger] = Recording
-    with TestClient(app) as client:
+    with TestClient(_recording_app(approvals, calls)) as client:
         _resume(client, card, approved=False)
 
     assert calls == []
 
 
+def test_only_the_first_write_starts_the_trigger(monkeypatch):
+    """A double tap does not start a second run of the same work (PR #203 A2 review)."""
+    container, approvals, card = _photo_card(monkeypatch)
+    calls = []
+
+    with TestClient(_recording_app(approvals, calls)) as client:
+        first = _resume(client, card)
+        again = _resume(client, card)
+
+    assert again.json()["message"] == first.json()["message"]
+    assert calls == [(HOME, "completed")]
+
+
 def test_without_cosmos_there_is_no_trigger():
     assert _create_media_retention_trigger(None, None, Media()) is None
+
+
+def test_the_trigger_singleton_can_be_reset_for_tests():
+    dependencies._media_retention_trigger = object()
+    dependencies._media_retention_trigger_resolved = True
+
+    _reset_media_retention_trigger_for_test()
+
+    assert dependencies._media_retention_trigger is None
+    assert dependencies._media_retention_trigger_resolved is False
 
 
 def test_the_trigger_uses_the_approval_services_cosmos_client():

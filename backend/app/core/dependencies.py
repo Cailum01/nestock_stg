@@ -419,6 +419,13 @@ def get_media_retention_trigger() -> "MediaRetentionPostCommitTrigger | None":
     return _media_retention_trigger
 
 
+def _reset_media_retention_trigger_for_test() -> None:
+    """Reset the trigger singleton for test isolation (PR #203 A2 review)."""
+    global _media_retention_trigger, _media_retention_trigger_resolved
+    _media_retention_trigger = None
+    _media_retention_trigger_resolved = False
+
+
 def _create_media_retention_trigger(
     write_repository: CosmosWriteRepository | None,
     document_reader: DocumentQueryClient | None,

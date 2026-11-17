@@ -197,14 +197,16 @@ Inventory, Shopping and Transaction are never split across writes.
 
 A card that keeps a photo (Issue #176, sections 10 and 11) also writes, in the same
 batch, the end of the photo mapping's 24-hour TTL and a `pending` media-retention work
-item (B1, C1). Moving the photo out of staging is not in the batch: after a written
-result (`completed` or `already_completed`), `/agent/resume` replies first and then,
-in the background, runs C1's post-commit trigger (PR #201). Its on-demand worker calls
-A2's idempotent `retain_media` for this household's due work items. A failure is
-logged and leaves the work item `pending` (or `needs_attention` after a permanent
-error); the reply is not changed and no domain write is repeated. A pending item is
-tried again after the next written confirm in the same household. Without Cosmos
-there is no trigger.
+item (B1, C1). Moving the photo out of staging is not in the batch: after the first
+write (`completed`), `/agent/resume` replies first and then, in the background, runs
+C1's post-commit trigger (PR #201). A repeated confirm (`already_completed`) does not
+start it, so a double tap does not run the same work twice at once (PR #203). Its
+on-demand worker calls A2's idempotent `retain_media` for this household's due work
+items; the query needs the `next_attempt_at`, `created_at` composite index (#202). A
+failure is logged and leaves the work item `pending` (or `needs_attention` after a
+permanent error); the reply is not changed and no domain write is repeated. A pending
+item is tried again after the next written confirm in the same household. Without
+Cosmos there is no trigger.
 
 ## 6. Recovery after an error or timeout
 

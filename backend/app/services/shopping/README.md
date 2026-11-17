@@ -400,13 +400,14 @@ decision index remains stale; do not change shared contracts here.
 `MediaAttachment(operation_id, input_id, image_ref, mapping_etag)`. This is a
 provisional internal handoff, not an App/wire schema. `image_ref` must be shown in
 the stored operation values and the exact `input:<input_id>` ETag must be one of
-its targets. A2/B1 must confirm this handoff before enabling it in composition.
+its targets. The formal A1 `CardInputResolver` and production composition do not yet
+provide these bindings, so purchase-card attachment remains disabled there.
 
 Media is opt-in through `ShoppingWriteBuilder(..., media_retention=...)`.
 `B1MediaRetentionPlanner(mapping_storage)` uses PR #97's completed, household-
 scoped lookup and `build_media_mapping_retention_update(..., ttl_seconds=None)`.
 It plans only: mapping retention is never written on its own. PR #97 is now merged
-in main (11e078f); enabling attachment requires its port and explicit composition.
+in main (11e078f).
 
 A completed mapping's retention replace joins the shared household batch with
 the actual Inventory image_ref attachment, Shopping, Transaction, event, receipt
@@ -426,6 +427,35 @@ schema or assumption that removal of Shopping detaches Inventory is invented.
 
 Only the mapping TTL is covered here. Blob retention/deletion and A2 processing
 composition are separate owner work; a mapping update does not prove Blob cleanup.
+
+## Post-commit media handoff (#98, C1 orchestration draft)
+
+When a purchase has an attachment, `ShoppingWriteBuilder` requires a
+`MediaRetentionWorkItemWriter`. `B1MediaRetentionWorkItemAdapter` now maps that
+batch seam to the merged #191 `build_pending_media_retention_work_item(...)` helper,
+so one deterministic pending record joins the purchase operation's same-household
+batch with the Inventory attachment, mapping retention update, receipt and completed
+approval. Its stable record ID is `media_retention:` plus the SHA-256 of the stable
+`operation_id`; timestamps come from the stored approval's `decided_at`. B1's
+canonical pending record starts with `next_attempt_at=decided_at`. It stores
+`approval_id` and `image_ref`, but not `input_id` or mapping ETag.
+
+`B1MediaRetentionWorkItemAdapter` also maps the worker onto #191's
+household-scoped `list_due(..., now, limit)` and snapshot/ETag `transition(...)` port.
+`MediaRetentionRetryWorker` processes only due pending items. It invokes A2's
+idempotent `retain_media`; success marks the item complete. Exceptions use A2's
+`classify_media_retention_error` result for transient/permanent classification,
+safe `error_code` and suggested backoff (5/10/30/60 seconds) with bounded jitter.
+The worker keeps its three-retry limit. Missing or purged media, other permanent
+errors, and exhausted retries become durable `needs_attention` items without
+changing the already-completed purchase. Retries never route back through
+`ApprovalService` or replay domain writes.
+
+The adapter and worker have offline coverage against the formal #191 port shape.
+They are not yet wired into production composition: A1's `CardInputResolver` does
+not provide `media_attachments`, and an A2 `retain_media` implementation plus worker
+scheduling/composition is not enabled here. Do not treat this as purchase attachment
+or Blob lifecycle end-to-end acceptance.
 
 ## Isolated live acceptance
 

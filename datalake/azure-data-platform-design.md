@@ -116,6 +116,13 @@ approval-gated workflow, not a variation of the purchase builder:
 - Each selected line's domain writes, operation receipt, and the completed
   approval commit in one household-partition transactional batch. Retries reuse
   the operation and item identities; an unselected line creates no records.
+- When a stored line includes a photo, B1 verifies its completed media mapping,
+  household, input ID, image reference, and ETag. The new Inventory item receives
+  the opaque `image_ref`, and an ETag-guarded mapping replacement removes its
+  orphan TTL in the same batch. Missing or stale mappings fail closed.
+- The mapping TTL update does not call A2's `retain_media`. Its post-commit
+  notification and failure/retry handling remain pending A2/B1 coordination
+  under Issue #176; do not treat the mapping update as that notification.
 - `POST /agent/messages` may store the pending approval but never writes domain
   data. Only `POST /agent/resume` may commit the values covered by that card.
 - Wiring the writer does not enable card generation or frontend handling; A1 and
@@ -1051,11 +1058,10 @@ operation was approved or written. Confirmation-card presentation, approval,
 resume, and operation execution belong to A1's separate Agent lifecycle.
 
 The current one-turn MVP does not persist separate Agent tasks or checkpoints.
-Long-running video/audio work, queues/workers, and persistent task/checkpoint
-metadata are future work requiring A1/A2 agreement. If later approved, persist
-only bounded task metadata (scope, status, timestamps, attempt/error category,
-and references), not prompts, hidden reasoning, raw media, or unbounded model
-output.
+Long-running video/audio processing and Agent task/checkpoint metadata remain
+future work requiring A1/A2 agreement. The bounded post-commit media-retention
+work item in §8.4 is separate from Agent task state; it stores only the metadata
+needed for C1/A2 to retry the already-approved attachment handoff.
 
 Feature-keyword normalization is not used for Transaction persistence; resolve
 the inventory item before writing. A2's name/quantity/unit
@@ -1073,6 +1079,49 @@ derived result(s) that informed the proposal, plus the operation identity and
 approval reference required by the agreed protocol. Store only facts needed to
 explain the operation; do not persist hidden model reasoning. A read-only answer
 or unapproved proposal must not appear as a committed inventory change.
+
+### 8.4 Post-commit media-retention work item (#98)
+
+The purchase approval batch must durably record the attachment handoff so that a
+process interruption after the purchase commit cannot lose the work. C1 owns
+purchase orchestration and the retry worker; A2 owns the idempotent Blob
+`retain_media(household_id, image_ref)` operation and its transient/permanent
+error classification; B1 owns only the household-scoped storage primitive.
+This record does not create an Agent task or change A1's rule that resume must
+not replay completed domain writes.
+
+The pending work-item document is created atomically in the same household
+transactional batch as the purchase writes and the media-mapping retention
+update. It uses the purchase's stable `operation_id` as its idempotency key and
+has the deterministic Cosmos ID `media_retention:{sha256(operation_id)}`. Fields:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Stable, hashed document ID derived from `operation_id` |
+| `record_type` | `media_retention_work_item` |
+| `household_id` | Cosmos partition and scope key |
+| `operation_id` | Stable identity of the approved purchase operation |
+| `approval_id` | Approval that authorized the purchase |
+| `image_ref` | Opaque reference to the attached media |
+| `status` | `pending`, `completed`, or `needs_attention` |
+| `attempt_count` | Persisted number of handoff attempts |
+| `next_attempt_at` | Due time for a pending retry; null for terminal states |
+| `last_error_code` | Sanitized short category code; never a raw exception/message |
+| `created_at`, `updated_at` | UTC timestamps |
+| Cosmos `_etag` | System property used for optimistic concurrency; not written by the app |
+
+The worker queries due `pending` work only within the household partition and
+updates it using `_etag`. A transient failure remains `pending` with a retry
+time; successful idempotent retention becomes `completed`; a permanent failure
+or exhausted retry policy becomes `needs_attention` for human follow-up. C1/A2
+own the retry cap and backoff; the storage port does not impose either.
+
+Do not set a TTL on the work item: pending work must not expire before it is
+handled, and automatic cleanup of completed/attention records is not yet
+specified. This work item covers the initial attachment handoff only; it does
+not define detachment, replacement, or deletion behavior. The B1 port does not
+run the worker, call Blob, or claim end-to-end staging cleanup. A2/C1 integration
+and synthetic failure/retry acceptance remain separate from storage-port tests.
 
 ## 9. Change events and optional Data Lake
 
@@ -1222,7 +1271,7 @@ When an AI agent implements a task from this document:
 
 Phases are independent gates, not a commitment to deploy every Azure service.
 
-### 12.1 Current B1 work status (2026-11-14)
+### 12.1 Current B1 work status (2026-11-17)
 
 Use this status to distinguish a documented design from completed integration
 or acceptance. OPEN issues and PR review states remain authoritative.
@@ -1233,7 +1282,7 @@ or acceptance. OPEN issues and PR review states remain authoritative.
 | Cosmos pilot acceptance | Required isolation, ETag, atomicity, retry, timeout, receipt-mismatch, TTL, and error-observation checks are identified in this design and B1 follow-up work. | The B1-owned live synthetic matrix passed against Cosmos, including request metrics, fail-closed receipt mismatch, cancellation no-domain-write behavior, and Shopping removal. A read-only query found no household under the earlier `c1-test-b1-accept-20261113-*` prefix. Successful test partitions are retained for review; the bounded runner reports progress, uses 20-second per-request timeout and 300-second overall timeout by default. | Do not delete test partitions. Keep full Agent/App E2E separate; do not treat this B1/C1 builder run as production-resolver coverage. |
 | Read-only Cosmos API (#122, PR #134, PR #93) | The opt-in backend read adapter uses Entra `DefaultAzureCredential`; the fixed household scope and shared Cosmos client are documented in §§2 and 6. | On 2026-11-14, B1 made read-only requests to the hosted Demo API: `/health` returned `ok`; `/inventory` returned 7 records and `/shopping` returned 3. Both result sets were scoped to `demo-household`, and their record IDs matched the approved manifest. No writes or reset were performed. C1's separate #126 read-back confirmed the 31-document baseline. | Hosted health and read routes are verified; App refresh after confirmed writes remains unverified. PR #134 is OPEN with `CHANGES_REQUESTED` (B1's deployment/smoke-test/documentation findings remain for B2 to address); PR #93 remains OPEN. Re-review after the owning author updates the PR. |
 | Demo seed/reset (#126, #149) | The bounded loader, destructive-reset guard, dry-run, single-batch atomic reset, operation-limit fail-closed behavior, timeout inspection, and read-back requirements are documented in §6.8. C1 agreed the 31-document baseline in PR #148. | PR #131 merged the B1 loader/atomic reset. The B1 offline suite covers failure atomicity, over-limit rejection, interrupted-seed fail-closed retry, the unlinked toothpaste row, official-manifest load/no-op retry, and deletion of approval plus operation-receipt records in the same-household reset batch. C1 independently ran offline seed/reset and approval-storage tests (24 passed) and approved the atomic reset path. B2 reported loading the manifest, a no-op dry run, and read-back/forecast results. B1 has not performed a Cosmos write or reset. A previous read-only inventory found four `user_input` records; the current full partition has not been enumerated, and C1 did not authorize deleting them. | Keep #126 open for C1's purchase walkthrough/reset restoration. Do not reset or overwrite until a fresh read-only preflight and explicit data-owner approval cover all records in the current partition. |
-| Media mapping and retention (#98) | B1 mapping storage and retention boundary are documented; A2 owns upload/processing and derived-artifact details. | B1 mapping port is merged in PR #97; 9 offline mapping tests pass, and the live synthetic purchase acceptance verified media TTL and the same-household retention update. PR #109 remains OPEN with changes requested; GitHub currently reports `CLEAN` (no merge conflict). Upload/processing integration and detach/replacement lifecycle are not accepted end-to-end. | Resolve the A2 artifact/schema/version and media detach/replacement policy with A2/C1; do not invent those fields or lifecycle rules in B1 storage. |
+| Media mapping and retention (#98) | B1 mapping storage and retention boundary are documented; §8.4 now records the agreed post-commit work-item contract and owner split. A2 owns upload/processing and derived-artifact details. | B1 mapping port is merged in PR #97; 9 offline mapping tests pass, and the live synthetic purchase acceptance verified media TTL and the same-household retention update. This branch adds an offline-tested work-item storage port, but does not integrate a C1 worker or call A2 Blob retention. Physical staging cleanup, detach/replacement, and end-to-end retry remain unaccepted. | C1 integrates the work item into the purchase batch and retry worker; A2 verifies idempotent retention/error classification; then run failure/retry and staging-cleanup acceptance. Do not invent detach/replacement behavior. |
 | Transaction event time (#113) | The event-time rule is recorded in §9.1 and was agreed by B1/B2/C1/A1. | #113 is closed and PR #128 is merged. B1's integration coverage checks explicit event time, fallback to the first `decided_at`, and retry with stable identity/time. | No further B1 decision is pending; forecast behavior remains B2's responsibility. |
 
 Items that lack an agreed cross-owner contract should be marked as awaiting

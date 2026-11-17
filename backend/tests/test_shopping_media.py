@@ -1,7 +1,7 @@
 """C1 attachment retention joins the existing approval/domain batch; synthetic data only."""
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, timedelta
 from importlib import import_module
 from importlib.util import find_spec
 
@@ -9,11 +9,12 @@ import pytest
 from test_shopping_workflow import HOME, request, run, setup
 
 from app.services.approvals import BatchTooLarge, ResumeOutcome, TargetChanged, TargetVersion
-from app.services.cosmos_write import ReplaceDocument
+from app.services.cosmos_write import CreateDocument, ReplaceDocument
 from app.services.shopping.media import (
     B1MediaRetentionPlanner,
     MediaAttachment,
 )
+from app.services.shopping.media_handoff import media_retention_work_item_id
 from app.services.shopping.preview import ShoppingDecisionRequired, ShoppingPreviewError
 
 
@@ -31,6 +32,34 @@ class SyntheticRetentionPlanner:
             raise ShoppingDecisionRequired("Media is not completed.")
         kept = {key: value for key, value in document.items() if key not in ("_etag", "ttl")}
         return ReplaceDocument(kept, attachment.mapping_etag)
+
+
+class SyntheticWorkItemWriter:
+    """Fixture for the B1 media-retention work-item port proposed in #98."""
+
+    def create_pending(self, draft):
+        return CreateDocument(
+            {
+                "id": draft.id,
+                "record_type": "media_retention_work_item",
+                "household_id": draft.household_id,
+                "operation_id": draft.operation_id,
+                "approval_id": draft.approval_id,
+                "image_ref": draft.image_ref,
+                "created_at": draft.created_at.astimezone(UTC)
+                .isoformat(timespec="microseconds")
+                .replace("+00:00", "Z"),
+                "updated_at": draft.updated_at.astimezone(UTC)
+                .isoformat(timespec="microseconds")
+                .replace("+00:00", "Z"),
+                "status": "pending",
+                "attempt_count": 0,
+                "next_attempt_at": draft.created_at.astimezone(UTC)
+                .isoformat(timespec="microseconds")
+                .replace("+00:00", "Z"),
+                "last_error_code": None,
+            }
+        )
 
 
 def attach(h, *, selected=None, provider=True):
@@ -76,6 +105,7 @@ def attach(h, *, selected=None, provider=True):
         )
 
     h.resolver.resolve = resolve
+    h.builder._media_work_items = SyntheticWorkItemWriter()
     if provider:
         h.builder._media_retention = SyntheticRetentionPlanner(h.container)
     return bindings
@@ -96,6 +126,20 @@ def test_attachment_and_retention_are_in_one_batch_with_purchase_and_retry(kind)
     assert result.outcome == ResumeOutcome.ALREADY_COMPLETED
     item_id = result.record.outcome[bindings[0].operation_id]["item_id"]
     assert h.container.get(f"inventory_item:{item_id}")["image_ref"] == "opaque-test-media"
+    work_item = h.container.get(media_retention_work_item_id(bindings[0].operation_id))
+    assert work_item["status"] == "pending"
+    assert work_item["household_id"] == HOME
+    assert work_item["operation_id"] == bindings[0].operation_id
+    assert work_item["approval_id"] == result.record.approval_id
+    assert work_item["image_ref"] == "opaque-test-media"
+    expected_time = (
+        result.record.decided_at.astimezone(UTC)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+    assert work_item["created_at"] == expected_time
+    assert work_item["updated_at"] == expected_time
+    assert work_item["next_attempt_at"] == expected_time
     assert h.container.get("input:synthetic") == mapping
     assert sum(op.document["id"] == "input:synthetic" for op in h.container.batches[-1]) == 1
 
@@ -166,6 +210,8 @@ def test_unready_foreign_unshown_or_unconfigured_media_cannot_be_attached(invali
                 ]
             }
         )
+    elif invalid == "no_port":
+        h.builder._media_work_items = None
     with pytest.raises((ShoppingPreviewError, TargetChanged)):
         run(h.service.save(h.card))
     assert not h.container.of_type("pending_approval")
@@ -279,6 +325,7 @@ def test_actual_b1_retention_helper_joins_real_c1_a1_b1_purchase_batch():
         "change_event",
         "operation_receipt",
         "user_input",
+        "media_retention_work_item",
         "pending_approval",
     }
     assert run(h.service.resume(request(h))).outcome == ResumeOutcome.ALREADY_COMPLETED

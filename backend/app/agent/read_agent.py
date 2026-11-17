@@ -814,7 +814,8 @@ class ReadAgent:
         changes = request.card_changes or []
         try:
             if self._photo_cards is not None and PhotoCards.made(old):
-                # Issue #124: a photo card's quantity, checked against today's items.
+                # A photo or said card (Issue #124, #168): name, quantity and location
+                # (Issue #188), checked against today's items.
                 items = await self._matcher.household_items(household_id)
                 card = await self._photo_cards.change_card(old, changes, items)
             else:

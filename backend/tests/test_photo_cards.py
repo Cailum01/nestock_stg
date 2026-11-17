@@ -349,6 +349,8 @@ def test_photo_lines_left_out_of_the_change_keep_their_values():
         ([{"operation_id": "LINE", "quantity": 1}], "nothing_changed"),
         ([{"operation_id": "LINE", "purchased_on": "2026-11-14"}], "line_refused"),
         ([{"operation_id": "LINE", "quantity": 2, "purchased_on": None}], "line_refused"),
+        ([{"operation_id": "LINE", "name": " 滑鼠 "}], "nothing_changed"),
+        ([{"operation_id": "LINE", "location": None}], "nothing_changed"),
     ],
 )
 def test_a_refused_photo_change_stores_nothing_and_shows_the_old_card_again(changes, expected):
@@ -400,6 +402,124 @@ def test_a_photo_line_the_household_has_by_now_is_refused(aliases):
         }
     ]
     assert response.pending_approval.model_dump(mode="json") == old
+    assert _stored(container) == [(old["approval_id"], "pending")]
+
+
+# ----- Issue #188: the name and location of a photo line ----------------------------
+
+
+def _line_values(op):
+    return {k: v for k, v in op.values.items() if k != "transaction_id"}
+
+
+def test_name_quantity_and_location_change_together_in_one_new_card():
+    container, agent, model, old = _photo_card_to_change("張國周強胃散")
+    (line,) = _ops(old)
+
+    response = _send_change(
+        agent,
+        model,
+        old,
+        {"operation_id": line["operation_id"], "name": "胃散", "quantity": 2, "location": "藥箱"},
+    )
+
+    assert response.message == CARD_CHANGED
+    new = response.pending_approval
+    (new_line,) = new.operations
+    assert _line_values(new_line) == {
+        "name": "胃散",
+        "quantity": 2,
+        "unit": "個",
+        "location": "藥箱",
+    }
+    assert new_line.description == "會新增一個庫存品項：胃散 2 個，放在藥箱（照片辨識）"
+    assert _stored(container) == [
+        (old["approval_id"], "cancelled"),
+        (new.approval_id, "pending"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("change", "name", "location"),
+    [({"name": "胃散"}, "胃散", None), ({"location": "藥箱"}, "張國周強胃散", "藥箱")],
+    ids=["name only", "location only"],
+)
+def test_the_name_or_the_location_changes_alone(change, name, location):
+    _, agent, model, old = _photo_card_to_change("張國周強胃散", "滑鼠")
+    stomach, mouse = _ops(old)
+
+    new = _send_change(
+        agent, model, old, {"operation_id": stomach["operation_id"], **change}
+    ).pending_approval
+
+    first, second = new.operations
+    assert _line_values(first) == {
+        "name": name,
+        "quantity": 1,
+        "unit": "個",
+        "location": location,
+    }
+    assert _line_values(second) == {"name": "滑鼠", "quantity": 1, "unit": "個", "location": None}
+
+
+def test_a_filled_in_location_changes_again_and_null_empties_it():
+    _, agent, model, old = _photo_card_to_change("滑鼠")
+
+    def changed(card, location):
+        (line,) = _ops(card)
+        response = _send_change(
+            agent, model, card, {"operation_id": line["operation_id"], "location": location}
+        )
+        return response.pending_approval.model_dump(mode="json")
+
+    desk = changed(old, "書桌")
+    drawer = changed(desk, "抽屜")
+    empty = changed(drawer, None)
+
+    assert [_ops(card)[0]["values"]["location"] for card in (desk, drawer, empty)] == [
+        "書桌",
+        "抽屜",
+        None,
+    ]
+    assert _ops(empty)[0]["description"] == "會新增一個庫存品項：滑鼠 1 個（照片辨識）"
+
+
+@pytest.mark.parametrize("aliases", [None, ["胃散"]])
+def test_a_new_name_the_household_has_is_refused(aliases):
+    name = "胃散" if aliases is None else "腸胃藥"
+    container, agent, model, old = _photo_card_to_change("張國周強胃散")
+    (line,) = _ops(old)
+    container.put(_purchase_inventory(item_id="stomach", name=name, unit="包", aliases=aliases))
+
+    response = _send_change(
+        agent, model, old, {"operation_id": line["operation_id"], "name": "胃散"}
+    )
+
+    assert response.results[0].data["code"] == "line_refused"
+    assert response.results[0].data["lines"] == [
+        {
+            "operation_id": line["operation_id"],
+            "reason": f"家裡現在已經有「{name}」，不會再新增一個。",
+        }
+    ]
+    assert response.pending_approval.model_dump(mode="json") == old
+    assert _stored(container) == [(old["approval_id"], "pending")]
+
+
+def test_two_lines_with_the_same_name_are_refused():
+    container, agent, model, old = _photo_card_to_change("滑鼠", "鍵盤")
+    mouse, keyboard = _ops(old)
+
+    response = _send_change(
+        agent, model, old, {"operation_id": keyboard["operation_id"], "name": "滑鼠"}
+    )
+
+    reason = "同一張卡上有兩項都叫「滑鼠」，請改成不同的名字。"
+    assert response.results[0].data["code"] == "line_refused"
+    assert response.results[0].data["lines"] == [
+        {"operation_id": mouse["operation_id"], "reason": reason},
+        {"operation_id": keyboard["operation_id"], "reason": reason},
+    ]
     assert _stored(container) == [(old["approval_id"], "pending")]
 
 

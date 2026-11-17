@@ -21,6 +21,7 @@ from app.services.media_mapping import (
     MediaMappingPort,
     build_media_mapping_retention_update,
 )
+from app.services.media_retention_work import build_pending_media_retention_work_item
 from app.services.shopping.planning import (
     AdjustmentInput,
     AdjustmentPlan,
@@ -113,7 +114,7 @@ class PhotoItemWriteBuilder:
             )
 
         stored_by_id = {operation.operation_id: operation for operation in record.operations}
-        operations_by_id: dict[str, tuple[CreateDocument, CreateDocument, CreateDocument]] = {}
+        operations_by_id: dict[str, tuple[CreateDocument, ...]] = {}
         outcomes: dict[str, dict[str, JsonValue]] = {}
         transaction_ids: set[str] = set()
         item_ids: set[str] = set()
@@ -181,11 +182,22 @@ class PhotoItemWriteBuilder:
                     )
                 inventory = inventory.model_copy(update={"image_ref": image_ref})
 
-            operations_by_id[plan.operation_id] = (
+            writes = [
                 CreateDocument(CosmosDocumentMapper.to_document(inventory)),
                 CreateDocument(CosmosDocumentMapper.to_document(transaction)),
                 change_event_create(event),
-            )
+            ]
+            if media_values is not None:
+                writes.append(
+                    build_pending_media_retention_work_item(
+                        household_id=record.household_id,
+                        operation_id=adjustment.operation_id,
+                        approval_id=record.approval_id,
+                        image_ref=media_values[1],
+                        created_at=record.decided_at,
+                    )
+                )
+            operations_by_id[plan.operation_id] = tuple(writes)
             outcomes[plan.operation_id] = {
                 "item_id": inventory.item_id,
                 "transaction_id": transaction.transaction_id,

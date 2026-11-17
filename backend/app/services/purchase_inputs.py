@@ -26,6 +26,14 @@ asked A1 to do that part (Issue #60, Issue #27). This module is only that step:
   `quantity` and `unit` what was bought, with the same two versions as a purchase
   line; the router (`card_writes.py`) sends only 「是」 here.
 
+- A line may carry the photo the user sent with the message (Issue #176): its
+  `image_ref`, `input_id` and `mapping_etag`, fixed when the card was made, plus the
+  target `input:<input_id>` at that ETag. `stored_photo` reads them: all three or
+  none, and only some of them raises `ValueError`, so nothing is written. Each line
+  with a photo becomes one C1 `MediaAttachment`, taken from the card as it is: the
+  mapping is not looked up again and its ETag is not refreshed, so a retry hands
+  over the same values. Without a photo the purchase is resolved as before.
+
 Not covered yet: removals (A1 has no removal card) and a different unit, which C1's
 plan refuses. Buying more than listed is resolved like any other line; the listed
 quantity is not a limit (Issue #178).
@@ -52,6 +60,7 @@ from app.services.approvals import (
 )
 from app.services.cosmos_read import MappedDocument
 from app.services.inventory_item_identity import resolve_inventory_item_id
+from app.services.shopping.media import MediaAttachment
 from app.services.shopping.planning import AdjustmentInput, NewInventoryTarget, PurchaseInput
 from app.services.shopping.workflow import ResolvedShoppingChanges
 
@@ -59,6 +68,37 @@ COMPLETE_PURCHASE = "complete_purchase"
 """`action` of a purchase card line (v8 tool `complete_purchase`)."""
 CREATE_ITEM = "create_item"
 """`action` of a line that buys a Shopping List entry the household does not have yet."""
+
+IMAGE_REF = "image_ref"
+INPUT_ID = "input_id"
+MAPPING_ETAG = "mapping_etag"
+"""The three photo values a card line holds (Issue #176); B1's photo writer reads the same."""
+
+
+def stored_photo(values: Mapping[str, object]) -> tuple[str, str, str] | None:
+    """(image_ref, input_id, mapping_etag) on a card line, or None without a photo.
+
+    Issue #176. All three or none, the same rule as B1's photo new-item writer: a line
+    with only some of them raises `ValueError`, so nothing is written (fail closed).
+    """
+    image_ref, input_id, mapping_etag = (values.get(k) for k in (IMAGE_REF, INPUT_ID, MAPPING_ETAG))
+    if image_ref is None and input_id is None and mapping_etag is None:
+        return None
+    if not (
+        isinstance(image_ref, str)
+        and image_ref.strip()
+        and isinstance(input_id, str)
+        and input_id.strip()
+        and isinstance(mapping_etag, str)
+        and mapping_etag.strip()
+    ):
+        raise ValueError("A card photo needs image_ref, input_id and mapping_etag together.")
+    return image_ref, input_id, mapping_etag
+
+
+def photo_target(input_id: str) -> str:
+    """The `record_id` of the photo's mapping among a purchase line's targets."""
+    return f"input:{input_id}"
 
 
 class UnsupportedAction(ValueError):
@@ -85,12 +125,12 @@ class CardInputResolver:
 
     async def resolve(self, record: ApprovalRecord) -> ResolvedShoppingChanges:
         approved = set(record.approved_operation_ids or ())
-        purchases = [
-            await self._purchase_input(record, operation)
-            for operation in record.operations
-            if operation.operation_id in approved
-        ]
-        return ResolvedShoppingChanges(purchases=tuple(purchases))
+        selected = [op for op in record.operations if op.operation_id in approved]
+        attachments = tuple(
+            attachment for op in selected if (attachment := _attachment(op)) is not None
+        )
+        purchases = [await self._purchase_input(record, operation) for operation in selected]
+        return ResolvedShoppingChanges(purchases=tuple(purchases), media_attachments=attachments)
 
     async def _purchase_input(
         self, record: ApprovalRecord, operation: StoredOperation
@@ -133,9 +173,7 @@ class CardInputResolver:
             ),
         )
         expected = {f"shopping_item:{shopping_item_id}", f"inventory_item:{item_id}"}
-        if {target.record_id for target in operation.targets} != expected or len(
-            operation.targets
-        ) != len(expected):
+        if not _has_targets(operation, expected):
             raise ValueError(
                 f"{operation.operation_id} must carry exactly its shopping and inventory versions."
             )
@@ -164,9 +202,7 @@ class CardInputResolver:
                 household_id=record.household_id, shopping_item_id=shopping_item_id
             ),
         )
-        if [target.record_id for target in operation.targets] != [
-            f"shopping_item:{shopping_item_id}"
-        ]:
+        if not _has_targets(operation, {f"shopping_item:{shopping_item_id}"}):
             raise ValueError(
                 f"{operation.operation_id} must carry exactly its shopping entry's version."
             )
@@ -240,6 +276,38 @@ class PhotoInputResolver:
             ),
             quantity=_count(values, "quantity"),
         )
+
+
+def _attachment(operation: StoredOperation) -> MediaAttachment | None:
+    """C1's attachment for a line's photo, exactly as the card holds it (Issue #176)."""
+    photo = stored_photo(operation.values)
+    if photo is None:
+        return None
+    image_ref, input_id, mapping_etag = photo
+    return MediaAttachment(
+        operation_id=operation.operation_id,
+        input_id=input_id,
+        image_ref=image_ref,
+        mapping_etag=mapping_etag,
+    )
+
+
+def _has_targets(operation: StoredOperation, records: set[str]) -> bool:
+    """Whether the line carries exactly `records`, plus its photo's mapping if it has one.
+
+    The photo's target must be at the ETag the line holds (Issue #176).
+    """
+    expected = {record_id: None for record_id in records}
+    photo = stored_photo(operation.values)
+    if photo is not None:
+        _, input_id, mapping_etag = photo
+        expected[photo_target(input_id)] = mapping_etag
+    shown = {target.record_id: target.etag for target in operation.targets}
+    return (
+        len(operation.targets) == len(expected)
+        and shown.keys() == expected.keys()
+        and all(etag is None or shown[key] == etag for key, etag in expected.items())
+    )
 
 
 def _unchanged[RecordT: (ShoppingItem, InventoryItem)](

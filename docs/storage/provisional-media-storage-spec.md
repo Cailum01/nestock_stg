@@ -119,7 +119,9 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
 
 依據設計文件 §8.2 與 Issue #98 驗收標準，生產端 Azure Blob 容器（`media`）配置原生 Lifecycle Management 規則，將未附加業務紀錄的孤立檔案於 24 小時後自動 Purge。
 
-本架構全面採用 **路徑前綴物理隔離 (Prefix-based Lifecycle)**，政策精確匹配 `prefixMatch: ["media/staging/"]`，已附加於業務紀錄之檔案移入 `media/attached/` 天然豁免於清理規則，不依賴任何 Blob Index Tags，原生相容 HNS (ADLS Gen2) 與一般 Blob 儲存體：
+本架構全面採用 **路徑前綴物理隔離 (Prefix-based Lifecycle)**，政策精確匹配 `prefixMatch: ["media/staging/"]`，已附加於業務紀錄之檔案移入 `media/attached/` 天然豁免於清理規則，不依賴任何 Blob Index Tags，原生相容 HNS (ADLS Gen2) 與一般 Blob 儲存體。
+
+正式部署定義檔已獨立落盤於 [`deploy/azure-blob-lifecycle-policy.json`](../../deploy/azure-blob-lifecycle-policy.json)：
 
 ```json
 {
@@ -146,6 +148,15 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
 }
 ```
 
+#### Azure CLI 套用指令 (ARM 管理層級)
+雲端資源管理者可透過標準 Azure CLI 指令將本政策套用至目標儲存帳戶：
+```bash
+az storage account management-policy create \
+  --account-name <STORAGE_ACCOUNT_NAME> \
+  --resource-group <RESOURCE_GROUP> \
+  --policy @deploy/azure-blob-lifecycle-policy.json
+```
+
 ＊**保留與解除保留語義契約**：
 1. **上傳預設孤立**：上傳時原始圖檔與衍生工件預設寫入暫存前綴（儲存帳戶層級：`media/staging/households/{hid}/...`；容器相對路徑：`staging/households/{hid}/...`）。
 2. **附著保留 (`retain_media`)**：當下游業務（如購物完成或庫存確認）持久化時，將原始圖與衍生工件原子遷移至保留前綴（儲存帳戶層級：`media/attached/households/{hid}/...`；容器相對路徑：`attached/households/{hid}/...`），因脫離 `staging/` 前綴，永久排除於 Lifecycle 自動清理之外。
@@ -156,6 +167,38 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
    - 本規格書與 PR #155 之儲存適配器實作（`AzureBlobMediaStorage` / `BaseMediaStorageLifecycle`）已完備 `retain_media`、`unretain_media`、實體時間戳刷新（寬限期重算）與跨實例／重啟時向 Cosmos DB 查詢還原上下文（Stateless Recovery）之底層儲存能力。
    - **明確限制本 PR 不宣稱真實業務附件受到端到端保護**：目前 C1 購物核准流程（`ShoppingWorkflowBuilder`）僅在 Cosmos 交易批次中清除 Mapping 之 TTL，尚未接線呼叫 `retain_media`（即批次提交後缺少 Post-Commit Handoff 呼叫）。在端到端真實工作流中，已確認商品之照片實體仍停留在 `staging/` 前綴下，受限於雲端 Lifecycle 政策。
    - **依賴與接續規劃**：依據 Issue #98 之先後順序，端到端之 Post-Commit Handoff、重試佇列與真實 Approval Workflow 整合驗證，明確界定由後續之「步驟 4：C1、A2 完成購買流程接線」專屬處理。本 PR 嚴格聚焦於 A2 儲存適配器之能力交付與規格對齊，不做超出當前實現範圍之端到端宣稱。
+
+---
+
+### 4.2 業務保留與重試契約 (Retention & Retry Contract)
+
+依據 Issue #98 第 1 步「對齊 mapping／`retain_media` 契約及重試」之要求，明確規範調用端與儲存層之契約行為：
+
+#### 4.2.1 觸發時機與職責分工 (Post-Commit Handoff)
+- **觸發順序**：業務寫入必須堅持「資料庫事務優先」原則。下游業務（如 C1 購物審批、庫存入庫）在完成 Cosmos DB 交易批次提交（即原子清除 Mapping 之 `ttl_seconds` 並記錄附件關聯）後，方可非同步或同步呼叫 `retain_media(household_id, input_id)`。
+- **故障隔離**：若 `retain_media` 執行失敗，不得回滾已提交之業務交易紀錄；應交由重試機制完成 Blob 前綴遷移。
+
+#### 4.2.2 儲存端冪等性保證 (Storage Idempotency Contract)
+- **重複執行安全**：`AzureBlobMediaStorage.retain_media` 具備嚴格冪等性保證。若目標 Blob 已經遷移至 `attached/` 前綴（例如先前呼叫超時但實際已成功）：
+  - 適配器自動偵測存在狀態，安全略過重複搬移動作；
+  - 自動確保其 Metadata 與 ContentSettings 處於正確保留狀態；
+  - 絕不拋出 `409 Conflict`、`ResourceExistsError` 或中斷業務流程。
+
+#### 4.2.3 呼叫端重試機制 (Retry Policy with Exponential Backoff)
+- **暫態故障重試**：當呼叫 `retain_media` 遭遇暫時性網路抖動（如 HTTP 503, 504 或連線超時）時，呼叫端**必須**採用帶有抖動的指數退避重試（Exponential Backoff with Jitter）：
+  - **最大重試次數**：3 次。
+  - **建議間隔**：第 1 次 1.0 秒、第 2 次 2.0 秒、第 3 次 4.0 秒。
+- **終極補償路徑**：若連續重試均失敗，呼叫端記錄 `[MEDIA_RETENTION_FAILED]` 錯誤日誌。由於 Cosmos DB Mapping 已永久保留（`ttl_seconds is None`），後續背景維運或重啟程序可依據 Mapping 進行無損補償遷移（Stateless Recovery）。
+
+#### 4.2.4 雙端時鐘與 TTL 一致性
+- 當執行 `unretain_media(household_id, input_id)`（例如商品刪除或換圖）：
+  1. **Blob 實體層**：檔案遷回 `staging/`，並執行 Self-Overwrite 重設 `CreationTime`，確保享有完整的 24 小時（86400 秒）寬限期。
+  2. **Cosmos Mapping 層**：儲存適配器同步透過 `MediaMappingPort.update_retention` 將 TTL 精確重設為 `86400` 秒。
+  - 確保雙端之過期淘汰時鐘完全同步，絕不產生幽靈孤兒紀錄。
+
+#### 4.2.5 雲端基礎架構權限邊界 (Infrastructure Control-Plane Boundary)
+- **應用端憑證 (Data Plane)**：應用程式服務僅持有具備容器存取權限之 SAS 連線字串（Data Plane），無權直接調用 ARM 控制台 API 修改 Storage Account 全域政策。
+- **維運端職責 (Control Plane)**：正式 Lifecycle 政策（`deploy/azure-blob-lifecycle-policy.json`）之發布與管理，屬於 Azure 訂閱管理員或 DevOps/SRE 團隊之職責。PR #155 交付標準定義檔與套用腳本，作為部署之權威依據。
 ---
 
 ## 5. 實體雲端驗證紀錄 (Physical Verification Audit)

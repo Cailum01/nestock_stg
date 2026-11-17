@@ -18,9 +18,8 @@ class ApprovalPresentation(StrEnum):
     BATCH_ACTION = "batch_action"
     PURCHASE_OPTIONS = "purchase_options"
     ITEM_MATCH = "item_match"
-    """"Is this the household item you meant?" (Issue #90): one operation and the
-    options `same_item` and `new_item`. Not issued yet: the approval service rejects
-    it until its confirm rules are built."""
+    """"Is this the household item you meant?" (Issue #90, #175): one operation and
+    the options `same_item` and `new_item` (contract section 10)."""
 
 
 class ResultKind(StrEnum):
@@ -129,9 +128,9 @@ class ResumeRequest(ContractModel):
     - batch_action: approved_operation_ids lists the displayed operations the
       user kept; operations left out are not written.
     - purchase_options: selected_option_id is the one option the user chose.
-    - item_match (Issue #90): selected_option_id is `same_item` (add to the matched
-      item and remember the user's word as its alias) or `new_item` (write nothing;
-      the reply carries a card that creates a new item).
+    - item_match (Issue #90, #175): selected_option_id is `same_item` (write the
+      purchase into the matched item; no alias is remembered) or `new_item` (write
+      nothing; the reply asks for the item again).
 
     When approved is false nothing is written and both selection fields are
     ignored. Which field a presentation requires, and whether the IDs belong to

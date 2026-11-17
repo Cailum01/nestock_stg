@@ -350,6 +350,29 @@
         "complete_purchase"
       ],
       "note": "Asking whether it was bought is a shopping-list question, not a report of a purchase."
+    },
+    {
+      "id": "purchase-neg-03",
+      "tool": "complete_purchase",
+      "kind": "negative",
+      "utterance": "洗碗精買回來了，買了 1 瓶",
+      "shopping_list": [
+        {
+          "shopping_item_id": "dish-1",
+          "name": "洗碗精",
+          "quantity": 1,
+          "unit": "瓶",
+          "status": "pending",
+          "item_id": null
+        }
+      ],
+      "expect_calls": [
+        "list_inventory"
+      ],
+      "must_not_call": [
+        "complete_purchase"
+      ],
+      "note": "Prompt 買回來了 rule 3 (Issue #175): an entry without item_id is checked against the inventory first, so a household item under another name gets candidate_item_id (an item-match card); the card is not made before looking."
     }
   ]
 }

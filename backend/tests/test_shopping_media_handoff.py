@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from azure.core.exceptions import HttpResponseError, ServiceRequestError
 from test_shopping_workflow import run
 
 from app.services.media_retention_work import (
@@ -9,6 +10,10 @@ from app.services.media_retention_work import (
 from app.services.media_retention_work import (
     MediaRetentionWorkItemSnapshot,
     MediaRetentionWorkStatus,
+)
+from app.services.provisional_storage.error_classifier import (
+    DEFAULT_CONNECTION_BACKOFF_SECONDS,
+    DEFAULT_SERVICE_UNAVAILABLE_BACKOFF_SECONDS,
 )
 from app.services.shopping.media_handoff import (
     B1MediaRetentionWorkItemAdapter,
@@ -60,9 +65,10 @@ class FakeMedia:
         return self.result
 
 
-class HttpFailure(Exception):
-    def __init__(self, status_code):
-        self.status_code = status_code
+def http_failure(status_code):
+    error = HttpResponseError(message=f"HTTP {status_code}")
+    error.status_code = status_code
+    return error
 
 
 class FakeB1WorkStorage:
@@ -189,15 +195,45 @@ def test_not_due_item_is_left_untouched():
     assert result.completed == result.retry_scheduled == result.needs_attention == 0
 
 
-def test_transient_error_persists_attempt_count_and_jittered_due_time():
+@pytest.mark.parametrize("status_code", [502, 503, 504])
+def test_transient_http_errors_use_a2_backoff_and_code(status_code):
     work = item(attempt_count=1)
-    store, media = FakeWorkItemStore([work]), FakeMedia(error=HttpFailure(503))
-    worker = MediaRetentionRetryWorker(store, media, jitter=lambda: 0.0)
+    store, media = FakeWorkItemStore([work]), FakeMedia(error=http_failure(status_code))
+    worker = MediaRetentionRetryWorker(store, media, jitter=lambda: 0.1)
 
     result = run(worker.process_pending(household_id=HOUSEHOLD, now=NOW))
 
     assert store.retries == [
-        (work, 2, NOW + timedelta(seconds=2), "transient_storage_failure", NOW)
+        (
+            work,
+            2,
+            NOW + timedelta(seconds=DEFAULT_SERVICE_UNAVAILABLE_BACKOFF_SECONDS * 1.1),
+            "service_unavailable",
+            NOW,
+        )
+    ]
+    assert store.manual == []
+    assert result.retry_scheduled == 1
+
+
+def test_service_request_error_uses_a2_connection_backoff():
+    work = item()
+    store, media = FakeWorkItemStore([work]), FakeMedia(error=ServiceRequestError("offline"))
+
+    result = run(
+        MediaRetentionRetryWorker(store, media, jitter=lambda: 0.0).process_pending(
+            household_id=HOUSEHOLD, now=NOW
+        )
+    )
+
+    assert store.retries == [
+        (
+            work,
+            1,
+            NOW + timedelta(seconds=DEFAULT_CONNECTION_BACKOFF_SECONDS),
+            "network_connection_error",
+            NOW,
+        )
     ]
     assert store.manual == []
     assert result.retry_scheduled == 1
@@ -205,13 +241,13 @@ def test_transient_error_persists_attempt_count_and_jittered_due_time():
 
 def test_permanent_error_moves_work_item_to_needs_attention():
     work = item()
-    store, media = FakeWorkItemStore([work]), FakeMedia(error=HttpFailure(404))
+    store, media = FakeWorkItemStore([work]), FakeMedia(error=http_failure(404))
 
     result = run(
         MediaRetentionRetryWorker(store, media).process_pending(household_id=HOUSEHOLD, now=NOW)
     )
 
-    assert store.manual == [(work, "media_not_found", NOW)]
+    assert store.manual == [(work, "blob_not_found", NOW)]
     assert store.retries == []
     assert result.needs_attention == 1
 
@@ -263,5 +299,5 @@ def test_unknown_exception_is_manual_action_by_default():
 
     run(MediaRetentionRetryWorker(store, media).process_pending(household_id=HOUSEHOLD, now=NOW))
 
-    assert store.manual == [(work, "permanent_retention_failure", NOW)]
+    assert store.manual == [(work, "storage_fatal_error", NOW)]
     assert store.retries == []

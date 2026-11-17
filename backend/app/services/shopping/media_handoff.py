@@ -22,6 +22,7 @@ from app.services.media_retention_work import (
     MediaRetentionWorkStatus,
     build_pending_media_retention_work_item,
 )
+from app.services.provisional_storage import classify_media_retention_error
 
 
 @dataclass(frozen=True)
@@ -216,13 +217,12 @@ class MediaRetentionRetryWorker:
 
     A retry means another call to A2's idempotent ``retain_media`` only. The initial
     attempt is made by the caller after the purchase batch commits; this worker permits
-    three further attempts at approximately 1, 2 and 4 seconds, with jitter. Transient
+    three further attempts using A2's classified backoff recommendation, with jitter. Transient
     errors remain durable and pending; permanent errors and exhausted retries are
     retained in ``needs_attention`` for manual handling.
     """
 
-    _TRANSIENT_STATUS_CODES = frozenset({429, 500, 503})
-    _RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
+    _MAX_RETRIES = 3
 
     def __init__(
         self,
@@ -249,15 +249,21 @@ class MediaRetentionRetryWorker:
             try:
                 retained = await self._media.retain_media(item.household_id, item.image_ref)
             except Exception as error:
-                if self._is_transient(error):
-                    scheduled = await self._schedule_retry(item, effective_now)
+                classification = classify_media_retention_error(error)
+                if classification.is_transient:
+                    scheduled = await self._schedule_retry(
+                        item,
+                        effective_now,
+                        backoff_seconds=classification.suggested_backoff_seconds,
+                        error_code=classification.error_code,
+                    )
                     if scheduled:
                         retry_scheduled += 1
                     else:
                         needs_attention += 1
                 else:
                     await self._store.mark_needs_attention(
-                        item, error_code=self._error_code(error), updated_at=effective_now
+                        item, error_code=classification.error_code, updated_at=effective_now
                     )
                     needs_attention += 1
             else:
@@ -279,9 +285,16 @@ class MediaRetentionRetryWorker:
             needs_attention=needs_attention,
         )
 
-    async def _schedule_retry(self, item: MediaRetentionWorkItem, now: datetime) -> bool:
+    async def _schedule_retry(
+        self,
+        item: MediaRetentionWorkItem,
+        now: datetime,
+        *,
+        backoff_seconds: float,
+        error_code: str,
+    ) -> bool:
         attempt_count = item.attempt_count + 1
-        if attempt_count > len(self._RETRY_DELAYS_SECONDS):
+        if attempt_count > self._MAX_RETRIES:
             await self._store.mark_needs_attention(
                 item, error_code="transient_retries_exhausted", updated_at=now
             )
@@ -289,29 +302,15 @@ class MediaRetentionRetryWorker:
         jitter = self._jitter()
         if not -0.25 <= jitter <= 0.25:
             raise ValueError("jitter must be between -0.25 and 0.25.")
-        delay = self._RETRY_DELAYS_SECONDS[attempt_count - 1] * (1 + jitter)
+        delay = backoff_seconds * (1 + jitter)
         await self._store.schedule_retry(
             item,
             attempt_count=attempt_count,
             next_attempt_at=now + timedelta(seconds=delay),
-            error_code="transient_storage_failure",
+            error_code=error_code,
             updated_at=now,
         )
         return True
-
-    @classmethod
-    def _is_transient(cls, error: Exception) -> bool:
-        if isinstance(error, (TimeoutError, ConnectionError)):
-            return True
-        status_code = getattr(error, "status_code", None)
-        return status_code in cls._TRANSIENT_STATUS_CODES
-
-    @staticmethod
-    def _error_code(error: Exception) -> str:
-        status_code = getattr(error, "status_code", None)
-        if status_code == 404:
-            return "media_not_found"
-        return "permanent_retention_failure"
 
 
 def media_retention_work_item_id(operation_id: str) -> str:

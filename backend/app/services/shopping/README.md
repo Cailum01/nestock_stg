@@ -443,14 +443,13 @@ canonical pending record starts with `next_attempt_at=decided_at`. It stores
 `B1MediaRetentionWorkItemAdapter` also maps the worker onto #191's
 household-scoped `list_due(..., now, limit)` and snapshot/ETag `transition(...)` port.
 `MediaRetentionRetryWorker` processes only due pending items. It invokes A2's
-idempotent `retain_media`; success marks the item complete. The current prototype
-classifies transient HTTP 429/500/503 and connection/timeouts with jittered 1/2/4-
-second delays. In PR #193 review, C1 asked to consume A2's more specific
-`suggested_backoff_seconds` (including 502/504) when that classifier is integrated;
-that policy update is still outstanding. Missing or purged media, other errors,
-and exhausted retries become durable `needs_attention` items without changing the
-already-completed purchase. Retries never route back through `ApprovalService` or
-replay domain writes.
+idempotent `retain_media`; success marks the item complete. Exceptions use A2's
+`classify_media_retention_error` result for transient/permanent classification,
+safe `error_code` and suggested backoff (5/10/30/60 seconds) with bounded jitter.
+The worker keeps its three-retry limit. Missing or purged media, other permanent
+errors, and exhausted retries become durable `needs_attention` items without
+changing the already-completed purchase. Retries never route back through
+`ApprovalService` or replay domain writes.
 
 The adapter and worker have offline coverage against the formal #191 port shape.
 They are not yet wired into production composition: A1's `CardInputResolver` does

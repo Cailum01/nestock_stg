@@ -166,8 +166,8 @@ def _create_media_storage_service(
 
     # 偵測雲端 Azure Blob Storage 配置 (支援連線字串或 Endpoint + DefaultAzureCredential)
     conn_str = env.get("AZURE_STORAGE_CONNECTION_STRING")
-    blob_endpoint = env.get("AZURE_STORAGE_BLOB_ENDPOINT")
-    container_name = env.get("AZURE_STORAGE_CONTAINER_NAME", "media")
+    blob_endpoint = env.get("AZURE_STORAGE_BLOB_ENDPOINT") or env.get("NESTOCK_STORAGE_ACCOUNT_URL")
+    container_name = env.get("AZURE_STORAGE_CONTAINER_NAME") or "media"
 
     kwargs: dict[str, Any] = {
         "container_name": container_name,

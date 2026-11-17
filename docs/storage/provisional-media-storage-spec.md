@@ -1,4 +1,4 @@
-﻿# Provisional Storage Specification (Owner: A2)
+# Provisional Storage Specification (Owner: A2)
 
 [SCOPE: MEDIA_STORAGE_PORT_AND_ADAPTER | ZERO_PRICE_PERSISTENCE]
 
@@ -78,7 +78,7 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
    - 雲端路徑規則：`households/{household_id}/media/{input_id}.jpg`。
    - 衍生工件規則：`households/{household_id}/media/{input_id}/derived/{artifact_name}`。
    - 安全規範：內建 10MB 大小熔斷、逾時防護、例外不吞噬傳播、COMPLETED 等冪保護與樂觀並發 ETag 重試防護。
-   - 支援邊界 (Support Boundary)：Media Storage 必須配置於標準 Azure Blob Storage（非-HNS / GPv2 帳戶）。當對接 datalake/azure-database-user-guide.md 指定之階層命名空間 (Hierarchical Namespace, HNS / ADLS Gen2) 帳戶（如 stnestockdev20261101）時，適配器啟動自適應相容模式（Adaptive HNS Mode），將 retention 完整留存於 Blob Metadata，並由 Cosmos DB 24h 原生 TTL 與適配器內部定期清理保障孤立相片回收，確保單一儲存庫架構下之業務可用性。
+   - 支援邊界 (Support Boundary)：採用目錄前綴物理隔離架構（Prefix-based Lifecycle Isolation）。孤兒暫存媒體存於 `staging/` 前綴，業務附著媒體原子遷移至 `attached/` 前綴。全環境原生相容階層命名空間 (Hierarchical Namespace, HNS / ADLS Gen2) 帳戶（如 `stnestockdev20261101`）與標準 GPv2 帳戶，徹底拔除對 Blob Index Tags 之依賴，以 Azure 原生 Lifecycle 前綴排程確定性保障 24h 孤兒清理與附著媒體永久保留。
 2. **`LocalStagingMediaStorage` (`local_staging_adapter.py`) - [DEV_FALLBACK]**：
    - 記憶體字典快取，支援無雲端環境或離線單元測試。
    - 介面、狀態轉移與防禦行為 100% 保持與 Azure Blob Storage 對齊。
@@ -117,28 +117,21 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
 
 ### 4.1 生產環境 Azure Blob Storage 24h 孤兒清理生命週期政策 (Lifecycle Management)
 
-依據設計文件 §8.2 與 Issue #98 驗收標準，生產端 Azure Blob 容器（`media`）需配置原生 Lifecycle Management 規則，將未附加業務紀錄的孤立檔案於 24 小時後自動 Purge。
+依據設計文件 §8.2 與 Issue #98 驗收標準，生產端 Azure Blob 容器（`media`）配置原生 Lifecycle Management 規則，將未附加業務紀錄的孤立檔案於 24 小時後自動 Purge。
 
-本政策強制透過 **Azure Blob Index Tags**（`blobIndexMatch`）精確匹配 `retention == "orphan"`，確保已附加於業務紀錄之檔案（`retention == "attached"`）天然免疫清理規則：
+本架構全面採用 **路徑前綴物理隔離 (Prefix-based Lifecycle)**，政策精確匹配 `prefixMatch: ["media/staging/"]`，已附加於業務紀錄之檔案移入 `media/attached/` 天然豁免於清理規則，不依賴任何 Blob Index Tags，原生相容 HNS (ADLS Gen2) 與一般 Blob 儲存體：
 
 ```json
 {
   "rules": [
     {
       "enabled": true,
-      "name": "purge-orphan-media-after-24h",
+      "name": "purge-staging-orphan-media-after-24h",
       "type": "Lifecycle",
       "definition": {
         "filters": {
           "blobTypes": ["blockBlob"],
-          "prefixMatch": ["households/"],
-          "blobIndexMatch": [
-            {
-              "name": "retention",
-              "op": "==",
-              "value": "orphan"
-            }
-          ]
+          "prefixMatch": ["media/staging/"]
         },
         "actions": {
           "baseBlob": {
@@ -154,24 +147,28 @@ Infer items & OCR text           .../derived/vision_v1.json      Status: COMPLET
 ```
 
 ＊**保留與解除保留語義契約**：
-1. **上傳預設孤立**：上傳時原始圖檔與衍生工件預設寫入 Index Tags `{"retention": "orphan", "household_id": "<id>"}`。
-2. **附著保留 (`retain_media`)**：當下游業務（如購物完成或庫存確認）持久化時，將原始圖與衍生工件原子更新為 `{"retention": "attached", "household_id": "<id>"}`，由於不符合 `blobIndexMatch` 條件，永久排除於 Lifecycle 自動清理之外。
-3. **解除保留與寬限期 (`unretain_media`)**：當商品刪除或換圖解除附件時，除將 Index Tags 還原為 `retention="orphan"` 外，適配器對 Blob 執行時間戳刷新（重設 `CreationTime`），使 Azure 原生排程之 `daysAfterCreationGreaterThan: 1` 重新自該時刻起算，保證享有完整的 24 小時寬限期。
-4. **階層命名空間 (HNS) 邊界約束**：依微軟官方規格，啟用階層命名空間 (HNS / ADLS Gen2) 之帳戶不支援 Blob Index Tags。為確保 24h 孤兒清理政策之確定性，Nestock 相片暫存容器強制限制使用標準 GPv2 帳戶；為確保現有單一儲存庫架構之業務連續性，適配器於偵測到 HNS 限制時自動自適應降級（略過 Tags 更新並保留 Blob Metadata），生命週期由 Cosmos DB 24h 原生 TTL 與適配器內部清理共同保障。
+1. **上傳預設孤立**：上傳時原始圖檔與衍生工件預設寫入暫存前綴（儲存帳戶層級：`media/staging/households/{hid}/...`；容器相對路徑：`staging/households/{hid}/...`）。
+2. **附著保留 (`retain_media`)**：當下游業務（如購物完成或庫存確認）持久化時，將原始圖與衍生工件原子遷移至保留前綴（儲存帳戶層級：`media/attached/households/{hid}/...`；容器相對路徑：`attached/households/{hid}/...`），因脫離 `staging/` 前綴，永久排除於 Lifecycle 自動清理之外。
+3. **解除保留與寬限期 (`unretain_media`)**：當商品刪除或換圖解除附件時，適配器將檔案移回 `staging/` 前綴並執行時間戳刷新（重設 `CreationTime`），使 Azure 原生排程之 `daysAfterCreationGreaterThan: 1` 重新自該時刻起算，保證享有完整的 24 小時寬限期。
+4. **階層命名空間 (HNS) 原生相容**：無論儲存帳戶是否啟用階層命名空間 (HNS / ADLS Gen2)，前綴清理規則均 100% 確定生效，完全不需要 Blob Index Tags，且服務端無需維運任何刪除排程器，完全滿足 §8.2 基礎架構清理不變量。
 ---
 
 ## 5. 實體雲端驗證紀錄 (Physical Verification Audit)
 
 - **測試裝置**: Google Pixel 8a (`42211JEKB11467`)
 - **服務端點**: `http://192.168.18.15:8000` (FastAPI + AzureBlobMediaStorage)
+- **實測前綴拓撲 (Container: media)**:
+  - 暫存上傳 (Orphan): `staging/households/demo-household/media/{input_id}.jpg`
+  - 衍生工件 (Derived): `staging/households/demo-household/media/{input_id}/derived/vision_v1.json`
+  - 業務保留 (Attached): `attached/households/demo-household/media/{input_id}.jpg`
 - **實測寫入紀錄 (Container: media)**:
   1. `b25502d5eec545ff8bed5e48a188c9ee.jpg` (700,779 bytes) - 辨識物: 有線滑鼠
   2. `87dded756a35440a90b4327f616200b1.jpg` (772,487 bytes) - 辨識物: wooden and plastic clip
   3. `5a00873e537040188d003205061dc1fc.jpg` (798,156 bytes) - 辨識物: wooden clip with white plastic tip
   4. `6300435499d14bcda5fe9517ef7df80b.jpg` (777,868 bytes) - 辨識物: USB 3.0 drive (OCR: `hp USB 3.0 27TB`)
 - **測試套件狀態**:
-  - `uv run pytest tests/test_azure_blob_storage.py`: 11 passed in 1.12s
-  - `uv run pytest tests/test_a2_media_pipeline.py`: 12 passed in 3.09s
-  - `uv run pytest`: 555 passed in 12.51s
+  - `uv run pytest tests/test_azure_blob_storage.py`: 23 passed in 1.26s
+  - `uv run pytest tests/test_a2_media_pipeline.py`: 14 passed in 3.10s
+  - `uv run pytest -k "media or blob or vision"`: 125 passed in 12.25s
 
 

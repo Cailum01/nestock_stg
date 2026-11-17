@@ -48,13 +48,11 @@ class FakeBlobProperties:
         self,
         name: str,
         metadata: dict[str, str] | None = None,
-        tags: dict[str, str] | None = None,
         creation_time: datetime | None = None,
         content_settings: Any | None = None,
     ) -> None:
         self.name = name
         self.metadata = dict(metadata or {})
-        self.tags = dict(tags or {})
         self.creation_time = creation_time or datetime.now(UTC)
         self.content_settings = content_settings or ContentSettings()
 
@@ -64,14 +62,12 @@ class FakeBlobClient:
         self,
         container_dict: dict[str, bytes],
         metadata_dict: dict[str, dict[str, str]],
-        tags_dict: dict[str, dict[str, str]],
         creation_time_dict: dict[str, datetime],
         content_settings_dict: dict[str, Any],
         blob_name: str,
     ) -> None:
         self._container_dict = container_dict
         self._metadata_dict = metadata_dict
-        self._tags_dict = tags_dict
         self._creation_time_dict = creation_time_dict
         self._content_settings_dict = content_settings_dict
         self._blob_name = blob_name
@@ -84,11 +80,6 @@ class FakeBlobClient:
             self._metadata_dict[self._blob_name] = {str(k): str(v) for k, v in meta.items()}
         elif self._blob_name not in self._metadata_dict:
             self._metadata_dict[self._blob_name] = {}
-        tags = kwargs.get("tags")
-        if isinstance(tags, dict):
-            self._tags_dict[self._blob_name] = {str(k): str(v) for k, v in tags.items()}
-        elif self._blob_name not in self._tags_dict:
-            self._tags_dict[self._blob_name] = {}
         self._creation_time_dict[self._blob_name] = datetime.now(UTC)
         cs = kwargs.get("content_settings")
         if cs is not None:
@@ -107,23 +98,12 @@ class FakeBlobClient:
             raise KeyError(f"Blob {self._blob_name} does not exist.")
         self._metadata_dict[self._blob_name] = {str(k): str(v) for k, v in (metadata or {}).items()}
 
-    async def set_blob_tags(self, tags: dict[str, str] | None = None, **kwargs) -> None:
-        if self._blob_name not in self._container_dict:
-            raise KeyError(f"Blob {self._blob_name} does not exist.")
-        self._tags_dict[self._blob_name] = {str(k): str(v) for k, v in (tags or {}).items()}
-
-    async def get_blob_tags(self, **kwargs) -> dict[str, str]:
-        if self._blob_name not in self._container_dict:
-            raise KeyError(f"Blob {self._blob_name} does not exist.")
-        return dict(self._tags_dict.get(self._blob_name, {}))
-
     async def get_blob_properties(self, **kwargs) -> FakeBlobProperties:
         if self._blob_name not in self._container_dict:
             raise KeyError(f"Blob {self._blob_name} does not exist.")
         return FakeBlobProperties(
             name=self._blob_name,
             metadata=self._metadata_dict.get(self._blob_name, {}),
-            tags=self._tags_dict.get(self._blob_name, {}),
             creation_time=self._creation_time_dict.get(self._blob_name),
             content_settings=self._content_settings_dict.get(self._blob_name),
         )
@@ -131,7 +111,6 @@ class FakeBlobClient:
     async def delete_blob(self, **kwargs) -> None:
         self._container_dict.pop(self._blob_name, None)
         self._metadata_dict.pop(self._blob_name, None)
-        self._tags_dict.pop(self._blob_name, None)
         self._creation_time_dict.pop(self._blob_name, None)
         self._content_settings_dict.pop(self._blob_name, None)
 
@@ -158,7 +137,6 @@ class FakeContainerClient:
         self,
         storage_dict: dict[str, dict[str, bytes]],
         metadata_store: dict[str, dict[str, dict[str, str]]],
-        tags_store: dict[str, dict[str, dict[str, str]]],
         creation_time_store: dict[str, dict[str, datetime]],
         content_settings_store: dict[str, dict[str, Any]],
         container_name: str,
@@ -168,15 +146,12 @@ class FakeContainerClient:
             storage_dict[container_name] = {}
         if container_name not in metadata_store:
             metadata_store[container_name] = {}
-        if container_name not in tags_store:
-            tags_store[container_name] = {}
         if container_name not in creation_time_store:
             creation_time_store[container_name] = {}
         if container_name not in content_settings_store:
             content_settings_store[container_name] = {}
         self._blobs = storage_dict[container_name]
         self._metadata = metadata_store[container_name]
-        self._tags = tags_store[container_name]
         self._creation_times = creation_time_store[container_name]
         self._content_settings = content_settings_store[container_name]
 
@@ -184,7 +159,6 @@ class FakeContainerClient:
         return FakeBlobClient(
             self._blobs,
             self._metadata,
-            self._tags,
             self._creation_times,
             self._content_settings,
             blob_name,
@@ -196,7 +170,6 @@ class FakeContainerClient:
             FakeBlobProperties(
                 name=name,
                 metadata=self._metadata.get(name, {}),
-                tags=self._tags.get(name, {}),
                 creation_time=self._creation_times.get(name),
                 content_settings=self._content_settings.get(name),
             )
@@ -228,7 +201,6 @@ class FakeBlobServiceClient:
     def __init__(self) -> None:
         self.storage: dict[str, dict[str, bytes]] = {}
         self.metadata: dict[str, dict[str, dict[str, str]]] = {}
-        self.tags: dict[str, dict[str, dict[str, str]]] = {}
         self.creation_times: dict[str, dict[str, datetime]] = {}
         self.content_settings: dict[str, dict[str, Any]] = {}
 
@@ -236,7 +208,6 @@ class FakeBlobServiceClient:
         return FakeContainerClient(
             self.storage,
             self.metadata,
-            self.tags,
             self.creation_times,
             self.content_settings,
             container_name,
@@ -353,9 +324,9 @@ async def test_receive_staged_upload_writes_blob_and_transitions_received(
     assert hh == "home-dev"
     assert ref == auth.image_ref
 
-    # 驗證 Azure Blob Container 中有寫入真實位元組
+    # 驗證 Azure Blob Container 中有寫入真實位元組 (預設暫存於 staging/ 前綴)
     blob_path = ref.removeprefix("blob://").lstrip("/")
-    stored_bytes = fake_blob_service.storage["media"].get(blob_path)
+    stored_bytes = fake_blob_service.storage["media"].get(f"staging/{blob_path}")
     assert stored_bytes == payload
 
     # 驗證 Cosmos 狀態轉為 RECEIVED
@@ -414,10 +385,11 @@ async def test_complete_processing_uploads_artifact_json(
     # 完成後，Agent 門禁放行
     assert await blob_storage.verify_media_exists("home-dev", auth.image_ref) is True
 
-    # 驗證衍生工件寫入 Blob
+    # 驗證衍生工件寫入 Blob (staging/ 前綴)
     artifact_blob_path = artifact_ref.removeprefix("blob://").lstrip("/")
     expected_payload = artifact_json.encode("utf-8")
-    assert fake_blob_service.storage["media"].get(artifact_blob_path) == expected_payload
+    staging_art_path = f"staging/{artifact_blob_path}"
+    assert fake_blob_service.storage["media"].get(staging_art_path) == expected_payload
 
     # 驗證 Cosmos 狀態為 COMPLETED
     snapshot = await mapping_port.find_by_image_ref(
@@ -494,6 +466,14 @@ def test_dependency_dual_mode_selection():
     )
     assert isinstance(storage_blob, AzureBlobMediaStorage)
 
+    # 3. 依據 azure-database-user-guide.md:L168，支援 NESTOCK_STORAGE_ACCOUNT_URL
+    storage_endpoint = _create_media_storage_service(
+        environment={
+            "NESTOCK_STORAGE_ACCOUNT_URL": "https://stnestockdev20261101.blob.core.windows.net/"
+        }
+    )
+    assert isinstance(storage_endpoint, AzureBlobMediaStorage)
+
 
 @pytest.mark.anyio
 async def test_receive_staged_upload_auto_process_ingest(fake_blob_service, mapping_port):
@@ -527,7 +507,7 @@ async def test_receive_staged_upload_auto_process_ingest(fake_blob_service, mapp
 
     # 驗證衍生工件實際已寫入 Blob 容器且為合法 VisionAnalysisResult JSON
     artifact_blob_path = snapshot.record.artifact_ref.removeprefix("blob://").lstrip("/")
-    raw_artifact = fake_blob_service.storage["media"].get(artifact_blob_path)
+    raw_artifact = fake_blob_service.storage["media"].get(f"staging/{artifact_blob_path}")
     assert raw_artifact is not None and len(raw_artifact) > 0
     derived_bytes = await storage.get_derived_artifact("home-dev", auth.image_ref)
     assert derived_bytes == raw_artifact
@@ -585,7 +565,7 @@ async def test_azure_blob_verify_media_exists_fails_closed_without_mapping_port(
     token = auth.upload_url.split("/")[-1]
     await storage.receive_staged_upload(token, b"unmapped")
 
-    blob_path = auth.image_ref.removeprefix("blob://").lstrip("/")
+    blob_path = f"staging/{auth.image_ref.removeprefix('blob://').lstrip('/')}"
     assert fake_blob_service.storage["media"].get(blob_path) == b"unmapped"
     assert await storage.verify_media_exists("home-dev", auth.image_ref) is False
 
@@ -641,14 +621,18 @@ async def test_azure_blob_orphan_expiration_deletes_blobs_and_preserves_attached
     assert auth_orphan.image_ref in purged
     assert auth_attached.image_ref not in purged
 
-    orphan_raw_path = auth_orphan.image_ref.removeprefix("blob://").lstrip("/")
-    orphan_art_path = snap_orphan.record.artifact_ref.removeprefix("blob://").lstrip("/")
+    orphan_raw_path = f"staging/{auth_orphan.image_ref.removeprefix('blob://').lstrip('/')}"
+    orphan_art_path = (
+        f"staging/{snap_orphan.record.artifact_ref.removeprefix('blob://').lstrip('/')}"
+    )
     assert orphan_raw_path not in fake_blob_service.storage["media"]
     assert orphan_art_path not in fake_blob_service.storage["media"]
     assert await storage.get_media_bytes("home-dev", auth_orphan.image_ref) is None
 
-    attached_raw_path = auth_attached.image_ref.removeprefix("blob://").lstrip("/")
-    attached_art_path = snap_attached.record.artifact_ref.removeprefix("blob://").lstrip("/")
+    attached_raw_path = f"attached/{auth_attached.image_ref.removeprefix('blob://').lstrip('/')}"
+    attached_art_path = (
+        f"attached/{snap_attached.record.artifact_ref.removeprefix('blob://').lstrip('/')}"
+    )
     assert fake_blob_service.storage["media"].get(attached_raw_path) == b"attached"
     assert attached_art_path in fake_blob_service.storage["media"]
     assert await storage.get_media_bytes("home-dev", auth_attached.image_ref) == b"attached"
@@ -750,7 +734,7 @@ async def test_blob_delete_failure_prevents_purged_flag_and_allows_retry(
     token = auth.upload_url.split("/")[-1]
     await storage.receive_staged_upload(token, b"fail_del_bytes")
 
-    blob_path = auth.image_ref.removeprefix("blob://").lstrip("/")
+    blob_path = f"staging/{auth.image_ref.removeprefix('blob://').lstrip('/')}"
 
     # 模擬磁碟或網路異常
     original_delete = FakeBlobClient.delete_blob
@@ -914,14 +898,12 @@ async def test_unretain_media_restores_orphan_metadata_and_expiration(
     assert rec_after["expires_at"] is not None
     assert rec_after["expires_at"] > now_dt
 
-    # 驗證 Blob 元資料與 Tags 已同步為 orphan
-    blob_path = auth.image_ref.removeprefix("blob://").lstrip("/")
+    # 驗證 Blob 元資料已同步為 orphan
+    blob_path = f"staging/{auth.image_ref.removeprefix('blob://').lstrip('/')}"
     client = fake_blob_service.get_container_client("media").get_blob_client(blob_path)
     props = await client.get_blob_properties()
     assert props.metadata["retention"] == "orphan"
     assert props.metadata["expires_at"] != ""
-    assert props.tags["retention"] == "orphan"
-    assert props.tags["household_id"] == "home-dev"
     assert props.creation_time >= now_dt
 
     # 3. 未到期時 cleanup 不應清除
@@ -944,8 +926,8 @@ async def test_unretain_media_restores_orphan_metadata_and_expiration(
 
 
 @pytest.mark.anyio
-async def test_retain_media_reraises_on_tags_failure(fake_blob_service, mapping_port):
-    """驗證當 set_blob_tags 失敗時，retain_media 向上拋出例外。"""
+async def test_retain_and_unretain_prefix_movement(fake_blob_service, mapping_port):
+    """驗證 retain_media 將檔案移入 attached/ 前綴，unretain_media 移回 staging/ 前綴。"""
     storage = AzureBlobMediaStorage(
         blob_service_client=fake_blob_service,
         container_name="media",
@@ -954,25 +936,33 @@ async def test_retain_media_reraises_on_tags_failure(fake_blob_service, mapping_
     )
     req = UploadAuthorizationRequest(
         household_id="home-dev",
-        filename="tag_fail.jpg",
+        filename="prefix_move.jpg",
         content_type=AllowedMediaContentType.IMAGE_JPEG,
         file_size_bytes=6,
     )
     auth = await storage.create_upload_authorization(req)
     token = auth.upload_url.split("/")[-1]
-    await storage.receive_staged_upload(token, b"tag_bytes")
+    await storage.receive_staged_upload(token, b"move_bytes")
 
-    original_tags = FakeBlobClient.set_blob_tags
+    rel = auth.image_ref.removeprefix("blob://").lstrip("/")
+    staging_path = f"staging/{rel}"
+    attached_path = f"attached/{rel}"
 
-    async def mock_broken_tags(self, *args, **kwargs):
-        raise OSError("Failed to communicate with Azure Blob tags endpoint")
+    # 初始：位於 staging/
+    assert staging_path in fake_blob_service.storage["media"]
+    assert attached_path not in fake_blob_service.storage["media"]
 
-    FakeBlobClient.set_blob_tags = mock_broken_tags
-    try:
-        with pytest.raises(OSError, match="Failed to communicate with Azure Blob tags endpoint"):
-            await storage.retain_media("home-dev", auth.image_ref)
-    finally:
-        FakeBlobClient.set_blob_tags = original_tags
+    # 附著保留：原子遷移至 attached/
+    await storage.retain_media("home-dev", auth.image_ref)
+    assert attached_path in fake_blob_service.storage["media"]
+    assert staging_path not in fake_blob_service.storage["media"]
+    assert await storage.get_media_bytes("home-dev", auth.image_ref) == b"move_bytes"
+
+    # 解除附著：原子遷移回 staging/
+    await storage.unretain_media("home-dev", auth.image_ref)
+    assert staging_path in fake_blob_service.storage["media"]
+    assert attached_path not in fake_blob_service.storage["media"]
+    assert await storage.get_media_bytes("home-dev", auth.image_ref) == b"move_bytes"
 
 
 @pytest.mark.anyio
@@ -988,18 +978,14 @@ async def test_azure_lifecycle_policy_preserves_attached_and_respects_unretain_g
     container = fake_blob_service.get_container_client("media")
 
     def simulate_azure_lifecycle_policy_purge(current_time: datetime) -> list[str]:
-        """模擬 Azure 原生 Lifecycle Management 執行引擎：
+        """模擬 Azure 原生 Lifecycle Management 執行引擎（基於路徑前綴 staging/，無 tags 依賴）：
 
-        Filters: prefixMatch: 'households/', blobIndexMatch: retention == 'orphan'
+        Filters: prefixMatch: 'staging/'
         Action: delete if daysAfterCreationGreaterThan: 1 (creation_time + 86400s < current_time)
         """
         deleted = []
         for blob_name in list(container._blobs.keys()):
-            if not blob_name.startswith("households/"):
-                continue
-            tags = container._tags.get(blob_name, {})
-            # 關鍵門禁：只有 tag retention == orphan 的 Blob 才會被政策鎖定
-            if tags.get("retention") != "orphan":
+            if not blob_name.startswith("staging/"):
                 continue
             c_time = container._creation_times.get(blob_name)
             if c_time is None:
@@ -1008,7 +994,6 @@ async def test_azure_lifecycle_policy_preserves_attached_and_respects_unretain_g
             if (current_time - c_time).total_seconds() > 86400:
                 container._blobs.pop(blob_name, None)
                 container._metadata.pop(blob_name, None)
-                container._tags.pop(blob_name, None)
                 container._creation_times.pop(blob_name, None)
                 deleted.append(blob_name)
         return deleted
@@ -1048,33 +1033,30 @@ async def test_azure_lifecycle_policy_preserves_attached_and_respects_unretain_g
     await blob_storage.receive_staged_upload(token_c, b"old_bytes")
     await blob_storage.retain_media("home-dev", auth_c.image_ref)
 
-    path_a = auth_a.image_ref.removeprefix("blob://").lstrip("/")
-    path_b = auth_b.image_ref.removeprefix("blob://").lstrip("/")
-    path_c = auth_c.image_ref.removeprefix("blob://").lstrip("/")
+    path_a = f"attached/{auth_a.image_ref.removeprefix('blob://').lstrip('/')}"
+    path_b = f"staging/{auth_b.image_ref.removeprefix('blob://').lstrip('/')}"
+    path_c_attached = f"attached/{auth_c.image_ref.removeprefix('blob://').lstrip('/')}"
+    path_c_staging = f"staging/{auth_c.image_ref.removeprefix('blob://').lstrip('/')}"
 
     # 人工將舊媒體 C 的初始建立時間倒退回 30 天前
     now_dt = datetime.now(UTC)
-    container._creation_times[path_c] = now_dt - timedelta(days=30)
+    container._creation_times[path_c_attached] = now_dt - timedelta(days=30)
 
-    # 驗證初始 Tags
-    assert (await container.get_blob_client(path_a).get_blob_properties()).tags[
-        "retention"
-    ] == "attached"
-    assert (await container.get_blob_client(path_b).get_blob_properties()).tags[
-        "retention"
-    ] == "orphan"
-    assert (await container.get_blob_client(path_c).get_blob_properties()).tags[
-        "retention"
-    ] == "attached"
+    # 驗證初始前綴位置
+    assert path_a in container._blobs
+    assert path_b in container._blobs
+    assert path_c_attached in container._blobs
 
     # 在 30 天後的當下，使用者決定換圖，對舊媒體 C 執行 unretain_media
     unretained = await blob_storage.unretain_media("home-dev", auth_c.image_ref, ttl_seconds=86400)
     assert unretained is True
 
     # 驗證 unretain_media 後：
-    # (a) C 的 tag 成功還原為 orphan
-    props_c = await container.get_blob_client(path_c).get_blob_properties()
-    assert props_c.tags["retention"] == "orphan"
+    # (a) C 成功搬回 staging/ 前綴
+    assert path_c_staging in container._blobs
+    assert path_c_attached not in container._blobs
+    props_c = await container.get_blob_client(path_c_staging).get_blob_properties()
+    assert props_c.metadata["retention"] == "orphan"
     # (b) C 的 CreationTime 成功被重設為當前時間（不小於 now_dt）
     assert props_c.creation_time >= now_dt
 
@@ -1083,13 +1065,13 @@ async def test_azure_lifecycle_policy_preserves_attached_and_respects_unretain_g
     assert purged_12h == []  # 無任何檔案被刪除
     assert await container.get_blob_client(path_a).exists() is True
     assert await container.get_blob_client(path_b).exists() is True
-    assert await container.get_blob_client(path_c).exists() is True
+    assert await container.get_blob_client(path_c_staging).exists() is True
 
     # 測試生命週期場景 2：時間推進 25 小時 (滿 24 小時)
     purged_25h = simulate_azure_lifecycle_policy_purge(current_time=now_dt + timedelta(hours=25))
     # 孤立媒體 B 與解除保留後過期的 C 均被正常刪除
     assert path_b in purged_25h
-    assert path_c in purged_25h
+    assert path_c_staging in purged_25h
     # 關鍵斷言：attached 的媒體 A 即使經過 25 小時，依然安在，絕對不會被刪除！
     assert path_a not in purged_25h
     assert await container.get_blob_client(path_a).exists() is True
@@ -1105,64 +1087,37 @@ async def test_azure_lifecycle_policy_preserves_attached_and_respects_unretain_g
 async def test_azure_blob_upload_gracefully_handles_hierarchical_namespace(
     blob_storage, fake_blob_service
 ):
-    """驗證當 Azure Storage Account 開啟階層命名空間 (ADLS Gen2) 不支援 Tags 時：
+    """驗證當 Azure Storage Account 開啟階層命名空間 (ADLS Gen2) 時：
 
-    1. upload_blob 捕獲 FeatureNotYetSupportedForHierarchicalNamespaceAccounts 錯誤。
-    2. 適配器自適應重試上傳（略過 tags，保留 metadata），順利完成檔案寫入。
-    3. set_blob_tags 遇到該錯誤時記錄警告並略過，不阻斷業務流程。
+    適配器原生相容 HNS，完全不使用 Blob Index Tags，順利完成暫存上傳與讀取。
     """
     del fake_blob_service
-    original_upload = FakeBlobClient.upload_blob
-    original_set_tags = FakeBlobClient.set_blob_tags
+    req = UploadAuthorizationRequest(
+        household_id="home-dev",
+        filename="adls_test.jpg",
+        content_type=AllowedMediaContentType.IMAGE_JPEG,
+        file_size_bytes=16,
+    )
+    auth = await blob_storage.create_upload_authorization(req)
+    token = auth.upload_url.split("/")[-1]
 
-    async def mock_upload_with_tag_failure(self, *args, **kwargs):
-        if "tags" in kwargs and kwargs["tags"]:
-            raise RuntimeError(
-                "Specified feature is not yet supported for hierarchical namespace accounts. "
-                "ErrorCode: FeatureNotYetSupportedForHierarchicalNamespaceAccounts"
-            )
-        return await original_upload(self, *args, **kwargs)
-
-    async def mock_set_tags_with_hns_failure(self, *args, **kwargs):
-        raise RuntimeError(
-            "Specified feature is not yet supported for hierarchical namespace accounts. "
-            "ErrorCode: FeatureNotYetSupportedForHierarchicalNamespaceAccounts"
-        )
-
-    FakeBlobClient.upload_blob = mock_upload_with_tag_failure
-    FakeBlobClient.set_blob_tags = mock_set_tags_with_hns_failure
-    try:
-        req = UploadAuthorizationRequest(
-            household_id="home-dev",
-            filename="adls_test.jpg",
-            content_type=AllowedMediaContentType.IMAGE_JPEG,
-            file_size_bytes=16,
-        )
-        auth = await blob_storage.create_upload_authorization(req)
-        token = auth.upload_url.split("/")[-1]
-
-        # 斷言：遭遇 HNS 帳戶時自適應降級，成功完成暫存上傳並返回 (household_id, image_ref)
-        res = await blob_storage.receive_staged_upload(token, b"0123456789abcdef")
-        assert res[0] == "home-dev"
-        assert res[1].startswith("blob://households/home-dev/media/")
-
-        # 斷言：_set_blob_tags 遭遇 HNS 亦優雅略過，不拋出例外
-        await blob_storage._set_blob_tags("some/path.jpg", {"retention": "attached"})
-    finally:
-        FakeBlobClient.upload_blob = original_upload
-        FakeBlobClient.set_blob_tags = original_set_tags
+    res = await blob_storage.receive_staged_upload(token, b"0123456789abcdef")
+    assert res[0] == "home-dev"
+    assert res[1].startswith("blob://households/home-dev/media/")
+    assert await blob_storage.get_media_bytes("home-dev", res[1]) == b"0123456789abcdef"
 
 
 @pytest.mark.anyio
 async def test_azure_blob_unretain_preserves_content_settings(blob_storage, fake_blob_service):
-    """驗證 PR #155 關鍵要求：
+    """驗證前綴隔離架構下 unretain_media 保持 Content-Settings 與時間戳刷新：
 
-    1. 上傳 image/jpeg 媒體至 Azure Blob。
+    1. 上傳 image/jpeg 媒體至 Azure Blob (staging/ 前綴)。
     2. 驗證初始 content_settings 具有 content_type="image/jpeg"。
-    3. 執行 retain_media 推進至 attached。
-    4. 執行 unretain_media 解除附加（觸發自我重寫以刷新 24h 建立時間時鐘）。
+    3. 執行 retain_media 推進至 attached (遷移至 attached/ 前綴)。
+    4. 執行 unretain_media 解除附加（遷移回 staging/ 前綴並刷新 24h 建立時間時鐘）。
     5. 斷言重寫後：
-       - tags['retention'] 變為 'orphan'
+       - metadata['retention'] 變為 'orphan'
+       - creation_time >= 初始時間
        - content_settings.content_type 依然保持 'image/jpeg'，未被重設或丟失！
     """
     req = UploadAuthorizationRequest(
@@ -1175,32 +1130,36 @@ async def test_azure_blob_unretain_preserves_content_settings(blob_storage, fake
     token = auth.upload_url.split("/")[-1]
 
     hh, img_ref = await blob_storage.receive_staged_upload(token, b"X" * 32)
-    blob_path = img_ref.removeprefix("blob://").lstrip("/")
+    rel = img_ref.removeprefix("blob://").lstrip("/")
 
     container = fake_blob_service.get_container_client("media")
-    blob_client = container.get_blob_client(blob_path)
+    staging_path = f"staging/{rel}"
+    attached_path = f"attached/{rel}"
 
-    # 1. 驗證初始屬性
-    init_props = await blob_client.get_blob_properties()
+    # 1. 驗證初始屬性 (staging/ 前綴)
+    blob_client_init = container.get_blob_client(staging_path)
+    init_props = await blob_client_init.get_blob_properties()
     assert init_props.content_settings.content_type == "image/jpeg"
     init_creation = init_props.creation_time
 
-    # 2. 標記為保留 (attached)
+    # 2. 標記為保留 (attached -> 遷移至 attached/)
     await blob_storage.retain_media("home-dev", img_ref)
-    retained_tags = await blob_client.get_blob_tags()
-    assert retained_tags.get("retention") == "attached"
+    assert attached_path in container._blobs
+    assert staging_path not in container._blobs
 
     # 微調時鐘以確保重寫後 creation_time 產生可觀測差異
     time.sleep(0.01)
 
-    # 3. 解除保留 (unretain_media -> orphan, 自我重寫刷新時鐘)
+    # 3. 解除保留 (unretain_media -> orphan, 遷移回 staging/ 並刷新時鐘)
     await blob_storage.unretain_media("home-dev", img_ref)
+    assert staging_path in container._blobs
+    assert attached_path not in container._blobs
 
     # 4. 關鍵斷言：檢查重寫後的 Blob 屬性
-    final_props = await blob_client.get_blob_properties()
-    final_tags = await blob_client.get_blob_tags()
+    final_client = container.get_blob_client(staging_path)
+    final_props = await final_client.get_blob_properties()
 
-    assert final_tags.get("retention") == "orphan"
+    assert final_props.metadata["retention"] == "orphan"
     assert final_props.creation_time >= init_creation
     # 核心不變量：MIME / HTTP Content-Type 必須 100% 完整保留
     assert final_props.content_settings.content_type == "image/jpeg"

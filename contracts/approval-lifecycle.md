@@ -418,8 +418,9 @@ Item match ("這是家裡的洗潔精嗎？"):
 - The reply uses the normal `ResumeRequest`, with no new fields:
   - `approved: true`, `selected_option_id: "same_item"`: written like a purchase
     line (section 11): A1's `CardWriteRouter` hands the card to C1's
-    `ShoppingWriteBuilder` as a one-line purchase card, and `CardInputResolver`
-    reads `candidate_item_id` as the target (`resolved_inventory_item_id`). The
+    `ShoppingWriteBuilder`, which checks the line against the card's values (PR
+    #183), and `CardInputResolver` reads `candidate_item_id` as the target
+    (`resolved_inventory_item_id`). The
     quantity is added to that item, the entry becomes `completed` and keeps its
     planned quantity, and one purchase Transaction uses the card's `transaction_id`,
     all in one batch; a retry reuses the `operation_id`. No alias is remembered

@@ -632,6 +632,56 @@ class _AgentHomeState extends State<AgentHome> {
     });
   }
 
+  Iterable<AgentResultView> _visibleResults(AgentReply reply) {
+    final approval = reply.approval;
+    if (!_isPhotoCreateItemApproval(approval)) return reply.results;
+
+    final approvalNames = approval!.operations
+        .map((operation) => _displayName(operation.values['name']))
+        .whereType<String>()
+        .toSet();
+    if (approvalNames.isEmpty) return reply.results;
+
+    return reply.results.where(
+      (result) => !_isRedundantPhotoVisionResult(result, approvalNames),
+    );
+  }
+
+  bool _isPhotoCreateItemApproval(ApprovalView? approval) =>
+      approval != null &&
+      approval.operations.isNotEmpty &&
+      approval.operations.every(
+        (operation) =>
+            operation.action == 'create_item' &&
+            !_hasShoppingItemId(operation.values['shopping_item_id']),
+      );
+
+  bool _isRedundantPhotoVisionResult(
+    AgentResultView result,
+    Set<String> approvalNames,
+  ) {
+    if (result.kind != ResultKind.vision) return false;
+    final rawItems = result.data['items'];
+    if (rawItems is! List || rawItems.isEmpty) return false;
+    final visionNames = rawItems
+        .map(
+          (item) => item is Map
+              ? _displayName(item['name']) ?? _displayName(item['seen_as'])
+              : null,
+        )
+        .toList(growable: false);
+    return visionNames.isNotEmpty &&
+        visionNames.every(
+          (name) => name != null && approvalNames.contains(name),
+        );
+  }
+
+  String? _displayName(Object? value) =>
+      value is String && value.trim().isNotEmpty ? value.trim() : null;
+
+  bool _hasShoppingItemId(Object? value) =>
+      value is String && value.trim().isNotEmpty;
+
   Widget _interactionSurface() => Material(
     key: const Key('work-surface'),
     color: Theme.of(context).colorScheme.surface,
@@ -696,7 +746,7 @@ class _AgentHomeState extends State<AgentHome> {
                     ),
                   ),
                   if (entry.reply != null) ...[
-                    for (final result in entry.reply!.results)
+                    for (final result in _visibleResults(entry.reply!))
                       AgentResultCard(result: result),
                     if (entry.reply!.approval != null &&
                         identical(entry.reply, _reply))

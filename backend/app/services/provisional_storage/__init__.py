@@ -7,9 +7,19 @@
 from app.services.provisional_storage.azure_blob_adapter import (
     AzureBlobMediaStorage,
 )
+from app.services.provisional_storage.error_classifier import (
+    MediaRetentionErrorClassification,
+    classify_media_retention_error,
+)
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.provisional_storage.local_staging_adapter import (
     LocalStagingMediaStorage,
 )
 
-__all__ = ["MediaStorageService", "AzureBlobMediaStorage", "LocalStagingMediaStorage"]
+__all__ = [
+    "MediaStorageService",
+    "AzureBlobMediaStorage",
+    "LocalStagingMediaStorage",
+    "MediaRetentionErrorClassification",
+    "classify_media_retention_error",
+]

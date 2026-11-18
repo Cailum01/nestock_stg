@@ -66,6 +66,7 @@ from app.models.agent import (
 )
 from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus, TransactionReason
 from app.services.approvals import (
+    CHOICE_GROUP,
     CONFIRM_ITEM_MATCH,
     NEW_ITEM,
     SAME_ITEM,
@@ -595,6 +596,7 @@ def stock_increase_operation(
     quantity: int,
     source: str,
     transaction_id: str | None = None,
+    choice_group: str | None = None,
 ) -> NewOperation:
     """One card line: "add this many to an item the household has" (Issue #206).
 
@@ -605,13 +607,21 @@ def stock_increase_operation(
     `inventory_quantity_before`, the item's quantity in the same read as the ETag.
     The one target is the item at that ETag, kept on the server only: an item changed
     since is not written over. `source` ends the description: `SAID` or `PHOTO_SEEN`.
+
+    `choice_group` marks the line as one of several household items the thing may be
+    (same name or alias): the user keeps one of them ticked. Its description also says
+    where the item is and how many there are, to tell items of one name apart.
     """
     if inventory.etag is None:
         raise ValueError("The item must be read with its ETag.")
     item = inventory.record
+    which = ""
+    if choice_group is not None:
+        place = f"放在{item.location}，" if item.location else ""
+        which = f"（{place}現有 {item.quantity} {item.unit}）"
     return NewOperation(
         action=INCREASE_STOCK,
-        description=f"{item.name} +{quantity} {item.unit}（家裡已有的品項）{source}",
+        description=f"{item.name}{which} +{quantity} {item.unit}（家裡已有的品項）{source}",
         values={
             "item_id": item.item_id,
             "name": item.name,
@@ -620,6 +630,7 @@ def stock_increase_operation(
             "transaction_id": transaction_id or uuid.uuid4().hex,
             "reason": TransactionReason.ADJUSTMENT.value,
             "inventory_quantity_before": item.quantity,
+            **({CHOICE_GROUP: choice_group} if choice_group is not None else {}),
         },
         targets=[TargetVersion(record_id=inventory.document_id, etag=inventory.etag)],
     )
@@ -1406,6 +1417,12 @@ def _with_change(item: dict[str, Any], change: CardChange | None, today: date) -
     return changed
 
 
+CHOOSE_ONE_REPLY = (
+    "卡上有幾項是同一樣東西的候選，一次只能留一項。請把不是的取消勾選，只留下你說的那一項，"
+    "再按確認。這次沒有記錄任何東西。"
+)
+"""Reply when several candidates for one thing were confirmed (Issue #206)."""
+
 RESUME_MESSAGES = {
     ResumeOutcome.CANCELLED: "已取消，沒有記錄任何東西。",
     ResumeOutcome.EXPIRED: "這張確認卡已經過期，沒有記錄。請再說一次要記錄的內容。",
@@ -1437,6 +1454,19 @@ def resume_response(result: ResumeResult) -> AgentResponse:
                     },
                 )
             ],
+        )
+    if result.outcome is ResumeOutcome.CHOOSE_ONE and result.record is not None:
+        # Section 10.1: nothing was fixed or written; the same card goes back on screen.
+        return AgentResponse(
+            message=CHOOSE_ONE_REPLY,
+            results=[
+                AgentResult(
+                    kind=ResultKind.ACTION_RESULT,
+                    summary=CHOOSE_ONE_REPLY,
+                    data={"outcome": result.outcome.value},
+                )
+            ],
+            pending_approval=ApprovalService.to_pending_approval(result.record),
         )
     message = RESUME_MESSAGES.get(result.outcome)
     if (

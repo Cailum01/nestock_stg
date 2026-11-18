@@ -27,6 +27,7 @@ from test_read_agent import PHOTO, _ask_photo, _detected, _seen_by_model, _StubV
 from app.agent.cards import (
     CARD_FAILED,
     CHANGE_NOT_THIS_CARD,
+    CHOOSE_ONE_REPLY,
     PHOTO_CARD_MADE,
     PHOTO_SEEN,
     SAID,
@@ -36,6 +37,7 @@ from app.agent.cards import (
 from app.agent.read_agent import ReadAgent, load_system_prompt, stock_increase_on
 from app.agent.stock_cards import (
     ADD_STOCK,
+    CHOICE_CARD_NOTE,
     HAVE_IT,
     INCREASE_CARD_NOTE,
     INCREASE_PROMPT_NOTE,
@@ -44,7 +46,6 @@ from app.agent.stock_cards import (
     STOCK_CARD_MADE,
     STOCK_TOOL_SCHEMA,
     UNIT_DIFFERS,
-    WHICH_ONE,
     StockCards,
     StockIncreases,
 )
@@ -263,16 +264,94 @@ def test_another_unit_is_asked_again_never_converted():
     assert container.of_type("pending_approval") == []
 
 
-def test_several_household_items_of_that_name_are_asked_which():
-    one = inventory(item_id="soy-1", name="無糖豆漿", unit="瓶", aliases=["豆漿"])
-    other = inventory(item_id="soy-2", name="高纖豆漿", unit="瓶", aliases=["豆漿"])
-    _, reads, approvals, _ = home(one, other)
+SOY_A = inventory(item_id="soy-1", name="無糖豆漿", quantity=2.0, unit="瓶", aliases=["豆漿"])
+SOY_B = inventory(item_id="soy-2", name="高纖豆漿", quantity=1.0, unit="瓶", aliases=["豆漿"])
+
+
+def _both(card):
+    return [op.operation_id for op in card.operations]
+
+
+def _resume(approvals, card, ids):
+    return _confirm(approvals, card, ids)
+
+
+def test_several_household_items_of_that_name_each_get_a_line_to_choose_from():
+    """Issue #206 (2026-11-18): the user chooses on the card, with the App as it is."""
+    container, reads, approvals, _ = home(SOY_A.model_copy(update={"location": "冰箱"}), SOY_B)
 
     response, result, _ = said(reads, approvals, one_more(name="豆漿", unit="瓶"))
 
-    assert response.pending_approval is None
-    (left,) = result["not_on_card"]
-    assert left["reason"] == WHICH_ONE.format(names="無糖豆漿、高纖豆漿")
+    card = response.pending_approval
+    assert card.presentation is ApprovalPresentation.BATCH_ACTION
+    first, second = card.operations
+    assert [op.action for op in card.operations] == [INCREASE_STOCK, INCREASE_STOCK]
+    assert (first.values["item_id"], second.values["item_id"]) == ("soy-1", "soy-2")
+    assert first.values["choice_group"] == second.values["choice_group"] == "豆漿"
+    # Where it is and how many there are tell items of one name apart.
+    assert first.description == f"無糖豆漿（放在冰箱，現有 2 瓶） +1 瓶（家裡已有的品項）{SAID}"
+    assert second.description == f"高纖豆漿（現有 1 瓶） +1 瓶（家裡已有的品項）{SAID}"
+    assert result["note"] == INCREASE_CARD_NOTE + CHOICE_CARD_NOTE
+    assert result["not_on_card"] == []
+    assert container.of_type("transaction") == []
+
+
+def test_confirming_both_candidates_writes_nothing_and_shows_the_card_again():
+    container, reads, approvals, writer = home(SOY_A, SOY_B)
+    card = said(reads, approvals, one_more(name="豆漿", unit="瓶"))[0].pending_approval
+    stored_before = container.get(f"pending_approval:{card.approval_id}")
+    handed_before = len(writer.stock_cards)
+
+    reply = _resume(approvals, card, _both(card))  # the App ticks every line by default
+
+    assert reply["message"] == CHOOSE_ONE_REPLY
+    assert reply["results"][0]["data"] == {"outcome": "choose_one"}
+    assert reply["pending_approval"]["approval_id"] == card.approval_id  # back on screen
+    assert _both(card) == [op["operation_id"] for op in reply["pending_approval"]["operations"]]
+    # Nothing was fixed or written: the stored card is exactly as it was.
+    assert container.get(f"pending_approval:{card.approval_id}") == stored_before
+    assert len(writer.stock_cards) == handed_before
+    assert container.of_type("transaction") == []
+
+
+def test_after_that_keeping_one_candidate_goes_to_the_writer():
+    _, reads, approvals, writer = home(SOY_A, SOY_B)
+    card = said(reads, approvals, one_more(name="豆漿", unit="瓶"))[0].pending_approval
+    _resume(approvals, card, _both(card))
+    keep = card.operations[1].operation_id
+
+    _resume(approvals, card, [keep])
+
+    handed, _ = writer.stock_cards[-1]
+    assert tuple(handed.approved_operation_ids) == (keep,)
+
+
+def test_candidates_for_two_different_things_may_each_keep_one():
+    mouse_a = inventory(item_id="m-1", name="有線滑鼠", unit="個", aliases=["滑鼠"])
+    mouse_b = inventory(item_id="m-2", name="無線滑鼠", unit="個", aliases=["滑鼠"])
+    _, reads, approvals, writer = home(SOY_A, SOY_B, mouse_a, mouse_b)
+    card = said(reads, approvals, one_more(name="豆漿", unit="瓶"), one_more(name="滑鼠"))[
+        0
+    ].pending_approval
+    soy, _, mouse, _ = card.operations
+    assert soy.values["choice_group"] != mouse.values["choice_group"]
+
+    reply = _resume(approvals, card, [soy.operation_id, mouse.operation_id])
+
+    assert reply["message"] != CHOOSE_ONE_REPLY
+    handed, _ = writer.stock_cards[-1]
+    assert tuple(handed.approved_operation_ids) == (soy.operation_id, mouse.operation_id)
+
+
+def test_only_candidates_in_the_unit_that_was_said_get_a_line():
+    other_unit = SOY_B.model_copy(update={"unit": "箱"})
+    _, reads, approvals, _ = home(SOY_A, other_unit)
+
+    response, _, _ = said(reads, approvals, one_more(name="豆漿", unit="瓶"))
+
+    (line,) = response.pending_approval.operations
+    assert line.values["item_id"] == "soy-1"
+    assert "choice_group" not in line.values  # one item left: nothing to choose
 
 
 def test_one_item_said_under_two_names_gets_one_line():
@@ -312,13 +391,13 @@ def test_the_apps_own_composition_has_no_writer_for_it_yet():
 
 
 def _increase_card(reads, approvals):
-    line = asyncio.run(
-        StockIncreases(reads).line(
+    lines, _ = asyncio.run(
+        StockIncreases(reads).lines(
             HOME, _match(reads, "羅技 G400s 有線滑鼠"), quantity=1, unit="個", source=SAID
         )
-    )[0]
+    )
     return approvals.prepare(
-        household_id=HOME, presentation=ApprovalPresentation.SINGLE_ACTION, operations=[line]
+        household_id=HOME, presentation=ApprovalPresentation.SINGLE_ACTION, operations=lines
     )
 
 
@@ -476,6 +555,17 @@ def test_a_photo_with_new_and_household_items_makes_one_card():
     assert [op.action for op in card.operations] == ["create_item", INCREASE_STOCK]
     assert seen["new_item_card"]["note"] == PHOTO_CARD_MADE + INCREASE_CARD_NOTE
     assert seen["new_item_card"]["lines"] == [op.description for op in card.operations]
+
+
+def test_a_photo_of_a_thing_with_several_household_items_gets_candidates_too():
+    _, reads, approvals, _ = home(SOY_A, SOY_B)
+
+    response, seen = _photo(reads, approvals, _detected("豆漿"))
+
+    card = response.pending_approval
+    assert [op.values["item_id"] for op in card.operations] == ["soy-1", "soy-2"]
+    assert {op.values["choice_group"] for op in card.operations} == {"豆漿"}
+    assert seen["stock_increase_card"]["note"] == INCREASE_CARD_NOTE + CHOICE_CARD_NOTE
 
 
 @pytest.mark.parametrize(

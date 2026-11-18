@@ -63,6 +63,7 @@ from app.agent.stock_cards import (
     STOCK_INCREASE_VAR,
     StockCards,
     StockIncreases,
+    increase_choice_note,
 )
 from app.core.dependencies import (
     get_approval_service,
@@ -463,16 +464,17 @@ def _new_photo_items(result: VisionAnalysisResult, matches: list[ItemMatch]) -> 
 def _seen_household_items(
     result: VisionAnalysisResult, matches: list[ItemMatch]
 ) -> list[tuple[ItemMatch, int, str]]:
-    """Photo items that are one household item, to add to it (Issue #206).
+    """Photo items the household has, to add to (Issue #206).
 
     (the match, quantity, unit) for items seen with confidence and a confirmed unit
-    whose name or alias is exactly one household item's. Others are only reported.
+    whose name or alias is a household item's; several items of that name are
+    candidates the user chooses from on the card. Others are only reported.
     """
     seen = []
     for detected, match in zip(result.detected_items, matches, strict=True):
         unit = (detected.unit or "").strip()
         if (
-            match.matched is not None
+            match.items
             and detected.confidence >= LOW_CONFIDENCE
             and detected.unit_confirmed
             and unit
@@ -779,14 +781,16 @@ class ReadAgent:
             if card is not None and new_items:
                 model_view["new_item_card"] = {
                     "lines": [operation["description"] for operation in card["operations"]],
-                    "note": PHOTO_CARD_MADE + (INCREASE_CARD_NOTE if more else ""),
+                    "note": PHOTO_CARD_MADE
+                    + (INCREASE_CARD_NOTE if more else "")
+                    + increase_choice_note(more),
                     "photo": PHOTO_KEPT if photo is not None and photo.ready else PHOTO_NOT_READY,
                 }
             elif card is not None:
                 # Only items the household has (Issue #206): no new item, no photo kept.
                 model_view["stock_increase_card"] = {
                     "lines": [operation["description"] for operation in card["operations"]],
-                    "note": INCREASE_CARD_NOTE,
+                    "note": INCREASE_CARD_NOTE + increase_choice_note(more),
                 }
         return json.dumps(model_view, ensure_ascii=False), data, card
 
@@ -797,19 +801,19 @@ class ReadAgent:
 
         None while that is off. One line per household item: an item seen twice in the
         photo, or one whose unit differs or that cannot be read, is only reported.
+        Several household items of one name each get a line to choose from.
         """
         if self._increases is None:
             return []
         lines: list[NewOperation] = []
         adding_to: set[str] = set()
         for match, quantity, unit in _seen_household_items(result, matches):
-            line, _ = await self._increases.line(
+            more, _ = await self._increases.lines(
                 household_id, match, quantity=quantity, unit=unit, source=PHOTO_SEEN
             )
-            if line is None or line.values["item_id"] in adding_to:
-                continue
-            adding_to.add(line.values["item_id"])
-            lines.append(line)
+            more = [line for line in more if line.values["item_id"] not in adding_to]
+            adding_to.update(line.values["item_id"] for line in more)
+            lines.extend(more)
         return lines
 
     async def _card_photo(self, state: _State) -> CardPhoto | None:

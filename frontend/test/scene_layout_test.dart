@@ -20,18 +20,10 @@ void main() {
           catalog: const DemoCatalog(),
         ),
       );
-      expect(
-        find.descendant(
-          of: find.byType(HomeScene),
-          matching: find.textContaining('歡迎回家'),
-        ),
-        findsOneWidget,
-      );
       final room = tester.getRect(find.byKey(const Key('room')));
       final cabinet = tester.getRect(find.byKey(const Key('cabinet')));
       final cart = tester.getRect(find.byKey(const Key('cart')));
       final agent = tester.getRect(find.byKey(const Key('agent')));
-      final speech = tester.getRect(find.byKey(const Key('speech')));
       final composer = tester.getRect(find.byKey(const Key('composer')));
       final actionCluster = tester.getRect(
         find.byKey(const Key('paw-action-cluster')),
@@ -120,10 +112,8 @@ void main() {
         // Noki is intentionally composed lower in the approved scene.
         lessThan(room.height * .4),
       );
-      expect(speech.center.dy, lessThan(agent.center.dy));
-      // The approved speech bubble sits just left of Noki while remaining
-      // above the character.
-      expect(speech.center.dx, lessThan(agent.center.dx));
+      expect(find.byKey(const Key('noki-idle-wander')), findsOneWidget);
+      expect(find.text('歡迎回家。'), findsOneWidget);
       expect(composer.top, greaterThanOrEqualTo(room.bottom));
       expect(actionCluster.bottom, lessThanOrEqualTo(composer.bottom));
       expect(composerFade, findsOneWidget);

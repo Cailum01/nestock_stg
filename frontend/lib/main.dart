@@ -5,6 +5,7 @@ import 'features/agent/data/mock_agent_client.dart';
 import 'features/agent/data/http_agent_client.dart';
 import 'features/inventory/inventory_view_client.dart';
 import 'features/shopping/shopping_view_client.dart';
+import 'features/shopping/commerce_options_client.dart';
 import 'shared/data/demo_catalog.dart';
 
 void main() {
@@ -32,6 +33,10 @@ void main() {
           : HttpAgentClient(baseUrl: apiBase),
       catalog: const DemoCatalog(),
       shoppingClient: shoppingViewClientForTransport(
+        transport: transport,
+        baseUrl: apiBase,
+      ),
+      commerceOptionsClient: commerceOptionsClientForTransport(
         transport: transport,
         baseUrl: apiBase,
       ),

@@ -123,11 +123,11 @@ class MockVisionService:
         return ImageComparisonResult(
             image_ref_a=clean_a,
             image_ref_b=clean_b,
-            is_same_item=True,
-            similarity_score=0.88,
+            is_same_item=False,
+            similarity_score=0.15,
             confidence=0.95,
-            reasoning="Mock visual comparison: items share identical brand and packaging features.",
-            visual_differences=[],
+            reasoning="Mock visual comparison: items differ in visual appearance.",
+            visual_differences=["Mock visual comparison: items differ in appearance."],
         )
 
 

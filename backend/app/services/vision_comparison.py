@@ -10,9 +10,11 @@ import asyncio
 import base64
 import json
 import logging
+import math
 from typing import TYPE_CHECKING, Any
 
 from app.models.vision import ImageComparisonResult
+from app.services.vision import detect_image_mime
 
 if TYPE_CHECKING:
     from app.services.provisional_storage.interfaces import MediaStorageService
@@ -38,22 +40,14 @@ def _safe_bounded_float(
     val: Any, default: float, min_val: float = 0.0, max_val: float = 1.0
 ) -> float:
     try:
-        f = float(val) if val is not None else default
+        if val is None:
+            return default
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return default
         return max(min_val, min(max_val, round(f, 2)))
     except (ValueError, TypeError):
         return default
-
-
-def _detect_mime(data: bytes, fallback: str = "image/jpeg") -> str:
-    if not data or len(data) < 4:
-        return fallback
-    if data.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP":
-        return "image/webp"
-    return fallback
 
 
 async def _execute_multimodal_compare(
@@ -63,8 +57,8 @@ async def _execute_multimodal_compare(
 ) -> dict[str, Any]:
     import httpx
 
-    mime_a = _detect_mime(bytes_a)
-    mime_b = _detect_mime(bytes_b)
+    mime_a = detect_image_mime(bytes_a)
+    mime_b = detect_image_mime(bytes_b)
     b64_a = base64.b64encode(bytes_a).decode("utf-8")
     b64_b = base64.b64encode(bytes_b).decode("utf-8")
 
@@ -157,12 +151,28 @@ async def compare_two_images(
 
     try:
         parsed = await _execute_multimodal_compare(settings, bytes_a, bytes_b)
-        is_same = bool(parsed.get("is_same_item", False))
+        raw_is_same = parsed.get("is_same_item")
+        if isinstance(raw_is_same, bool):
+            is_same = raw_is_same
+        elif isinstance(raw_is_same, str):
+            cleaned_is_same = raw_is_same.strip().lower()
+            is_same = cleaned_is_same in ("true", "1", "yes")
+        else:
+            is_same = False
+
         sim = _safe_bounded_float(parsed.get("similarity_score"), 0.9 if is_same else 0.1)
-        conf = _safe_bounded_float(parsed.get("confidence"), 0.8)
-        diffs = [
-            str(d) for d in parsed.get("visual_differences", []) if isinstance(d, (str, int, float))
-        ]
+        conf = _safe_bounded_float(parsed.get("confidence"), 0.8 if is_same else 0.5)
+
+        raw_diffs = parsed.get("visual_differences")
+        if isinstance(raw_diffs, list):
+            diffs = [
+                str(d).strip()
+                for d in raw_diffs
+                if isinstance(d, (str, int, float)) and str(d).strip()
+            ]
+        else:
+            diffs = []
+
         return ImageComparisonResult(
             image_ref_a=clean_a,
             image_ref_b=clean_b,

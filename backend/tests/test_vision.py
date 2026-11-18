@@ -728,8 +728,8 @@ async def test_mock_vision_compare_images():
 
     # 2. 相異引用確定性比較
     diff_res = await service.compare_images("demo-household", "blob://a.jpg", "blob://b.jpg")
-    assert diff_res.is_same_item is True
-    assert diff_res.similarity_score == 0.88
+    assert diff_res.is_same_item is False
+    assert diff_res.similarity_score == 0.15
     assert diff_res.confidence == 0.95
 
     # 3. 空引用拋出例外
@@ -775,8 +775,8 @@ async def test_azure_vision_compare_images_mock_fallback_on_missing_creds():
     service = AzureOpenAIVisionService(settings, media_storage=media, mock_fallback=True)
 
     res = await service.compare_images("demo-household", "blob://a.jpg", "blob://b.jpg")
-    assert res.is_same_item is True
-    assert res.similarity_score == 0.88
+    assert res.is_same_item is False
+    assert res.similarity_score == 0.15
 
 
 @pytest.mark.anyio
@@ -907,3 +907,150 @@ async def test_azure_vision_compare_images_bounding_defense_on_hallucinated_scor
         # Ensure scores are clamped defensively to valid range [0.0, 1.0]
         assert res.similarity_score == 1.0
         assert res.confidence == 0.0
+
+
+@pytest.mark.anyio
+async def test_azure_vision_compare_images_string_false_boolean_defense():
+    """驗證模型回傳字串 'false' 時防禦性解析為 False，杜絕誤判為同物品。"""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    settings = VisionOpenAISettings(
+        endpoint="https://fake.openai.azure.com/",
+        api_key="valid-test-key",
+        deployment="gpt-4o",
+    )
+    media = LocalStagingMediaStorage()
+    await media.simulate_client_upload("demo-household", "blob://a.jpg", b"fake-jpeg-1")
+    await media.simulate_client_upload("demo-household", "blob://b.jpg", b"fake-jpeg-2")
+    service = AzureOpenAIVisionService(settings, media_storage=media, mock_fallback=False)
+
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        '{"is_same_item": "false", "similarity_score": 0.20, "confidence": 0.90, '
+                        '"reasoning": "Completely different items.", "visual_differences": []}'
+                    )
+                }
+            }
+        ]
+    }
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=fake_resp):
+        res = await service.compare_images("demo-household", "blob://a.jpg", "blob://b.jpg")
+        assert res.is_same_item is False
+        assert res.similarity_score == 0.20
+
+
+@pytest.mark.anyio
+async def test_azure_vision_compare_images_nan_score_and_confidence_defense():
+    """驗證模型回傳 NaN 浮點數時，自動回退安全預設值而非夾止為滿分 1.0。"""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    settings = VisionOpenAISettings(
+        endpoint="https://fake.openai.azure.com/",
+        api_key="valid-test-key",
+        deployment="gpt-4o",
+    )
+    media = LocalStagingMediaStorage()
+    await media.simulate_client_upload("demo-household", "blob://a.jpg", b"fake-jpeg-1")
+    await media.simulate_client_upload("demo-household", "blob://b.jpg", b"fake-jpeg-2")
+    service = AzureOpenAIVisionService(settings, media_storage=media, mock_fallback=False)
+
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        '{"is_same_item": false, "similarity_score": "NaN", "confidence": "NaN", '
+                        '"reasoning": "Malformed floating point values.", "visual_differences": []}'
+                    )
+                }
+            }
+        ]
+    }
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=fake_resp):
+        res = await service.compare_images("demo-household", "blob://a.jpg", "blob://b.jpg")
+        assert res.is_same_item is False
+        assert res.similarity_score == 0.1
+        assert res.confidence == 0.5
+        assert res.similarity_score != 1.0
+        assert res.confidence != 1.0
+
+
+@pytest.mark.anyio
+async def test_azure_vision_compare_images_string_visual_differences_defense():
+    """驗證模型回傳字串 'none' 而非清單時，防禦性轉換為空清單而非拆解為字元。"""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    settings = VisionOpenAISettings(
+        endpoint="https://fake.openai.azure.com/",
+        api_key="valid-test-key",
+        deployment="gpt-4o",
+    )
+    media = LocalStagingMediaStorage()
+    await media.simulate_client_upload("demo-household", "blob://a.jpg", b"fake-jpeg-1")
+    await media.simulate_client_upload("demo-household", "blob://b.jpg", b"fake-jpeg-2")
+    service = AzureOpenAIVisionService(settings, media_storage=media, mock_fallback=False)
+
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        '{"is_same_item": true, "similarity_score": 0.95, "confidence": 0.90, '
+                        '"reasoning": "Identical.", "visual_differences": "none"}'
+                    )
+                }
+            }
+        ]
+    }
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=fake_resp):
+        res = await service.compare_images("demo-household", "blob://a.jpg", "blob://b.jpg")
+        assert res.is_same_item is True
+        assert res.visual_differences == []
+
+
+@pytest.mark.anyio
+async def test_azure_vision_compare_images_null_visual_differences_defense():
+    """驗證模型回傳 null (None) 視覺差異時，成功轉為空清單且不拋出 TypeError。"""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    settings = VisionOpenAISettings(
+        endpoint="https://fake.openai.azure.com/",
+        api_key="valid-test-key",
+        deployment="gpt-4o",
+    )
+    media = LocalStagingMediaStorage()
+    await media.simulate_client_upload("demo-household", "blob://a.jpg", b"fake-jpeg-1")
+    await media.simulate_client_upload("demo-household", "blob://b.jpg", b"fake-jpeg-2")
+    service = AzureOpenAIVisionService(settings, media_storage=media, mock_fallback=False)
+
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        '{"is_same_item": true, "similarity_score": 0.92, "confidence": 0.88, '
+                        '"reasoning": "Identical.", "visual_differences": null}'
+                    )
+                }
+            }
+        ]
+    }
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=fake_resp):
+        res = await service.compare_images("demo-household", "blob://a.jpg", "blob://b.jpg")
+        assert res.is_same_item is True
+        assert res.visual_differences == []

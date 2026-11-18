@@ -7,7 +7,7 @@ logical request; this C1 service resolves durable operation and item IDs from it
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from typing import Callable, Protocol
 
 from app.models.domain import ShoppingItem, ShoppingStatus
@@ -60,38 +60,6 @@ class ShoppingIntentWriteResult:
     status: WriteStatus
 
 
-@dataclass(frozen=True)
-class ShoppingIntentCreatedEvent:
-    """C1 proposal for append-only provenance of a direct Shopping addition.
-
-    The record type and fields need B1 approval before this service is composed
-    into a public write path. This event is distinct from purchase ChangeEvent,
-    which requires Inventory and Transaction identities that a direct add lacks.
-    """
-
-    event_id: str
-    household_id: str
-    operation_id: str
-    shopping_item_id: str
-    occurred_at: datetime
-
-    def to_document(self) -> dict[str, object]:
-        occurred_at = (
-            self.occurred_at.astimezone(timezone.utc)
-            .isoformat(timespec="microseconds")
-            .replace("+00:00", "Z")
-        )
-        return {
-            "id": f"shopping_intent_event:{self.event_id}",
-            "record_type": "shopping_intent_event",
-            "event_id": self.event_id,
-            "household_id": self.household_id,
-            "operation_id": self.operation_id,
-            "shopping_item_id": self.shopping_item_id,
-            "occurred_at": occurred_at,
-        }
-
-
 class ShoppingIntentService:
     """Validate and durably add one pending Shopping Intent.
 
@@ -116,7 +84,7 @@ class ShoppingIntentService:
         if not command.household_id or not command.household_id.strip():
             raise ShoppingIntentError("household_id must not be empty.")
         # The identity resolver trims the scope. Use that same canonical scope
-        # for the domain record, provenance event, receipt lookup, and batch.
+        # for the domain record, receipt lookup, and batch.
         household_id = command.household_id.strip()
         if not command.request_id or not command.request_id.strip():
             raise ShoppingIntentError("request_id must not be empty.")
@@ -161,7 +129,6 @@ class ShoppingIntentService:
             status = await self._write(
                 household_id=household_id,
                 operation_id=operation_id,
-                shopping_item_id=shopping_item_id,
                 item=item,
             )
         except OperationIdConflict:
@@ -183,7 +150,6 @@ class ShoppingIntentService:
             status = await self._write(
                 household_id=household_id,
                 operation_id=operation_id,
-                shopping_item_id=shopping_item_id,
                 item=item,
             )
 
@@ -230,22 +196,11 @@ class ShoppingIntentService:
         *,
         household_id: str,
         operation_id: str,
-        shopping_item_id: str,
         item: ShoppingItem,
     ) -> WriteStatus:
-        event = ShoppingIntentCreatedEvent(
-            event_id=operation_id,
-            household_id=household_id,
-            operation_id=operation_id,
-            shopping_item_id=shopping_item_id,
-            occurred_at=item.created_at,
-        )
         return await self._writer.execute_idempotent_batches(
             household_id=household_id,
             operations_by_id={
-                operation_id: (
-                    CreateDocument(CosmosDocumentMapper.to_document(item)),
-                    CreateDocument(event.to_document()),
-                ),
+                operation_id: (CreateDocument(CosmosDocumentMapper.to_document(item)),),
             },
         )

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
@@ -7,10 +8,15 @@ from app.core.config import settings
 from app.core.dependencies import (
     get_inventory_service,
     get_media_storage_service,
+    get_shopping_intent_service,
     get_shopping_service,
     get_speech_service,
 )
 from app.main import create_app
+from app.models.domain import ShoppingItem
+from app.services.cosmos_write import OperationIdConflict, WriteStatus
+from app.services.shopping.identity import resolve_shopping_intent_identity
+from app.services.shopping.intents import ShoppingIntentWriteResult
 from app.services.speech import MockSpeechToTextService
 from app.tools.queries import QueryTools
 
@@ -28,6 +34,7 @@ def test_health_and_openapi():
             "ResumeRequest",
             "UploadAuthorizationRequest",
             "UploadAuthorizationResponse",
+            "AddShoppingIntentRequest",
         } <= schema["components"]["schemas"].keys()
 
 
@@ -57,6 +64,85 @@ def test_dependency_injection_reaches_api():
     app.dependency_overrides[get_inventory_service] = lambda: EmptyInventory()
     with TestClient(app) as client:
         assert client.get("/inventory").json() == []
+
+
+def test_direct_shopping_add_uses_fixed_household_and_reuses_request_id_on_retry():
+    class ShoppingIntentServiceStub:
+        def __init__(self):
+            self.commands = []
+
+        async def add(self, command):
+            self.commands.append(command)
+            _, item_id = resolve_shopping_intent_identity(
+                household_id=command.household_id,
+                request_id=command.request_id,
+            )
+            created_at = datetime(2026, 11, 18, tzinfo=UTC)
+            return ShoppingIntentWriteResult(
+                item=ShoppingItem(
+                    shopping_item_id=item_id,
+                    household_id=command.household_id,
+                    name=command.name,
+                    quantity=command.quantity,
+                    unit=command.unit,
+                    status="pending",
+                    created_at=created_at,
+                    updated_at=created_at,
+                ),
+                status=(
+                    WriteStatus.APPLIED if len(self.commands) == 1 else WriteStatus.ALREADY_APPLIED
+                ),
+            )
+
+    service = ShoppingIntentServiceStub()
+    app = create_app()
+    app.dependency_overrides[get_shopping_intent_service] = lambda: service
+    body = {"request_id": "app-add-1", "name": "  麵粉  ", "quantity": 2, "unit": " 袋 "}
+    with TestClient(app) as client:
+        first = client.post("/shopping", json=body)
+        retry = client.post("/shopping", json=body)
+
+    assert first.status_code == 201
+    assert retry.status_code == 200
+    assert first.json() == retry.json()
+    assert first.json()["name"] == "麵粉"
+    assert first.json()["quantity"] == 2
+    assert first.json()["unit"] == "袋"
+    assert all(command.household_id == settings.demo_household_id for command in service.commands)
+    assert all(command.request_id == "app-add-1" for command in service.commands)
+
+
+def test_direct_shopping_add_fails_without_cosmos_and_rejects_invalid_payloads():
+    app = create_app()
+    app.dependency_overrides[get_shopping_intent_service] = lambda: None
+    with TestClient(app) as client:
+        unavailable = client.post("/shopping", json={"request_id": "x", "name": "牛奶"})
+        assert unavailable.status_code == 503
+
+        app.dependency_overrides[get_shopping_intent_service] = lambda: object()
+        missing_name = client.post("/shopping", json={"request_id": "x", "name": " "})
+        invalid_quantity = client.post(
+            "/shopping", json={"request_id": "x", "name": "牛奶", "quantity": True}
+        )
+        extra_household = client.post(
+            "/shopping",
+            json={"request_id": "x", "name": "牛奶", "household_id": "other"},
+        )
+    assert missing_name.status_code == 422
+    assert invalid_quantity.status_code == 422
+    assert extra_household.status_code == 422
+
+
+def test_direct_shopping_add_rejects_changed_payload_for_reused_request_id():
+    class ConflictingService:
+        async def add(self, command):
+            raise OperationIdConflict("request identity reused with changed values")
+
+    app = create_app()
+    app.dependency_overrides[get_shopping_intent_service] = lambda: ConflictingService()
+    with TestClient(app) as client:
+        response = client.post("/shopping", json={"request_id": "app-add-1", "name": "麵粉"})
+    assert response.status_code == 409
 
 
 def test_agent_and_repeated_resume_fail_closed_without_writes():

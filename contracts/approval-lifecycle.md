@@ -628,15 +628,17 @@ until B1's writer is in `get_approval_service`. Nothing here changes what runs t
   card cannot be corrected.
 - From a photo, only new-item lines keep the photo (Issue #176); a line that adds to
   an item keeps none.
-- Confirming: `CardWriteRouter` hands the whole card to the writer for these lines,
-  never to C1's purchase builder. C1's `plan_existing_inventory_adjustments` plans
-  from the stored values; B1 replaces the item under the card's ETag (quantity =
+- Confirming: `CardWriteRouter` hands the whole card to the no-Shopping builder that
+  writes new-item cards, through its `build_stock_card`, with the reader for the
+  item's current version; never to C1's purchase builder. C1's existing-item plan
+  plans from the stored values; B1 reads the item again, checks it against the card's
+  ETag and `inventory_quantity_before`, and replaces it under that ETag (quantity =
   `inventory_quantity_before` + `quantity_added`) with the `adjustment` Transaction,
-  the change event, the receipts and the card's completion in one batch. An ETag that
-  no longer matches writes nothing and the user is asked again (`needs_new_card`).
-  Until that writer is wired in, saving such a card fails its check, so no card is
-  stored or shown and the tool answers `card_not_made`. The still-new check of
-  section 10 reads only the new-item lines.
+  the change event, the receipts and the card's completion in one batch (PR #208,
+  PR #209). An ETag that no longer matches writes nothing and the user is asked again
+  (`needs_new_card`). While the configured builder has no `build_stock_card`, saving
+  such a card fails its check, so no card is stored or shown and the tool answers
+  `card_not_made`. The still-new check of section 10 reads only the new-item lines.
 - The reply after a confirmed write is the usual one, from the writer's per-line
   `quantity_added`, `unit` and `inventory_quantity`.
 

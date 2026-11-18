@@ -50,7 +50,11 @@ from app.agent.stock_cards import (
 )
 from app.models.agent import AgentRequest, ApprovalPresentation, CardChange
 from app.services.approvals import ApprovalService, DomainWritePlan
-from app.services.card_writes import STOCK_INCREASE_WRITE_MISSING, CardWriteRouter
+from app.services.card_writes import (
+    INCREASE_STOCK_NOT_SUPPORTED,
+    INCREASE_STOCK_WRITE_MISSING,
+    CardWriteRouter,
+)
 from app.services.cosmos_read import (
     CosmosInventoryService,
     CosmosReadRepository,
@@ -65,14 +69,34 @@ MOUSE = inventory(item_id="mouse", name="羅技 G400s 有線滑鼠", quantity=1.
 
 
 class _Writer:
-    """Stands in for the builder B1 and C1 are to write: plans every line, writes nothing."""
+    """Stands in for B1's no-Shopping writer (PR #208): plans every line, writes nothing.
+
+    `stock_cards` are the cards with an `increase_stock` line it was handed, each with
+    the reader the router passed for the item's current version.
+    """
 
     def __init__(self) -> None:
         self.cards = []
+        self.stock_cards = []
 
     async def build(self, record):
         self.cards.append(record)
-        return DomainWritePlan(operations_by_id={op: () for op in record.approved_operation_ids})
+        return _plan(record)
+
+    async def build_stock_card(self, record, inventory_reader):
+        self.stock_cards.append((record, inventory_reader))
+        return _plan(record)
+
+
+class _NewItemsOnly:
+    """The no-Shopping writer on main today: no `build_stock_card`."""
+
+    async def build(self, record):
+        return _plan(record)
+
+
+def _plan(record):
+    return DomainWritePlan(operations_by_id={op: () for op in record.approved_operation_ids})
 
 
 class _Never:
@@ -88,12 +112,10 @@ def home(*records, writer=True):
     for record in records or (MOUSE,):
         container.put(record)
     reads = CosmosReadRepository(container)
-    increases = _Writer() if writer else None
-    router = CardWriteRouter(
-        _Never(), photo_items=_Writer(), household_items=reads, stock_increases=increases
-    )
+    photo_items = _Writer() if writer else _NewItemsOnly()
+    router = CardWriteRouter(_Never(), photo_items=photo_items, household_items=reads)
     approvals = ApprovalService(CosmosWriteRepository(container, query_client=container), router)
-    return container, reads, approvals, increases
+    return container, reads, approvals, photo_items if writer else None
 
 
 def agent(reads, approvals, *replies, on=True, vision=None):
@@ -149,7 +171,7 @@ def test_a_thing_the_household_has_gets_a_line_that_adds_to_it():
         "quantity_added": 2,
         "unit": "個",
         "reason": "adjustment",  # fixed in this version (Issue #206, C2 and B2)
-        "inventory_quantity_before": 1.0,  # the quantity in the same read as the ETag
+        "inventory_quantity_before": 1,  # the quantity in the same read as the ETag
     }
     assert line.values["transaction_id"]
     stored = container.get(f"pending_approval:{card.approval_id}")
@@ -165,7 +187,11 @@ def test_a_thing_the_household_has_gets_a_line_that_adds_to_it():
         "not_on_card": [],
         "note": INCREASE_CARD_NOTE,
     }
-    assert [c.approval_id for c in writer.cards] == [card.approval_id]  # the save-time check
+    # The save-time check went to `build_stock_card`, with the reader for the item.
+    ((checked, reader),) = writer.stock_cards
+    assert (checked.approval_id, reader) == (card.approval_id, reads)
+    assert writer.cards == []
+    assert type(line.values["inventory_quantity_before"]) is int
 
 
 def test_an_alias_adds_to_the_item_under_its_own_name():
@@ -217,7 +243,8 @@ def test_a_new_thing_and_a_household_item_share_one_card():
     assert card.presentation is ApprovalPresentation.BATCH_ACTION
     assert [op.action for op in card.operations] == ["create_item", INCREASE_STOCK]
     assert result["note"] == STOCK_CARD_MADE + INCREASE_CARD_NOTE
-    assert len(writer.cards) == 1  # the whole card goes to one builder
+    assert len(writer.stock_cards) == 1  # the whole card goes to one builder
+    assert writer.cards == []
 
 
 def test_another_unit_is_asked_again_never_converted():
@@ -284,24 +311,33 @@ def test_the_apps_own_composition_has_no_writer_for_it_yet():
     assert container.of_type("transaction") == []
 
 
-def test_the_router_never_hands_such_a_card_to_the_purchase_builder():
-    _, reads, approvals, _ = home(writer=False)
+def _increase_card(reads, approvals):
     line = asyncio.run(
         StockIncreases(reads).line(
-            HOME,
-            _match(reads, "羅技 G400s 有線滑鼠"),
-            quantity=1,
-            unit="個",
-            source=SAID,
+            HOME, _match(reads, "羅技 G400s 有線滑鼠"), quantity=1, unit="個", source=SAID
         )
     )[0]
-    record = approvals.prepare(
+    return approvals.prepare(
         household_id=HOME, presentation=ApprovalPresentation.SINGLE_ACTION, operations=[line]
     )
 
-    with pytest.raises(UnsupportedAction, match="Issue #206"):
-        asyncio.run(CardWriteRouter(_Never(), photo_items=_Never()).build(record))
-    assert "Issue #206" in STOCK_INCREASE_WRITE_MISSING
+
+@pytest.mark.parametrize(
+    ("photo_items", "message"),
+    [
+        (None, INCREASE_STOCK_WRITE_MISSING),
+        (_NewItemsOnly(), INCREASE_STOCK_NOT_SUPPORTED),
+    ],
+    ids=["no writer", "a writer for new items only"],
+)
+def test_the_router_refuses_such_a_card_without_a_writer_for_it(photo_items, message):
+    """And never hands it to the purchase builder (`_Never`)."""
+    _, reads, approvals, _ = home(writer=False)
+    record = _increase_card(reads, approvals)
+
+    with pytest.raises(UnsupportedAction) as refused:
+        asyncio.run(CardWriteRouter(_Never(), photo_items=photo_items).build(record))
+    assert str(refused.value) == message
 
 
 def _match(reads, name):
@@ -317,8 +353,9 @@ def test_confirming_goes_to_the_writer_and_an_added_item_is_not_a_duplicate():
 
     _confirm(approvals, card)  # `_Writer` plans no write, so nothing is recorded here
 
-    assert [c.approval_id for c in writer.cards] == [card.approval_id] * 2  # save, confirm
-    assert tuple(writer.cards[-1].approved_operation_ids) == (card.operations[0].operation_id,)
+    handed = [record for record, _ in writer.stock_cards]
+    assert [c.approval_id for c in handed] == [card.approval_id] * 2  # save, confirm
+    assert tuple(handed[-1].approved_operation_ids) == (card.operations[0].operation_id,)
 
 
 def test_cancelling_writes_nothing():
@@ -387,7 +424,7 @@ def test_the_added_quantity_is_what_was_said_or_seen_not_always_one():
 
     (line,) = response.pending_approval.operations
     assert line.values["quantity_added"] == 3
-    assert line.values["inventory_quantity_before"] == 1.0
+    assert line.values["inventory_quantity_before"] == 1
     assert line.description == f"羅技 G400s 有線滑鼠 +3 個（家裡已有的品項）{PHOTO_SEEN}"
 
 

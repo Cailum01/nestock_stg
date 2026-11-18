@@ -20,8 +20,8 @@ card's (`PhotoCards.change_card`).
 
 Adding to an item the household has (Issue #206) is `StockIncreases`: with it, such
 an item gets an `increase_stock` line on the same card instead of being left out.
-It is off in the running app until B1's and C1's write for that line exists
-(`NESTOCK_STOCK_INCREASE`, `app/agent/read_agent.py`); a photo uses the same lines.
+It is on in the running app unless `NESTOCK_STOCK_INCREASE=0`
+(`app/agent/read_agent.py`); a photo uses the same lines.
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ STOCK_CARD_MADE = (
 
 # Adding to an item the household has (Issue #206); only with `StockIncreases`.
 STOCK_INCREASE_VAR = "NESTOCK_STOCK_INCREASE"
-"""`NESTOCK_STOCK_INCREASE=1` turns this on. Off until its write exists (Issue #206)."""
+"""`NESTOCK_STOCK_INCREASE=0` turns this off. Unset, it is on (Issue #206)."""
 INCREASE_TOOL_DESCRIPTION = (
     "使用者說家裡多了某樣東西，而且不是待購清單上買回來的"
     "（例如朋友送的、收到的、在待購清單以外買的）時呼叫，家裡已經有這樣東西也可以。"

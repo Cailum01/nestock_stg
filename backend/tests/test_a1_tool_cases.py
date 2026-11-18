@@ -8,8 +8,9 @@ and its next turn is checked. An `add_stock` case with `inventory` works the sam
 way with `list_inventory` (prompt 家裡多了東西 rule 1): the model gets those rows
 back the way the Agent shapes them, and its next turn is checked. Both card tools are
 offered as the Agent offers them when Cosmos is configured. A case with
-`stock_increase: true` (Issue #206) is asked as with `NESTOCK_STOCK_INCREASE=1`:
-`add_stock` has the description, and the model gets the system note, of that switch.
+`stock_increase: true` (Issue #206) is asked as the Agent asks by default, with adding
+to household items on: `add_stock` has that description and the model gets that system
+note. A case without it is asked as with `NESTOCK_STOCK_INCREASE=0`.
 The live test calls the model synchronously: `asyncio.run` per case with one
 shared model left its connection pool on a closed event loop, so every second
 case failed with "Event loop is closed" on Windows.

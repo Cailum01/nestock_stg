@@ -1,5 +1,5 @@
 {
-  "_about": "A1 tool selection cases (v8 section 20: >=3 example utterances and >=1 confusion case per tool) for the read tools wired in backend/app/agent/read_agent.py besides B2's two. Same fields as b2_tool_cases.json, plus optional `photo`: true means the request carries a photo, so the test adds the same PHOTO_ATTACHED system message the Agent adds. Optional `shopping_list` (complete_purchase cases): the rows a first `list_shopping` call gets back; the test checks that the model looks up the list first, answers it with these rows, and applies `expect_calls`, `must_not_call` and `args_contain` to the model's next turn. Per v8 the tool owners are B1 (list_inventory), C1 (list_shopping) and A2 (analyze_photo, search_purchase_options); they may edit or add cases. complete_purchase is A1's card tool (v8 flow C), offered when Cosmos is configured; the live test offers it as the Agent does then. C1 owns the Golden Prompts set and may merge these in. Optional `stock_increase`: true (add_stock cases, Issue #206) means adding to an item the household has is on (`NESTOCK_STOCK_INCREASE=1`): the test offers `add_stock` with the description and adds the system note the Agent uses then. Cases without it are checked as with the switch off.",
+  "_about": "A1 tool selection cases (v8 section 20: >=3 example utterances and >=1 confusion case per tool) for the read tools wired in backend/app/agent/read_agent.py besides B2's two. Same fields as b2_tool_cases.json, plus optional `photo`: true means the request carries a photo, so the test adds the same PHOTO_ATTACHED system message the Agent adds. Optional `shopping_list` (complete_purchase cases): the rows a first `list_shopping` call gets back; the test checks that the model looks up the list first, answers it with these rows, and applies `expect_calls`, `must_not_call` and `args_contain` to the model's next turn. Per v8 the tool owners are B1 (list_inventory), C1 (list_shopping) and A2 (analyze_photo, search_purchase_options); they may edit or add cases. complete_purchase is A1's card tool (v8 flow C), offered when Cosmos is configured; the live test offers it as the Agent does then. C1 owns the Golden Prompts set and may merge these in. Optional `stock_increase`: true (add_stock cases, Issue #206) means adding to an item the household has is on, which is the default: the test offers `add_stock` with the description and adds the system note the Agent uses then. Cases without it are checked as with the switch off (`NESTOCK_STOCK_INCREASE=0`).",
   "cases": [
     {
       "id": "inventory-01",
@@ -526,7 +526,7 @@
       "must_not_call": [
         "add_stock"
       ],
-      "note": "Switch off (the default): the household already has 衛生紙, so no card, the model says so (家裡多了東西 rule 2). Switch on: stock-inc-01."
+      "note": "Switch off (`NESTOCK_STOCK_INCREASE=0`): the household already has 衛生紙, so no card, the model says so (家裡多了東西 rule 2). On, the default: stock-inc-01."
     },
     {
       "id": "purchase-neg-03",

@@ -547,10 +547,37 @@ def test_off_a_photo_of_a_household_item_is_only_reported_as_before():
 @pytest.mark.parametrize(
     ("environment", "on"),
     [
-        ({}, False),
+        ({}, True),
+        ({"NESTOCK_STOCK_INCREASE": ""}, True),
         ({"NESTOCK_STOCK_INCREASE": "1"}, True),
-        ({"NESTOCK_STOCK_INCREASE": "true"}, False),
+        ({"NESTOCK_STOCK_INCREASE": "0"}, False),
+        ({"NESTOCK_STOCK_INCREASE": " 0 "}, False),
+        ({"NESTOCK_STOCK_INCREASE": "false"}, True),
     ],
+    ids=["unset", "empty", "1", "0", "0 with spaces", "another word"],
 )
-def test_the_switch_is_off_unless_set_to_1(environment, on):
+def test_the_switch_is_on_unless_set_to_0(environment, on):
     assert stock_increase_on(environment) is on
+
+
+@pytest.mark.parametrize(("value", "on"), [(None, True), ("0", False)], ids=["unset", "0"])
+def test_the_running_app_adds_to_household_items_unless_switched_off(monkeypatch, value, on):
+    from app.agent import read_agent
+
+    _, reads, _, _ = home()
+    monkeypatch.setattr(read_agent, "get_cosmos_read_repository", lambda: reads)
+    if value is None:
+        monkeypatch.delenv("NESTOCK_STOCK_INCREASE", raising=False)
+    else:
+        monkeypatch.setenv("NESTOCK_STOCK_INCREASE", value)
+
+    assert isinstance(read_agent._stock_increases(), StockIncreases) is on
+
+
+def test_without_cosmos_the_running_app_never_adds_to_household_items(monkeypatch):
+    from app.agent import read_agent
+
+    monkeypatch.setattr(read_agent, "get_cosmos_read_repository", lambda: None)
+    monkeypatch.delenv("NESTOCK_STOCK_INCREASE", raising=False)
+
+    assert read_agent._stock_increases() is None

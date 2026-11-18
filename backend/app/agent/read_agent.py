@@ -1101,10 +1101,10 @@ def _stock_cards() -> StockCards | None:
 
 
 def _stock_increases() -> StockIncreases | None:
-    """Adding to an item the household has (Issue #206): Cosmos only, and only on.
+    """Adding to an item the household has (Issue #206): Cosmos only, on by default.
 
-    Off unless `NESTOCK_STOCK_INCREASE=1`: until B1's and C1's write for these lines
-    is in `get_approval_service`, such a card cannot be stored (`CardWriteRouter`).
+    `NESTOCK_STOCK_INCREASE=0` turns it off; a household item is then left out of
+    the card as before. Its write is B1's and C1's, in `get_approval_service`.
     """
     reader = get_cosmos_read_repository()
     if reader is None or not stock_increase_on():
@@ -1113,12 +1113,13 @@ def _stock_increases() -> StockIncreases | None:
 
 
 def stock_increase_on(environment: Mapping[str, str] | None = None) -> bool:
-    """`NESTOCK_STOCK_INCREASE=1` turns adding to household items on (Issue #206).
+    """Adding to household items is on unless `NESTOCK_STOCK_INCREASE=0` (Issue #206).
 
-    Any other value, or none, is off. The cloud does not set it.
+    Unset, or any other value, is on: nobody has to set anything for it to work, and
+    the cloud sets `0` only to turn it off without a code change.
     """
     env = os.environ if environment is None else environment
-    return env.get(STOCK_INCREASE_VAR, "").strip() == "1"
+    return env.get(STOCK_INCREASE_VAR, "").strip() != "0"
 
 
 def _purchase_cards() -> PurchaseCards | None:

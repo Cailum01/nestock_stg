@@ -19,7 +19,7 @@
 | `must_not_call` | 第一輪不能呼叫的工具 |
 | `args_contain` | 呼叫時參數需包含的文字（選填） |
 | `photo` | `true` 表示附有照片，測試加入 Agent 使用的照片提示（選填） |
-| `stock_increase` | 只用在 `add_stock` 的案例：`true` 表示「家裡已有的品項加數量」是打開的（`NESTOCK_STOCK_INCREASE=1`），測試會用打開時的工具說明和系統提示來問模型；沒有這個欄位的案例照關閉時檢查（選填） |
+| `stock_increase` | 只用在 `add_stock` 的案例：`true` 表示「家裡已有的品項加數量」是打開的（預設就是打開），測試會用打開時的工具說明和系統提示來問模型；沒有這個欄位的案例照關閉時（`NESTOCK_STOCK_INCREASE=0`）檢查（選填） |
 | `shopping_list` | 只用在 `complete_purchase` 的案例：模型第一輪要先查待購清單，測試回給它這幾筆，`expect_calls`、`must_not_call`、`args_contain` 檢查的是下一輪（選填） |
 
 ## 怎麼跑

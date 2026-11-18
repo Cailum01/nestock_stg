@@ -78,8 +78,8 @@ six-owner foundation small and independently usable.
 7. Backend validation is mandatory; frontend validation is not authorization.
 8. `POST /agent/messages` writes no domain data. Its card tools, `complete_purchase`
    (v8 flow C) and `add_stock` (a new item not from the Shopping List, Issue #168;
-   with `NESTOCK_STOCK_INCREASE=1` also more of an item the household has, as an
-   `adjustment`, Issue #206), store a pending approval card and return it.
+   also more of an item the household has, as an `adjustment`, Issue #206, unless
+   `NESTOCK_STOCK_INCREASE=0`), store a pending approval card and return it.
    `POST /agent/resume` writes only what that stored card holds, after the checks in
    `contracts/approval-lifecycle.md`. Cards need Cosmos; without it the Agent offers
    no card tool and `/agent/resume` returns 503. Do not interpret generic proposed

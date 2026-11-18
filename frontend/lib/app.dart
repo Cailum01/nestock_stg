@@ -4,6 +4,7 @@ import 'features/agent/domain/agent_client.dart';
 import 'features/agent/presentation/agent_home.dart';
 import 'features/inventory/inventory_view_client.dart';
 import 'features/shopping/shopping_view_client.dart';
+import 'features/shopping/commerce_options_client.dart';
 import 'shared/data/catalog_client.dart';
 import 'shared/theme/app_theme.dart';
 import 'features/photo/photo_client.dart';
@@ -23,6 +24,7 @@ class NestockApp extends StatelessWidget {
     this.speechClient,
     this.inventoryClient = const DemoInventoryViewClient(),
     this.shoppingClient = const DemoShoppingViewClient(),
+    this.commerceOptionsClient = const UnavailableCommerceOptionsClient(),
   });
   final AgentClient agentClient;
   final CatalogClient catalog;
@@ -33,6 +35,7 @@ class NestockApp extends StatelessWidget {
   final SpeechClient? speechClient;
   final InventoryViewClient inventoryClient;
   final ShoppingViewClient shoppingClient;
+  final CommerceOptionsClient commerceOptionsClient;
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -67,6 +70,7 @@ class NestockApp extends StatelessWidget {
           ),
       inventoryClient: inventoryClient,
       shoppingClient: shoppingClient,
+      commerceOptionsClient: commerceOptionsClient,
     ),
   );
 }

@@ -17,6 +17,7 @@ import '../../inventory/inventory_view_client.dart';
 import 'agent_work_surface.dart';
 import '../../shopping/shopping_overlay.dart';
 import '../../shopping/shopping_view_client.dart';
+import '../../shopping/commerce_options_client.dart';
 import '../../photo/photo_client.dart';
 import '../../photo/camera_capture.dart';
 import '../../photo/photo_upload.dart';
@@ -53,6 +54,7 @@ class AgentHome extends StatefulWidget {
     required this.client,
     required this.inventoryClient,
     required this.shoppingClient,
+    required this.commerceOptionsClient,
     this.photoClient = const UnavailablePhotoClient(),
     this.cameraCapture = const DeviceCameraCapture(),
     required this.photoUpload,
@@ -67,6 +69,7 @@ class AgentHome extends StatefulWidget {
   final SpeechClient speechClient;
   final InventoryViewClient inventoryClient;
   final ShoppingViewClient shoppingClient;
+  final CommerceOptionsClient commerceOptionsClient;
   @override
   State<AgentHome> createState() => _AgentHomeState();
 }
@@ -878,7 +881,11 @@ class _AgentHomeState extends State<AgentHome> {
                                         onShopping: () {
                                           _openShopping();
                                         },
-                                        message: _busy ? '思考中...' : '歡迎回家',
+                                        statusMessage: _busy
+                                            ? '思考中...'
+                                            : _workOpen
+                                            ? '歡迎回家'
+                                            : null,
                                       ),
                                     ),
                                     if (_messages.isNotEmpty)
@@ -981,6 +988,8 @@ class _AgentHomeState extends State<AgentHome> {
                                                         ),
                                                         client: widget
                                                             .shoppingClient,
+                                                        commerceClient: widget
+                                                            .commerceOptionsClient,
                                                         onClose: _closeShopping,
                                                       )
                                                     : const SizedBox.shrink(

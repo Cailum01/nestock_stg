@@ -70,7 +70,7 @@ CREATE_ITEM = "create_item"
 """`action` of a line that buys a Shopping List entry the household does not have yet."""
 INCREASE_STOCK = "increase_stock"
 """`action` of a line that adds to an item the household has, with no Shopping List
-entry (Issue #206). The name and the values are A1's proposal there until C2 answers."""
+entry (Issue #206, contract section 10.1)."""
 
 IMAGE_REF = "image_ref"
 INPUT_ID = "input_id"

@@ -146,8 +146,10 @@ def test_a_thing_the_household_has_gets_a_line_that_adds_to_it():
     assert {k: v for k, v in line.values.items() if k != "transaction_id"} == {
         "item_id": "mouse",
         "name": "羅技 G400s 有線滑鼠",
-        "quantity": 2,
+        "quantity_added": 2,
         "unit": "個",
+        "reason": "adjustment",  # fixed in this version (Issue #206, C2 and B2)
+        "inventory_quantity_before": 1.0,  # the quantity in the same read as the ETag
     }
     assert line.values["transaction_id"]
     stored = container.get(f"pending_approval:{card.approval_id}")
@@ -253,7 +255,7 @@ def test_one_item_said_under_two_names_gets_one_line():
     response, result, _ = said(reads, approvals, one_more(), one_more(name="滑鼠", quantity=5))
 
     (line,) = response.pending_approval.operations
-    assert line.values["quantity"] == 1  # the first one said
+    assert line.values["quantity_added"] == 1  # the first one said
     assert result["not_on_card"] == [{"name": "滑鼠", "reason": SAID_TWICE}]
 
 
@@ -353,6 +355,40 @@ def test_the_quantity_cannot_be_changed_on_the_card_yet():
     assert reply.message == CHANGE_NOT_THIS_CARD
     assert reply.pending_approval.approval_id == card.approval_id  # the old card stays
     assert len(container.of_type("pending_approval")) == 1
+
+
+def test_a_card_with_new_and_household_items_cannot_be_changed_on_the_card():
+    """Issue #206 (C2): a mixed card is only ticked and confirmed or cancelled."""
+    container, reads, approvals, _ = home()
+    shampoo = {"name": "洗髮精", "quantity": 1, "unit": "瓶"}
+    response, _, the_agent = said(reads, approvals, shampoo, one_more())
+    card = response.pending_approval
+    change = CardChange(operation_id=card.operations[0].operation_id, location="浴室")
+    request = AgentRequest(
+        household_id=HOME,
+        message="送出修改",
+        replaces_approval_id=card.approval_id,
+        card_changes=[change],
+    )
+
+    reply = asyncio.run(the_agent.respond(request))
+
+    assert reply.results[0].data["code"] == "line_refused"
+    assert reply.pending_approval.approval_id == card.approval_id
+    assert len(container.of_type("pending_approval")) == 1
+
+
+def test_the_added_quantity_is_what_was_said_or_seen_not_always_one():
+    _, reads, approvals, _ = home()
+
+    response, seen = _photo(
+        reads, approvals, _detected("羅技 G400s 有線滑鼠", unit="個", quantity=3)
+    )
+
+    (line,) = response.pending_approval.operations
+    assert line.values["quantity_added"] == 3
+    assert line.values["inventory_quantity_before"] == 1.0
+    assert line.description == f"羅技 G400s 有線滑鼠 +3 個（家裡已有的品項）{PHOTO_SEEN}"
 
 
 def _photo(reads, approvals, *detected, on=True):

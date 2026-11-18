@@ -64,7 +64,7 @@ from app.models.agent import (
     CardChange,
     ResultKind,
 )
-from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus
+from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus, TransactionReason
 from app.services.approvals import (
     CONFIRM_ITEM_MATCH,
     NEW_ITEM,
@@ -599,11 +599,12 @@ def stock_increase_operation(
     """One card line: "add this many to an item the household has" (Issue #206).
 
     No Shopping List entry: the user said they got more of it, or a photo shows it.
-    `increase_stock` with the item's `item_id`, `name` and `unit` as read, the
-    `quantity` to add and the `transaction_id` for the write; the one target is the
-    item at the ETag it was read with, so an item changed since is not written over.
-    `source` ends the description: `SAID` or `PHOTO_SEEN`. The action name and the
-    values are A1's proposal in Issue #206 until C2 answers there.
+    The format agreed in Issue #206 (contract section 10.1): `increase_stock` with the
+    item's `item_id`, `name` and `unit` as read, `quantity_added`, the
+    `transaction_id` for the write, `reason` (always `adjustment` in this version) and
+    `inventory_quantity_before`, the item's quantity in the same read as the ETag.
+    The one target is the item at that ETag, kept on the server only: an item changed
+    since is not written over. `source` ends the description: `SAID` or `PHOTO_SEEN`.
     """
     if inventory.etag is None:
         raise ValueError("The item must be read with its ETag.")
@@ -614,9 +615,11 @@ def stock_increase_operation(
         values={
             "item_id": item.item_id,
             "name": item.name,
-            "quantity": quantity,
+            "quantity_added": quantity,
             "unit": item.unit,
             "transaction_id": transaction_id or uuid.uuid4().hex,
+            "reason": TransactionReason.ADJUSTMENT.value,
+            "inventory_quantity_before": item.quantity,
         },
         targets=[TargetVersion(record_id=inventory.document_id, etag=inventory.etag)],
     )

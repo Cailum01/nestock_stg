@@ -45,6 +45,7 @@ asks the user to say it again.
 | #90 | Item-match card and new-item card formats, agreed with C2 (section 10) |
 | #175 | Item-match card: 「是」 writes the purchase in one card and remembers no alias; 「不是」 writes nothing; one unsure item per card; no photo item-match card (section 10) |
 | #188 | Photo and said new-item cards: name and location change on the card with `card_changes`, besides quantity (section 7.1) |
+| #176 | The photo sent with the message is kept with the record: photo new-item lines and one-line purchase cards hold its `image_ref`, `input_id` and mapping ETag; an item's photo is never replaced (sections 10, 11) |
 
 ## 2. Approval record
 
@@ -193,6 +194,19 @@ not fit, reject it before writing anything; never split it into partial writes.
 Because the `confirmed → completed` update is in the same batch, the approval
 record and the domain records cannot disagree (answer to #27 question 2).
 Inventory, Shopping and Transaction are never split across writes.
+
+A card that keeps a photo (Issue #176, sections 10 and 11) also writes, in the same
+batch, the end of the photo mapping's 24-hour TTL and a `pending` media-retention work
+item (B1, C1). Moving the photo out of staging is not in the batch: after the first
+write (`completed`), `/agent/resume` replies first and then, in the background, runs
+C1's post-commit trigger (PR #201). A repeated confirm (`already_completed`) does not
+start it, so a double tap does not run the same work twice at once (PR #203). Its
+on-demand worker calls A2's idempotent `retain_media` for this household's due work
+items; the query needs the `next_attempt_at`, `created_at` composite index (#202). A
+failure is logged and leaves the work item `pending` (or `needs_attention` after a
+permanent error); the reply is not changed and no domain write is repeated. A pending
+item is tried again after the next written confirm in the same household. Without
+Cosmos there is no trigger.
 
 ## 6. Recovery after an error or timeout
 
@@ -494,6 +508,16 @@ New-item cards from a photo (Issue #124; on with Cosmos since PR #172):
   shows 未填 until the user fills it in on the card, Issue #188; confirming accepts no
   location, Issue #124), and `transaction_id`. There
   is no `shopping_item_id` and no target version.
+- The photo is kept (Issue #176): when its mapping is completed and is this
+  household's, every line also holds `image_ref`, `input_id` and `mapping_etag` (the
+  mapping's ETag), read after recognition when the card is made. The items of one
+  photo share it. Confirming hands these on as they are; B1's writer checks them
+  against the mapping, puts `image_ref` on the new item and ends the mapping's 24-hour
+  TTL in the same batch. When the mapping cannot be used, the card is made without
+  them. Either way the model is told (`photo` with the card), so the reply says
+  whether the photo will be kept; the App does not show the photo on the card yet
+  (C2, Issue #176). After confirming, the photo is moved out of staging in the
+  background (section 5).
 - Items the household has, unsure items and items without a confirmed unit are only
   reported, as before. A photo item-match card (Issue #124 point 2) is not built.
 - Confirming (Issue #124, #168): A1's
@@ -523,7 +547,7 @@ New-item cards from a photo (Issue #124; on with Cosmos since PR #172):
   or when the open cards cannot be listed; the photo is only reported.
 - The name, quantity and location can be changed on the card with `card_changes`
   (section 7.1, Issue #188); a new card replaces the old one, and the user confirms
-  again.
+  again. Each line keeps its photo values.
 - On in `get_read_agent` whenever cards are (Cosmos): confirming is written by
   B1's builder above. Without Cosmos a photo is only reported.
 
@@ -548,6 +572,8 @@ New-item cards from what the user says (Issue #168, 「我收到一瓶洗髮精�
   `adjustment` (C1 and B2 in Issue #168), at the card's `decided_at`.
 - The name, quantity and location can be changed with `card_changes` as on a photo
   card (Issue #188); the new card keeps each line's unit and （使用者說的）.
+- No photo is kept on these lines (Issue #176 covers photo new-item and purchase
+  cards).
 - On in `get_read_agent` whenever cards are (Cosmos); without Cosmos the tool is not
   offered.
 
@@ -599,6 +625,20 @@ quantity can be changed.
   user kept checked (all of them when nothing was unchecked). Unchecked items are not
   written (Issue #42 c).
 - A changed value goes back to the Agent as in section 7 (Issue #91).
+- A photo sent with the message (Issue #176) is kept only on a card with exactly one
+  line (a purchase line or a new-item line from the list): its `values` also hold
+  `image_ref`, `input_id` and `mapping_etag`, and its targets also hold
+  `input:<input_id>` at that ETag. The mapping must be completed and this household's.
+  No photo is kept when the card has several lines, on an item-match card, or when
+  the item already has a photo (it is never replaced); the model is told which
+  (`photo` with the card) and says it in the reply. On confirming, A1's
+  `CardInputResolver` gives C1 one `MediaAttachment` per line with a photo, read from
+  the card only (never looked up again, so a retry hands over the same values). All
+  three values or none: a line with only some of them, or without the matching
+  target, is refused and nothing is written. C1's batch then writes the photo on the
+  item, ends the mapping's TTL and stores the retention work item; moving the photo
+  out of staging runs after the reply (section 5). `card_changes` keeps the photo,
+  unless the item has a photo of its own by then.
 - Purchase time (Issue #113): the Transaction's `created_at` is when the purchase
   happened. Without a day on the line, the first `decided_at` is used, and a retry
   keeps that same time.

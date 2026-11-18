@@ -3,6 +3,7 @@ from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -21,6 +22,7 @@ from app.core.dependencies import (
     get_approval_service,
     get_commerce_service,
     get_inventory_service,
+    get_media_retention_trigger,
     get_media_storage_service,
     get_shopping_intent_service,
     get_shopping_service,
@@ -36,7 +38,12 @@ from app.models.storage import (
     UploadAuthorizationRequest,
     UploadAuthorizationResponse,
 )
-from app.services.approvals import ApprovalNotFound, ApprovalService, InvalidSelection
+from app.services.approvals import (
+    ApprovalNotFound,
+    ApprovalService,
+    InvalidSelection,
+    ResumeOutcome,
+)
 from app.services.commerce import BaseCommerceProvider
 from app.services.cosmos_write import OperationIdConflict, WriteStatus
 from app.services.interfaces import InventoryService, ShoppingService
@@ -46,6 +53,7 @@ from app.services.shopping.intents import (
     ShoppingIntentError,
     ShoppingIntentService,
 )
+from app.services.shopping.media_handoff import MediaRetentionPostCommitTrigger
 from app.services.speech import SpeechServiceError, SpeechToTextService
 
 router = APIRouter()
@@ -199,8 +207,20 @@ async def agent_message(
 async def agent_resume(
     request: ResumeRequest,
     approvals: Annotated[ApprovalService | None, Depends(get_approval_service)],
+    background: BackgroundTasks,
+    retention: Annotated[
+        MediaRetentionPostCommitTrigger | None, Depends(get_media_retention_trigger)
+    ],
 ) -> AgentResponse:
-    """The user's answer to a card. Writes only what the stored card holds (PR #47 §4)."""
+    """The user's answer to a card. Writes only what the stored card holds (PR #47 §4).
+
+    After the reply, C1's post-commit trigger moves the confirmed photos out of staging
+    (Issue #176, PR #201) in the background, so the user does not wait for it. It runs
+    only after the first write (`completed`): a repeated confirm (`already_completed`)
+    does not start a second run of the same work at the same time (PR #203 A2 review).
+    A failure leaves the work item pending for the next written confirm in the
+    household and never changes the reply.
+    """
     if approvals is None:
         raise HTTPException(503, "Approval cards need Cosmos; no changes were saved.")
     try:
@@ -210,9 +230,14 @@ async def agent_resume(
     except InvalidSelection as error:
         raise HTTPException(409, f"{error} No changes were saved.") from error
     try:
-        return resume_response(result)
+        response = resume_response(result)
     except RuntimeError as error:  # receipts without completion: stop and report (§6)
         raise HTTPException(500, "Write state needs checking; nothing more was written.") from error
+    if retention is not None and result.outcome is ResumeOutcome.COMPLETED:
+        background.add_task(
+            retention.after_resume, household_id=request.household_id, result=result
+        )
+    return response
 
 
 @router.post(

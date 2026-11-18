@@ -21,6 +21,16 @@
         "path": "/transaction_id",
         "order": "ascending"
       }
+    ],
+    [
+      {
+        "path": "/next_attempt_at",
+        "order": "ascending"
+      },
+      {
+        "path": "/created_at",
+        "order": "ascending"
+      }
     ]
   ]
 }

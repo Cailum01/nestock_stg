@@ -4,7 +4,7 @@ import os
 import threading
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
 
@@ -35,6 +35,9 @@ from app.services.vision import (
     VisionService,
     load_vision_azure_settings,
 )
+
+if TYPE_CHECKING:
+    from app.services.shopping.media_handoff import MediaRetentionPostCommitTrigger
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 SKIP_DOTENV_VAR = "NESTOCK_SKIP_DOTENV"
@@ -403,3 +406,56 @@ def _create_approval_service(
         household_items=read_repository,
     )
     return ApprovalService(write_repository, builder)
+
+
+_media_retention_trigger: "MediaRetentionPostCommitTrigger | None" = None
+_media_retention_trigger_resolved: bool = False
+
+
+def get_media_retention_trigger() -> "MediaRetentionPostCommitTrigger | None":
+    """C1's post-commit photo retention (PR #201, Issue #176), run after `/agent/resume`.
+
+    Cosmos only, like the approval service: without `NESTOCK_COSMOS_*` there is none
+    and confirming moves no photo. Made on first use from the same SDK client.
+    """
+    global _media_retention_trigger, _media_retention_trigger_resolved
+    if not _media_retention_trigger_resolved:
+        _media_retention_trigger = _create_media_retention_trigger(
+            cosmos_write_repository, cosmos_document_reader, media_storage_service
+        )
+        _media_retention_trigger_resolved = True
+    return _media_retention_trigger
+
+
+def _reset_media_retention_trigger_for_test() -> None:
+    """Reset the trigger singleton for test isolation (PR #203 A2 review)."""
+    global _media_retention_trigger, _media_retention_trigger_resolved
+    _media_retention_trigger = None
+    _media_retention_trigger_resolved = False
+
+
+def _create_media_retention_trigger(
+    write_repository: CosmosWriteRepository | None,
+    document_reader: DocumentQueryClient | None,
+    media: MediaStorageService,
+) -> "MediaRetentionPostCommitTrigger | None":
+    """C1's worker over B1's work-item storage and A2's idempotent `retain_media`.
+
+    The work items are the ones the approval batch wrote (`_create_approval_service`),
+    read and updated through the same Cosmos client.
+    """
+    if write_repository is None or document_reader is None:
+        return None
+    from app.services.shopping.media_handoff import (
+        B1MediaRetentionWorkItemAdapter,
+        MediaRetentionPostCommitTrigger,
+        MediaRetentionRetryWorker,
+    )
+
+    work_items = B1MediaRetentionWorkItemAdapter(
+        CosmosMediaRetentionWorkItemStorage(
+            write_client=write_repository.transactional_batch_client,
+            query_client=document_reader,
+        )
+    )
+    return MediaRetentionPostCommitTrigger(MediaRetentionRetryWorker(work_items, media))

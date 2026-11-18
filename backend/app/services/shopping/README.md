@@ -144,9 +144,9 @@ stored approval `decided_at` for both `occurred_at` and `recorded_at`.
 Issue #206 adds the C1 pure plan `plan_existing_inventory_adjustment` for a
 confirmed positive increment to an existing Inventory item. Its stored input
 contains the original item snapshot, its ETag, `inventory_quantity_before`,
-`quantity_added`, and the card-approved Transaction reason. For this release the
-reason is fixed to `adjustment` per Issue #206;
-the planner verifies the stored baseline against the snapshot. The batch planner
+`quantity_added`, and the card-approved Transaction reason. Per the latest C2/B2
+decision, this release fixes that reason to `adjustment`; the planner rejects any
+other value and verifies the stored baseline against the snapshot. The batch planner
 `plan_existing_inventory_adjustments` combines multiple rows for one item into
 one ETag-guarded `InventoryUpdate`, while retaining a Transaction and provenance
 ChangeEvent for each operation.

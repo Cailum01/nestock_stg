@@ -432,8 +432,8 @@ class ShoppingPlanService:
     ) -> ExistingInventoryAdjustmentPlan:
         """Plan a confirmed positive increment to an existing item.
 
-        The transaction reason must be stored in the approval and may only be
-        ``purchase`` or ``adjustment``. This function does not authorize,
+        The transaction reason must be stored in the approval and fixed to
+        ``adjustment`` for this release. This function does not authorize,
         persist, refresh stale snapshots, or retry with a new ETag.
         """
         batch = self.plan_existing_inventory_adjustments(

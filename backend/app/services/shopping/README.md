@@ -71,24 +71,23 @@ and its linked B1 decisions; this C1 document describes only the service handoff
 `ShoppingIntentService.add(AddShoppingIntent)` now implements the C1 domain write:
 it validates a named pending intent, permits omitted legacy quantity and unit,
 builds the authoritative `ShoppingItem` document, and calls B1's
-`execute_idempotent_batches`. This C1 proposal derives stable operation and item
-IDs from the household plus a caller-supplied request ID. Retrying the same request
+`execute_idempotent_batches`. The service derives stable operation and item IDs
+from the household plus a caller-supplied request ID. Retrying the same request
 with the same payload returns `already_applied`; changing values under that request
 identity is rejected by the durable receipt fingerprint. The request-ID contract
-and item-ID format remain subject to B1/A1/C2 review. This is an internal C1
-service seam; it is not yet composed into a public route or Agent tool.
-
-For atomic provenance, C1 proposes creating a `shopping_intent_event` in the same
-operation batch as the new Shopping row and B1 operation receipt. Its proposed
-identity is the operation ID, with household, Shopping item ID and event time.
-This is separate from the purchase `ChangeEvent`, which requires Inventory and
-Transaction IDs that a direct Shopping addition does not have. The new event
-record type is provisional pending B1 review; the service must not be composed into
-a public write path until the record shape and mapper support are approved.
+identity and item-ID derivation are confirmed by B1 for the App route. Issue #206
+adds `POST /shopping`, which uses the server's fixed household scope and this
+service. The App's explicit Add action is the confirmation; this route creates no
+approval card. The request contains `request_id`, `name`, and optional positive
+integer `quantity` and `unit`; it accepts no household ID or price. A retry with
+the same request ID and payload returns the same Shopping item with HTTP 200;
+first creation returns HTTP 201; changed payload under that identity returns 409.
+The batch writes the Shopping item and the repository's operation receipt only.
+B1 decided not to add a provisional `shopping_intent_event` record in this scope.
+The route is unavailable without Cosmos and returns 503 without writing.
 
 Offline verification record (2026-11-14): C1 added stable request identity mapping
-and a same-batch `shopping_intent_event` proposal for direct Shopping additions,
-plus a plan-time check that a new
+for direct Shopping additions, plus a plan-time check that a new
 Inventory ID equals B1's stable resolver output for the operation, with rejection
 coverage for caller-chosen IDs. Thirteen focused tests for
 `ShoppingIntentService.add()` pass, covering item creation and normalization,
@@ -141,6 +140,19 @@ initial confirmed quantity and does not change an existing Inventory item. The
 matching ChangeEvent uses `event_id = operation_id`, links the approval,
 transaction and new `item_id`, leaves `shopping_item_id` null, and uses the
 stored approval `decided_at` for both `occurred_at` and `recorded_at`.
+
+Issue #206 adds the C1 pure plan `plan_existing_inventory_adjustment` for a
+confirmed positive increment to an existing Inventory item. Its stored input
+contains the original item snapshot, its ETag, `inventory_quantity_before`,
+`quantity_added`, and the card-approved Transaction reason. Per the latest C2/B2
+decision, this release fixes that reason to `adjustment`; the planner rejects any
+other value and verifies the stored baseline against the snapshot. The batch planner
+`plan_existing_inventory_adjustments` combines multiple rows for one item into
+one ETag-guarded `InventoryUpdate`, while retaining a Transaction and provenance
+ChangeEvent for each operation.
+The planner never refreshes a stale snapshot or writes data. Stored-card binding,
+card presentation, and atomic ETag persistence remain A1/C2/B1 responsibilities.
+The inventory ETag is server-side target metadata and is not a public card value.
 
 `ShoppingWriteBuilder` already sends the Inventory create, Transaction and event
 through one operation batch. The caller must resolve inputs from the stored

@@ -25,6 +25,7 @@ from app.services.media_retention_work import CosmosMediaRetentionWorkItemStorag
 from app.services.provisional_storage.azure_blob_adapter import AzureBlobMediaStorage
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
+from app.services.shopping.intents import ShoppingIntentService
 from app.services.speech import (
     SpeechToTextService,
     create_speech_service,
@@ -238,6 +239,13 @@ def get_inventory_service() -> InventoryService:
 
 def get_shopping_service() -> ShoppingService:
     return shopping_service
+
+
+def get_shopping_intent_service() -> ShoppingIntentService | None:
+    """C1 direct-add writer; only available with both Cosmos read and write ports."""
+    if cosmos_read_repository is None or cosmos_write_repository is None:
+        return None
+    return ShoppingIntentService(cosmos_write_repository, cosmos_read_repository)
 
 
 def get_cosmos_read_repository() -> CosmosReadRepository | None:

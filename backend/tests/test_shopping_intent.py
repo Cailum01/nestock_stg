@@ -85,19 +85,12 @@ def test_add_creates_a_pending_intent_without_inventing_quantity_or_unit():
     assert document["quantity"] is None
     assert document["unit"] is None
     assert document["status"] == "pending"
-    operation_id, _ = resolve_shopping_intent_identity(
-        household_id="demo-household", request_id="request-1"
-    )
-    event = client.documents[("demo-household", f"shopping_intent_event:{operation_id}")]
-    assert event["record_type"] == "shopping_intent_event"
-    assert event["event_id"] == event["operation_id"] == operation_id
-    assert event["shopping_item_id"] == shopping_item_id
-    assert event["occurred_at"] == "2026-11-14T03:00:00.000000Z"
-    assert [operation.document["record_type"] for operation in client.batch_calls[0][1][1:]] == [
+    assert [operation.document["record_type"] for operation in client.batch_calls[0][1]] == [
+        "operation_receipt",
         "shopping_item",
-        "shopping_intent_event",
     ]
     assert len(client.batch_calls) == 1
+    assert len(client.documents) == 2  # Shopping row plus the repository operation receipt.
 
 
 def test_add_normalizes_optional_values_and_retries_the_same_operation_id():
@@ -117,7 +110,7 @@ def test_add_normalizes_optional_values_and_retries_the_same_operation_id():
     assert retry.item.quantity == 2
     assert retry.item.unit == "瓶"
     assert len(client.batch_calls) == 2
-    assert len(client.documents) == 3  # Shopping row, event, and operation receipt.
+    assert len(client.documents) == 2  # Shopping row and operation receipt.
 
 
 def test_retry_reuses_backend_created_timestamp_not_a_new_retry_timestamp():
@@ -136,13 +129,12 @@ def test_retry_reuses_backend_created_timestamp_not_a_new_retry_timestamp():
     assert retry.status is WriteStatus.ALREADY_APPLIED
     assert retry.item.created_at == first.item.created_at == CREATED_AT
     assert retry.item.updated_at == first.item.updated_at == CREATED_AT
-    operation_id, shopping_item_id = resolve_shopping_intent_identity(
+    _, shopping_item_id = resolve_shopping_intent_identity(
         household_id="demo-household", request_id="request-1"
     )
     shopping = client.documents[("demo-household", f"shopping_item:{shopping_item_id}")]
-    event = client.documents[("demo-household", f"shopping_intent_event:{operation_id}")]
-    assert shopping["created_at"] == event["occurred_at"] == "2026-11-14T03:00:00.000000Z"
-    assert len(client.documents) == 3
+    assert shopping["created_at"] == "2026-11-14T03:00:00.000000Z"
+    assert len(client.documents) == 2
 
 
 def test_add_normalizes_household_consistently_for_identity_documents_and_partition():
@@ -159,14 +151,13 @@ def test_add_normalizes_household_consistently_for_identity_documents_and_partit
     assert first.status is WriteStatus.APPLIED
     assert retry.status is WriteStatus.ALREADY_APPLIED
     assert first.item.household_id == retry.item.household_id == "demo-household"
-    operation_id, shopping_item_id = resolve_shopping_intent_identity(
+    _, shopping_item_id = resolve_shopping_intent_identity(
         household_id="demo-household", request_id="request-1"
     )
     assert [call[0] for call in client.batch_calls] == ["demo-household", "demo-household"]
     shopping = client.documents[("demo-household", f"shopping_item:{shopping_item_id}")]
-    event = client.documents[("demo-household", f"shopping_intent_event:{operation_id}")]
-    assert shopping["household_id"] == event["household_id"] == "demo-household"
-    assert len(client.documents) == 3  # Shopping row, event, and one operation receipt.
+    assert shopping["household_id"] == "demo-household"
+    assert len(client.documents) == 2  # Shopping row and one operation receipt.
 
 
 def test_add_rejects_changed_payload_under_the_same_operation_identity():
@@ -181,7 +172,7 @@ def test_add_rejects_changed_payload_under_the_same_operation_identity():
     with pytest.raises(OperationIdConflict, match="different canonical values"):
         asyncio.run(service.add(make_command(name="洗碗精")))
 
-    assert len(client.documents) == 3
+    assert len(client.documents) == 2
 
 
 def test_request_identity_derives_stable_household_scoped_operation_and_item_ids():

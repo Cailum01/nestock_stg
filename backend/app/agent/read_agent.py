@@ -49,6 +49,7 @@ from app.agent.cards import (
     PHOTO_CARD_MADE,
     PHOTO_KEPT,
     PHOTO_NOT_READY,
+    PHOTO_SEEN,
     PURCHASE_TOOL_SCHEMA,
     CardChangeRefused,
     CardPhoto,
@@ -56,7 +57,13 @@ from app.agent.cards import (
     PhotoItem,
     PurchaseCards,
 )
-from app.agent.stock_cards import ADD_STOCK, StockCards
+from app.agent.stock_cards import (
+    ADD_STOCK,
+    INCREASE_CARD_NOTE,
+    STOCK_INCREASE_VAR,
+    StockCards,
+    StockIncreases,
+)
 from app.core.dependencies import (
     get_approval_service,
     get_cosmos_read_repository,
@@ -69,7 +76,12 @@ from app.models.agent import AgentRequest, AgentResponse, AgentResult, ResultKin
 from app.models.commerce import PurchaseOption
 from app.models.domain import InventoryItem, MediaProcessingStatus, ShoppingItem
 from app.models.vision import SceneType, VisionAnalysisResult
-from app.services.approvals import ApprovalRecord, ApprovalService, CardNotChangeable
+from app.services.approvals import (
+    ApprovalRecord,
+    ApprovalService,
+    CardNotChangeable,
+    NewOperation,
+)
 from app.services.commerce.biggo import BigGoCommerceProvider
 from app.services.item_matching import ItemMatch, ItemMatcher, MatchMethod, match_term
 from app.services.provisional_storage.interfaces import MediaStorageService
@@ -448,6 +460,27 @@ def _new_photo_items(result: VisionAnalysisResult, matches: list[ItemMatch]) -> 
     return items
 
 
+def _seen_household_items(
+    result: VisionAnalysisResult, matches: list[ItemMatch]
+) -> list[tuple[ItemMatch, int, str]]:
+    """Photo items that are one household item, to add to it (Issue #206).
+
+    (the match, quantity, unit) for items seen with confidence and a confirmed unit
+    whose name or alias is exactly one household item's. Others are only reported.
+    """
+    seen = []
+    for detected, match in zip(result.detected_items, matches, strict=True):
+        unit = (detected.unit or "").strip()
+        if (
+            match.matched is not None
+            and detected.confidence >= LOW_CONFIDENCE
+            and detected.unit_confirmed
+            and unit
+        ):
+            seen.append((match, detected.quantity, unit))
+    return seen
+
+
 def _by_price(options: list[PurchaseOption]) -> list[PurchaseOption]:
     """Cheapest first; options without a price go last in their original order."""
     priced = sorted((o for o in options if o.estimated_price is not None), key=_price)
@@ -520,6 +553,7 @@ class ReadAgent:
         purchases: PurchaseCards | None = None,
         photo_cards: PhotoCards | None = None,
         stock: StockCards | None = None,
+        increases: StockIncreases | None = None,
     ) -> None:
         card_tools = [cards.tool_schema for cards in (purchases, stock) if cards is not None]
         self._model = model.bind_tools([*TOOL_SCHEMAS, *card_tools])
@@ -537,6 +571,7 @@ class ReadAgent:
         self._purchases = purchases
         # Issue #124: new-item cards from photos; off in the app until they can be written.
         self._photo_cards = photo_cards
+        self._increases = increases  # Issue #206: add to household items a photo shows
         # Issue #168: new-item cards for what the user says they got (`add_stock`).
         self._stock = stock
         self._matcher = matcher or ItemMatcher(tools.inventory, tools.shopping)
@@ -738,15 +773,44 @@ class ReadAgent:
         card = None
         if self._photo_cards is not None and may_make_card:
             new_items = _new_photo_items(result, matches)
+            more = await self._seen_increases(household_id, result, matches)
             photo = await self._card_photo(state) if new_items else None
-            card = await self._photo_cards.propose(household_id, new_items, photo)
-            if card is not None:
+            card = await self._photo_cards.propose(household_id, new_items, photo, more)
+            if card is not None and new_items:
                 model_view["new_item_card"] = {
                     "lines": [operation["description"] for operation in card["operations"]],
-                    "note": PHOTO_CARD_MADE,
+                    "note": PHOTO_CARD_MADE + (INCREASE_CARD_NOTE if more else ""),
                     "photo": PHOTO_KEPT if photo is not None and photo.ready else PHOTO_NOT_READY,
                 }
+            elif card is not None:
+                # Only items the household has (Issue #206): no new item, no photo kept.
+                model_view["stock_increase_card"] = {
+                    "lines": [operation["description"] for operation in card["operations"]],
+                    "note": INCREASE_CARD_NOTE,
+                }
         return json.dumps(model_view, ensure_ascii=False), data, card
+
+    async def _seen_increases(
+        self, household_id: str, result: VisionAnalysisResult, matches: list[ItemMatch]
+    ) -> list[NewOperation]:
+        """Lines that add what the photo shows to items the household has (Issue #206).
+
+        None while that is off. One line per household item: an item seen twice in the
+        photo, or one whose unit differs or that cannot be read, is only reported.
+        """
+        if self._increases is None:
+            return []
+        lines: list[NewOperation] = []
+        adding_to: set[str] = set()
+        for match, quantity, unit in _seen_household_items(result, matches):
+            line, _ = await self._increases.line(
+                household_id, match, quantity=quantity, unit=unit, source=PHOTO_SEEN
+            )
+            if line is None or line.values["item_id"] in adding_to:
+                continue
+            adding_to.add(line.values["item_id"])
+            lines.append(line)
+        return lines
 
     async def _card_photo(self, state: _State) -> CardPhoto | None:
         """The request's photo for a card to keep (Issue #176), or None without a photo.
@@ -887,6 +951,8 @@ class ReadAgent:
         messages: list[AnyMessage] = [SystemMessage(self._system_prompt)]
         if self._purchases is not None and (today := self._purchases.date_note()):
             messages.append(SystemMessage(today))  # dated purchases only (A1-50); off
+        if self._stock is not None and (adding := self._stock.prompt_note()):
+            messages.append(SystemMessage(adding))  # Issue #206; off until its write exists
         start: _State = {"household_id": request.household_id}
         if request.image_ref and self.reads_photos:
             # D-5: the photo must belong to this household before anything reads it.
@@ -1010,6 +1076,8 @@ def get_read_agent() -> ReadAgent | None:
         photo_cards=_photo_cards(),
         # Issue #168: said new-item cards, written the same way as photo cards.
         stock=_stock_cards(),
+        # Issue #206: the same lines for household items a photo shows; off by default.
+        increases=_stock_increases(),
     )
 
 
@@ -1027,7 +1095,28 @@ def _stock_cards() -> StockCards | None:
     reader = get_cosmos_read_repository()
     if approvals is None or reader is None:
         return None
-    return StockCards(reader, approvals)
+    return StockCards(reader, approvals, _stock_increases())
+
+
+def _stock_increases() -> StockIncreases | None:
+    """Adding to an item the household has (Issue #206): Cosmos only, and only on.
+
+    Off unless `NESTOCK_STOCK_INCREASE=1`: until B1's and C1's write for these lines
+    is in `get_approval_service`, such a card cannot be stored (`CardWriteRouter`).
+    """
+    reader = get_cosmos_read_repository()
+    if reader is None or not stock_increase_on():
+        return None
+    return StockIncreases(reader)
+
+
+def stock_increase_on(environment: Mapping[str, str] | None = None) -> bool:
+    """`NESTOCK_STOCK_INCREASE=1` turns adding to household items on (Issue #206).
+
+    Any other value, or none, is off. The cloud does not set it.
+    """
+    env = os.environ if environment is None else environment
+    return env.get(STOCK_INCREASE_VAR, "").strip() == "1"
 
 
 def _purchase_cards() -> PurchaseCards | None:

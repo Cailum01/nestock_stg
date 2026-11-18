@@ -1,0 +1,446 @@
+"""A1: card lines that add to an item the household has, with no list entry (Issue #206).
+
+「我又收到一個滑鼠」 or a photo of something the household has: with `StockIncreases`
+on, that item gets an `increase_stock` line on the card instead of being left out.
+A1's part only: the card, and `CardWriteRouter` handing it to the builder for these
+lines. That builder is B1's and C1's; here `_Writer` stands in for it, and the app's
+own composition (which has none yet) stores no such card.
+"""
+
+import asyncio
+import json
+
+import pytest
+from langchain_core.messages import AIMessage
+from test_photo_end_to_end import _app_approvals, _confirm
+from test_purchase_cards import (
+    HOME,
+    FakeCosmosContainer,
+    ScriptedModel,
+    _call,
+    inventory,
+    shopping,
+    tool_results,
+)
+from test_read_agent import PHOTO, _ask_photo, _detected, _seen_by_model, _StubVision
+
+from app.agent.cards import (
+    CARD_FAILED,
+    CHANGE_NOT_THIS_CARD,
+    PHOTO_CARD_MADE,
+    PHOTO_SEEN,
+    SAID,
+    PhotoCards,
+    PurchaseCards,
+)
+from app.agent.read_agent import ReadAgent, load_system_prompt, stock_increase_on
+from app.agent.stock_cards import (
+    ADD_STOCK,
+    HAVE_IT,
+    INCREASE_CARD_NOTE,
+    INCREASE_PROMPT_NOTE,
+    INCREASE_TOOL_DESCRIPTION,
+    SAID_TWICE,
+    STOCK_CARD_MADE,
+    STOCK_TOOL_SCHEMA,
+    UNIT_DIFFERS,
+    WHICH_ONE,
+    StockCards,
+    StockIncreases,
+)
+from app.models.agent import AgentRequest, ApprovalPresentation, CardChange
+from app.services.approvals import ApprovalService, DomainWritePlan
+from app.services.card_writes import STOCK_INCREASE_WRITE_MISSING, CardWriteRouter
+from app.services.cosmos_read import (
+    CosmosInventoryService,
+    CosmosReadRepository,
+    CosmosShoppingService,
+)
+from app.services.cosmos_write import CosmosWriteRepository
+from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
+from app.services.purchase_inputs import INCREASE_STOCK, UnsupportedAction
+from app.tools.queries import QueryTools
+
+MOUSE = inventory(item_id="mouse", name="羅技 G400s 有線滑鼠", quantity=1.0, unit="個")
+
+
+class _Writer:
+    """Stands in for the builder B1 and C1 are to write: plans every line, writes nothing."""
+
+    def __init__(self) -> None:
+        self.cards = []
+
+    async def build(self, record):
+        self.cards.append(record)
+        return DomainWritePlan(operations_by_id={op: () for op in record.approved_operation_ids})
+
+
+class _Never:
+    """A builder that must not be reached."""
+
+    async def build(self, record):
+        raise AssertionError(f"{type(self).__name__} got card {record.approval_id}")
+
+
+def home(*records, writer=True):
+    """(container, reads, approvals, writer). With `writer`, increase cards can be stored."""
+    container = FakeCosmosContainer()
+    for record in records or (MOUSE,):
+        container.put(record)
+    reads = CosmosReadRepository(container)
+    increases = _Writer() if writer else None
+    router = CardWriteRouter(
+        _Never(), photo_items=_Writer(), household_items=reads, stock_increases=increases
+    )
+    approvals = ApprovalService(CosmosWriteRepository(container, query_client=container), router)
+    return container, reads, approvals, increases
+
+
+def agent(reads, approvals, *replies, on=True, vision=None):
+    increases = StockIncreases(reads) if on else None
+    media = None
+    if vision is not None:
+        media = LocalStagingMediaStorage()
+        asyncio.run(media.simulate_client_upload(HOME, PHOTO, b"jpeg-bytes"))
+    return ReadAgent(
+        ScriptedModel(*replies),
+        QueryTools(CosmosInventoryService(reads), CosmosShoppingService(reads)),
+        load_system_prompt(),
+        vision=vision,
+        media=media,
+        purchases=PurchaseCards(reads, approvals),
+        photo_cards=PhotoCards(approvals),
+        stock=StockCards(reads, approvals, increases),
+        increases=increases,
+    )
+
+
+def said(reads, approvals, *items, on=True):
+    the_agent = agent(
+        reads,
+        approvals,
+        _call(ADD_STOCK, "call-1", items=list(items)),
+        AIMessage(content="請確認下方的卡片，按確認後才會記錄。"),
+        on=on,
+    )
+    request = AgentRequest(household_id=HOME, message="我又收到一個滑鼠")
+    response = asyncio.run(the_agent.respond(request))
+    return response, json.loads(tool_results(the_agent._model)[-1]), the_agent
+
+
+def one_more(name="羅技 G400s 有線滑鼠", quantity=1, unit="個"):
+    return {"name": name, "quantity": quantity, "unit": unit}
+
+
+def test_a_thing_the_household_has_gets_a_line_that_adds_to_it():
+    container, reads, approvals, writer = home()
+    before = container.get("inventory_item:mouse")
+
+    response, result, _ = said(reads, approvals, one_more(quantity=2))
+
+    card = response.pending_approval
+    assert card.presentation is ApprovalPresentation.SINGLE_ACTION
+    (line,) = card.operations
+    assert line.action == INCREASE_STOCK
+    assert line.description == f"羅技 G400s 有線滑鼠 +2 個（家裡已有的品項）{SAID}"
+    assert {k: v for k, v in line.values.items() if k != "transaction_id"} == {
+        "item_id": "mouse",
+        "name": "羅技 G400s 有線滑鼠",
+        "quantity": 2,
+        "unit": "個",
+    }
+    assert line.values["transaction_id"]
+    stored = container.get(f"pending_approval:{card.approval_id}")
+    assert stored["status"] == "pending"
+    # The card holds the item at the version it was read with.
+    assert stored["operations"][0]["targets"] == [
+        {"record_id": "inventory_item:mouse", "etag": before["_etag"]}
+    ]
+    assert container.get("inventory_item:mouse") == before  # nothing written but the card
+    assert container.of_type("transaction") == []
+    assert result == {
+        "card": {"lines": [line.description]},
+        "not_on_card": [],
+        "note": INCREASE_CARD_NOTE,
+    }
+    assert [c.approval_id for c in writer.cards] == [card.approval_id]  # the save-time check
+
+
+def test_an_alias_adds_to_the_item_under_its_own_name():
+    aliased = inventory(item_id="mouse", name="羅技 G400s 有線滑鼠", unit="個", aliases=["滑鼠"])
+    _, reads, approvals, _ = home(aliased)
+
+    response, _, _ = said(reads, approvals, one_more(name="滑鼠"))
+
+    (line,) = response.pending_approval.operations
+    assert (line.values["item_id"], line.values["name"]) == ("mouse", "羅技 G400s 有線滑鼠")
+
+
+def test_off_a_thing_the_household_has_is_left_out_as_before():
+    container, reads, approvals, _ = home()
+
+    response, result, the_agent = said(reads, approvals, one_more(), on=False)
+
+    assert response.pending_approval is None
+    assert result == {
+        "card": None,
+        "not_on_card": [
+            {"name": "羅技 G400s 有線滑鼠", "reason": HAVE_IT.format(names="羅技 G400s 有線滑鼠")}
+        ],
+    }
+    assert container.of_type("pending_approval") == []
+    assert INCREASE_PROMPT_NOTE not in [m.content for m in the_agent._model.seen[0]]
+    assert the_agent._stock.tool_schema is STOCK_TOOL_SCHEMA
+
+
+def test_on_the_model_is_told_it_may_add_to_household_items():
+    _, reads, approvals, _ = home()
+
+    _, _, the_agent = said(reads, approvals, one_more())
+
+    assert INCREASE_PROMPT_NOTE in [m.content for m in the_agent._model.seen[0]]
+    schema = the_agent._stock.tool_schema
+    assert schema["function"]["description"] == INCREASE_TOOL_DESCRIPTION
+    assert schema["function"]["parameters"] == STOCK_TOOL_SCHEMA["function"]["parameters"]
+    assert schema["function"]["name"] == ADD_STOCK
+
+
+def test_a_new_thing_and_a_household_item_share_one_card():
+    _, reads, approvals, writer = home()
+    shampoo = {"name": "洗髮精", "quantity": 1, "unit": "瓶", "location": "浴室"}
+
+    response, result, _ = said(reads, approvals, shampoo, one_more())
+
+    card = response.pending_approval
+    assert card.presentation is ApprovalPresentation.BATCH_ACTION
+    assert [op.action for op in card.operations] == ["create_item", INCREASE_STOCK]
+    assert result["note"] == STOCK_CARD_MADE + INCREASE_CARD_NOTE
+    assert len(writer.cards) == 1  # the whole card goes to one builder
+
+
+def test_another_unit_is_asked_again_never_converted():
+    container, reads, approvals, _ = home()
+
+    response, result, _ = said(reads, approvals, one_more(unit="盒"))
+
+    assert response.pending_approval is None
+    assert result["card"] is None
+    assert result["not_on_card"] == [
+        {
+            "name": "羅技 G400s 有線滑鼠",
+            "reason": UNIT_DIFFERS.format(name="羅技 G400s 有線滑鼠", unit="個", said="盒"),
+        }
+    ]
+    assert container.of_type("pending_approval") == []
+
+
+def test_several_household_items_of_that_name_are_asked_which():
+    one = inventory(item_id="soy-1", name="無糖豆漿", unit="瓶", aliases=["豆漿"])
+    other = inventory(item_id="soy-2", name="高纖豆漿", unit="瓶", aliases=["豆漿"])
+    _, reads, approvals, _ = home(one, other)
+
+    response, result, _ = said(reads, approvals, one_more(name="豆漿", unit="瓶"))
+
+    assert response.pending_approval is None
+    (left,) = result["not_on_card"]
+    assert left["reason"] == WHICH_ONE.format(names="無糖豆漿、高纖豆漿")
+
+
+def test_one_item_said_under_two_names_gets_one_line():
+    aliased = inventory(item_id="mouse", name="羅技 G400s 有線滑鼠", unit="個", aliases=["滑鼠"])
+    _, reads, approvals, _ = home(aliased)
+
+    response, result, _ = said(reads, approvals, one_more(), one_more(name="滑鼠", quantity=5))
+
+    (line,) = response.pending_approval.operations
+    assert line.values["quantity"] == 1  # the first one said
+    assert result["not_on_card"] == [{"name": "滑鼠", "reason": SAID_TWICE}]
+
+
+def test_without_its_writer_no_such_card_is_stored():
+    container, reads, approvals, _ = home(writer=False)
+
+    response, result, _ = said(reads, approvals, one_more())
+
+    assert response.pending_approval is None
+    assert result == json.loads(CARD_FAILED)
+    assert container.of_type("pending_approval") == []
+
+
+def test_the_apps_own_composition_has_no_writer_for_it_yet():
+    """Until B1 and C1 add theirs, the app stores no card that adds to a household item."""
+    container = FakeCosmosContainer()
+    for record in (MOUSE, shopping()):
+        container.put(record)
+    reads, approvals = _app_approvals(container)
+
+    response, result, _ = said(reads, approvals, one_more())
+
+    assert response.pending_approval is None
+    assert result == json.loads(CARD_FAILED)
+    assert container.of_type("pending_approval") == []
+    assert container.of_type("transaction") == []
+
+
+def test_the_router_never_hands_such_a_card_to_the_purchase_builder():
+    _, reads, approvals, _ = home(writer=False)
+    line = asyncio.run(
+        StockIncreases(reads).line(
+            HOME,
+            _match(reads, "羅技 G400s 有線滑鼠"),
+            quantity=1,
+            unit="個",
+            source=SAID,
+        )
+    )[0]
+    record = approvals.prepare(
+        household_id=HOME, presentation=ApprovalPresentation.SINGLE_ACTION, operations=[line]
+    )
+
+    with pytest.raises(UnsupportedAction, match="Issue #206"):
+        asyncio.run(CardWriteRouter(_Never(), photo_items=_Never()).build(record))
+    assert "Issue #206" in STOCK_INCREASE_WRITE_MISSING
+
+
+def _match(reads, name):
+    from app.services.item_matching import match_term
+
+    return match_term(name, asyncio.run(reads.list_inventory(HOME)))
+
+
+def test_confirming_goes_to_the_writer_and_an_added_item_is_not_a_duplicate():
+    """The household has the item of an increase line: the still-new check skips it."""
+    _, reads, approvals, writer = home()
+    card = said(reads, approvals, one_more())[0].pending_approval
+
+    _confirm(approvals, card)  # `_Writer` plans no write, so nothing is recorded here
+
+    assert [c.approval_id for c in writer.cards] == [card.approval_id] * 2  # save, confirm
+    assert tuple(writer.cards[-1].approved_operation_ids) == (card.operations[0].operation_id,)
+
+
+def test_cancelling_writes_nothing():
+    container, reads, approvals, _ = home()
+    before = container.get("inventory_item:mouse")
+    card = said(reads, approvals, one_more())[0].pending_approval
+    body = {"household_id": HOME, "approval_id": card.approval_id, "approved": False}
+    from fastapi.testclient import TestClient
+    from test_purchase_cards import resume_app
+
+    with TestClient(resume_app(approvals)) as client:
+        reply = client.post("/agent/resume", json=body).json()
+
+    assert reply["results"][0]["data"]["outcome"] == "cancelled"
+    assert container.get("inventory_item:mouse") == before
+    assert container.get(f"pending_approval:{card.approval_id}")["status"] == "cancelled"
+
+
+def test_the_quantity_cannot_be_changed_on_the_card_yet():
+    container, reads, approvals, _ = home()
+    response, _, the_agent = said(reads, approvals, one_more())
+    card = response.pending_approval
+    change = CardChange(operation_id=card.operations[0].operation_id, quantity=3)
+    request = AgentRequest(
+        household_id=HOME,
+        message="送出修改",
+        replaces_approval_id=card.approval_id,
+        card_changes=[change],
+    )
+
+    reply = asyncio.run(the_agent.respond(request))
+
+    assert reply.results[0].data["code"] == "line_refused"
+    assert reply.message == CHANGE_NOT_THIS_CARD
+    assert reply.pending_approval.approval_id == card.approval_id  # the old card stays
+    assert len(container.of_type("pending_approval")) == 1
+
+
+def _photo(reads, approvals, *detected, on=True):
+    the_agent = agent(
+        reads,
+        approvals,
+        _call("analyze_photo"),
+        AIMessage(content="請確認。"),
+        on=on,
+        vision=_StubVision(*detected),
+    )
+    response = _ask_photo(the_agent, household_id=HOME)
+    return response, _seen_by_model(the_agent._model)
+
+
+def test_a_photo_of_a_household_item_gets_a_line_that_adds_to_it():
+    container, reads, approvals, _ = home()
+    before = container.get("inventory_item:mouse")
+
+    response, seen = _photo(reads, approvals, _detected("羅技 G400s 有線滑鼠", unit="個"))
+
+    card = response.pending_approval
+    (line,) = card.operations
+    assert line.action == INCREASE_STOCK
+    assert line.description == f"羅技 G400s 有線滑鼠 +1 個（家裡已有的品項）{PHOTO_SEEN}"
+    assert line.values["item_id"] == "mouse"
+    assert "image_ref" not in line.values  # an increase line keeps no photo
+    assert seen["stock_increase_card"] == {
+        "lines": [line.description],
+        "note": INCREASE_CARD_NOTE,
+    }
+    assert "new_item_card" not in seen
+    assert container.get("inventory_item:mouse") == before
+
+
+def test_a_photo_with_new_and_household_items_makes_one_card():
+    _, reads, approvals, _ = home()
+
+    response, seen = _photo(
+        reads,
+        approvals,
+        _detected("洗髮精"),
+        _detected("羅技 G400s 有線滑鼠", unit="個"),
+    )
+
+    card = response.pending_approval
+    assert card.presentation is ApprovalPresentation.BATCH_ACTION
+    assert [op.action for op in card.operations] == ["create_item", INCREASE_STOCK]
+    assert seen["new_item_card"]["note"] == PHOTO_CARD_MADE + INCREASE_CARD_NOTE
+    assert seen["new_item_card"]["lines"] == [op.description for op in card.operations]
+
+
+@pytest.mark.parametrize(
+    "detected",
+    [
+        _detected("羅技 G400s 有線滑鼠", unit="盒"),
+        _detected("羅技 G400s 有線滑鼠", unit="個", confidence=0.3),
+        _detected("羅技 G400s 有線滑鼠", unit="個", unit_confirmed=False),
+    ],
+    ids=["another unit", "unsure", "unit not confirmed"],
+)
+def test_a_photo_item_that_cannot_be_added_is_only_reported(detected):
+    container, reads, approvals, _ = home()
+
+    response, seen = _photo(reads, approvals, detected)
+
+    assert response.pending_approval is None
+    assert "stock_increase_card" not in seen
+    assert container.of_type("pending_approval") == []
+
+
+def test_off_a_photo_of_a_household_item_is_only_reported_as_before():
+    container, reads, approvals, _ = home()
+
+    response, seen = _photo(reads, approvals, _detected("羅技 G400s 有線滑鼠", unit="個"), on=False)
+
+    assert response.pending_approval is None
+    assert "stock_increase_card" not in seen
+    assert container.of_type("pending_approval") == []
+
+
+@pytest.mark.parametrize(
+    ("environment", "on"),
+    [
+        ({}, False),
+        ({"NESTOCK_STOCK_INCREASE": "1"}, True),
+        ({"NESTOCK_STOCK_INCREASE": "true"}, False),
+    ],
+)
+def test_the_switch_is_off_unless_set_to_1(environment, on):
+    assert stock_increase_on(environment) is on

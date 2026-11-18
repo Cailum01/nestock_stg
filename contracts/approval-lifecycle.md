@@ -46,6 +46,7 @@ asks the user to say it again.
 | #175 | Item-match card: 「是」 writes the purchase in one card and remembers no alias; 「不是」 writes nothing; one unsure item per card; no photo item-match card (section 10) |
 | #188 | Photo and said new-item cards: name and location change on the card with `card_changes`, besides quantity (section 7.1) |
 | #176 | The photo sent with the message is kept with the record: photo new-item lines and one-line purchase cards hold its `image_ref`, `input_id` and mapping ETag; an item's photo is never replaced (sections 10, 11) |
+| #206 | Proposed, off: a line that adds to an item the household has with no Shopping List entry (`increase_stock`), from what the user says or a photo; stored only once B1 and C1 have its write (section 10.1) |
 
 ## 2. Approval record
 
@@ -594,6 +595,38 @@ New-item cards from what the user says (Issue #168, 「我收到一瓶洗髮精�
   ]
 }
 ```
+
+### 10.1 Adding to an item the household has (Issue #206, proposed, off)
+
+A1's part of Issue #206, behind `NESTOCK_STOCK_INCREASE=1` (not set in the cloud).
+The action name and the values are A1's proposal in the Issue; C2, B1, C1 and B2 have
+not confirmed them. Nothing here changes what runs today.
+
+- When: the user says they got more of something the household has (`add_stock`), or
+  a photo shows it, and it is not a Shopping List purchase. While off, such an item
+  gets no line, as before (「家裡已經有…」).
+- The line: `action` `increase_stock`; `values` `item_id`, `name` and `unit` (the
+  household item's, as read), `quantity` (a whole number ≥ 1 to add) and
+  `transaction_id`; one target, the item at the ETag it was read with when the card
+  was made. No `shopping_item_id`. The description ends with （使用者說的） or
+  （照片辨識）.
+- One line needs exactly one household item of that name or alias (#36 layers 1 and
+  2). Several: no line, the user is asked which. Another unit than the item's: no
+  line, the user is asked again in the item's unit; nothing is converted. One item
+  gets one line per card.
+- New-item lines and these lines share one card (`single_action` for one line,
+  `batch_action` for several), new items first. From a photo, only new-item lines keep
+  the photo (Issue #176); a line that adds to an item keeps none.
+- Confirming: `CardWriteRouter` hands the whole card to the builder for these lines,
+  never to C1's purchase builder. That builder does not exist yet: it is B1's and
+  C1's (update the item's quantity under its ETag, an `adjustment` Transaction, the
+  change event and the receipts, in the card's batch). Until it is in
+  `get_approval_service`, saving such a card fails its check, so no card is stored or
+  shown and the tool answers `card_not_made`. The still-new check of section 10 reads
+  only the new-item lines.
+- Changing the card (section 7.1): not yet; a change is refused and the old card stays.
+- The reply after a confirmed write is the usual one, from the writer's per-line
+  `quantity_added`, `unit` and `inventory_quantity`.
 
 ## 11. Purchase card (v8 flow C)
 

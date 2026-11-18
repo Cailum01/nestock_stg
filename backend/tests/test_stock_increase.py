@@ -568,6 +568,39 @@ def test_a_photo_of_a_thing_with_several_household_items_gets_candidates_too():
     assert seen["stock_increase_card"]["note"] == INCREASE_CARD_NOTE + CHOICE_CARD_NOTE
 
 
+def test_a_household_item_the_photo_shows_twice_gets_no_line():
+    """PR #207 B1 review: adding only one of the sightings would record the wrong quantity."""
+    container, reads, approvals, _ = home()
+    mouse = _detected("羅技 G400s 有線滑鼠", unit="個")
+
+    response, seen = _photo(reads, approvals, mouse, mouse)
+
+    assert response.pending_approval is None
+    assert "stock_increase_card" not in seen
+    assert container.of_type("pending_approval") == []
+
+
+def test_other_items_in_that_photo_still_get_their_lines():
+    _, reads, approvals, _ = home(MOUSE, SOY_A)
+    mouse = _detected("羅技 G400s 有線滑鼠", unit="個")
+
+    response, _ = _photo(reads, approvals, mouse, _detected("無糖豆漿"), mouse)
+
+    (line,) = response.pending_approval.operations
+    assert line.values["item_id"] == "soy-1"
+
+
+def test_a_candidate_seen_again_under_its_own_name_drops_the_whole_choice():
+    """「豆漿」 may be soy-1 or soy-2 and 「無糖豆漿」 is soy-1: neither sighting gets a line."""
+    container, reads, approvals, _ = home(SOY_A, SOY_B)
+
+    response, seen = _photo(reads, approvals, _detected("豆漿"), _detected("無糖豆漿"))
+
+    assert response.pending_approval is None
+    assert "stock_increase_card" not in seen
+    assert container.of_type("pending_approval") == []
+
+
 @pytest.mark.parametrize(
     "detected",
     [

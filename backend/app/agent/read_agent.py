@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+from collections import Counter
 from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
@@ -799,22 +800,28 @@ class ReadAgent:
     ) -> list[NewOperation]:
         """Lines that add what the photo shows to items the household has (Issue #206).
 
-        None while that is off. One line per household item: an item seen twice in the
-        photo, or one whose unit differs or that cannot be read, is only reported.
-        Several household items of one name each get a line to choose from.
+        None while that is off. A household item the photo shows once gets a line;
+        several household items of one name each get a line to choose from. A household
+        item two of the photo's items lead to gets no line at all, and neither does
+        anything else those photo items lead to: adding only one of the sightings would
+        record the wrong quantity (PR #207 B1 review). Such items, and ones whose unit
+        differs or that cannot be read, are only reported.
         """
         if self._increases is None:
             return []
-        lines: list[NewOperation] = []
-        adding_to: set[str] = set()
+        seen: list[list[NewOperation]] = []
         for match, quantity, unit in _seen_household_items(result, matches):
             more, _ = await self._increases.lines(
                 household_id, match, quantity=quantity, unit=unit, source=PHOTO_SEEN
             )
-            more = [line for line in more if line.values["item_id"] not in adding_to]
-            adding_to.update(line.values["item_id"] for line in more)
-            lines.extend(more)
-        return lines
+            seen.append(more)
+        times = Counter(line.values["item_id"] for more in seen for line in more)
+        return [
+            line
+            for more in seen
+            if all(times[candidate.values["item_id"]] == 1 for candidate in more)
+            for line in more
+        ]
 
     async def _card_photo(self, state: _State) -> CardPhoto | None:
         """The request's photo for a card to keep (Issue #176), or None without a photo.

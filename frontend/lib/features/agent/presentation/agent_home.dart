@@ -878,7 +878,11 @@ class _AgentHomeState extends State<AgentHome> {
                                         onShopping: () {
                                           _openShopping();
                                         },
-                                        message: _busy ? '思考中...' : '歡迎回家',
+                                        statusMessage: _busy
+                                            ? '思考中...'
+                                            : _workOpen
+                                            ? '歡迎回家'
+                                            : null,
                                       ),
                                     ),
                                     if (_messages.isNotEmpty)

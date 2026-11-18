@@ -179,7 +179,7 @@ void main() {
     expect(find.text('等待中'), findsNothing);
     expect(find.text('過期回覆'), findsNothing);
     expect(find.byKey(const Key('work-surface')), findsNothing);
-    expect(find.text('歡迎回家'), findsOneWidget);
+    expect(find.text('歡迎回家。'), findsOneWidget);
   });
 
   testWidgets('mixed turns remain ordered and preserve vision edits', (

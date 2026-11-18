@@ -24,6 +24,7 @@ from app.core.dependencies import (
     get_inventory_service,
     get_media_retention_trigger,
     get_media_storage_service,
+    get_shopping_intent_service,
     get_shopping_service,
     get_speech_service,
 )
@@ -31,6 +32,7 @@ from app.models.agent import AgentRequest, AgentResponse, ResumeRequest
 from app.models.base import ContractModel
 from app.models.commerce import CommerceSearchResponse, CommerceSearchStatus
 from app.models.domain import InventoryItem, ShoppingItem
+from app.models.shopping import AddShoppingIntentRequest
 from app.models.speech import AllowedAudioContentType, SpeechTranscribeResponse
 from app.models.storage import (
     UploadAuthorizationRequest,
@@ -43,8 +45,14 @@ from app.services.approvals import (
     ResumeOutcome,
 )
 from app.services.commerce import BaseCommerceProvider
+from app.services.cosmos_write import OperationIdConflict, WriteStatus
 from app.services.interfaces import InventoryService, ShoppingService
 from app.services.provisional_storage.interfaces import MediaStorageService
+from app.services.shopping.intents import (
+    AddShoppingIntent,
+    ShoppingIntentError,
+    ShoppingIntentService,
+)
 from app.services.shopping.media_handoff import MediaRetentionPostCommitTrigger
 from app.services.speech import SpeechServiceError, SpeechToTextService
 
@@ -73,6 +81,44 @@ async def shopping(
     service: Annotated[ShoppingService, Depends(get_shopping_service)],
 ) -> list[ShoppingItem]:
     return await service.list_items(settings.demo_household_id)
+
+
+@router.post(
+    "/shopping",
+    response_model=ShoppingItem,
+    status_code=status.HTTP_201_CREATED,
+    tags=["shopping"],
+    responses={
+        200: {"description": "This request_id and payload were already applied"},
+        409: {"description": "request_id was previously used with different values"},
+        503: {"description": "Shopping writes require Cosmos; nothing was saved"},
+    },
+)
+async def add_shopping_intent(
+    request: AddShoppingIntentRequest,
+    response: Response,
+    service: Annotated[ShoppingIntentService | None, Depends(get_shopping_intent_service)],
+) -> ShoppingItem:
+    """Add one pending Shopping item using the App's explicit Add as confirmation."""
+    if service is None:
+        raise HTTPException(503, "Shopping writes need Cosmos; no changes were saved.")
+    try:
+        result = await service.add(
+            AddShoppingIntent(
+                household_id=settings.demo_household_id,
+                request_id=request.request_id,
+                name=request.name,
+                quantity=request.quantity,
+                unit=request.unit,
+            )
+        )
+    except ShoppingIntentError as error:
+        raise HTTPException(422, str(error)) from error
+    except OperationIdConflict as error:
+        raise HTTPException(409, "request_id was already used with different values.") from error
+    if result.status is WriteStatus.ALREADY_APPLIED:
+        response.status_code = status.HTTP_200_OK
+    return result.item
 
 
 @router.get(

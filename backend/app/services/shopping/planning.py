@@ -71,6 +71,25 @@ class AdjustmentInput:
 
 
 @dataclass(frozen=True)
+class ExistingInventoryAdjustmentInput:
+    """Approved positive quantity added to an existing Inventory snapshot.
+
+    The caller must resolve every field from the stored approval. This release
+    fixes the reason to ``adjustment``; it must never be inferred from the source
+    channel or changed by the client.
+    """
+
+    operation_id: str
+    transaction_id: str
+    approval_id: str
+    inventory: InventoryItem
+    expected_etag: str
+    inventory_quantity_before: int
+    quantity_added: int
+    reason: TransactionReason
+
+
+@dataclass(frozen=True)
 class ShoppingUpdate:
     operation_id: str
     record: ShoppingItem
@@ -113,6 +132,30 @@ class AdjustmentPlan:
     inventory_create: InventoryCreate
     transaction: Transaction
     change_event: ChangeEvent
+    recorded_at: datetime
+
+
+@dataclass(frozen=True)
+class ExistingInventoryAdjustmentPlan:
+    """Pure plan to increase an existing confirmed quantity with ETag guard."""
+
+    household_id: str
+    operation_id: str
+    approval_id: str
+    inventory_update: InventoryUpdate
+    transaction: Transaction
+    change_event: ChangeEvent
+    recorded_at: datetime
+
+
+@dataclass(frozen=True)
+class ExistingInventoryAdjustmentBatchPlan:
+    """Grouped plans for approved lines, combining updates by Inventory item."""
+
+    household_id: str
+    inventory_updates: tuple[InventoryUpdate, ...]
+    transactions: tuple[Transaction, ...]
+    change_events: tuple[ChangeEvent, ...]
     recorded_at: datetime
 
 
@@ -377,6 +420,148 @@ class ShoppingPlanService:
             inventory_create=inventory_create,
             transaction=transaction,
             change_event=change_event,
+            recorded_at=recorded_at,
+        )
+
+    def plan_existing_inventory_adjustment(
+        self,
+        *,
+        household_id: str,
+        adjustment: ExistingInventoryAdjustmentInput,
+        recorded_at: datetime,
+    ) -> ExistingInventoryAdjustmentPlan:
+        """Plan a confirmed positive increment to an existing item.
+
+        The transaction reason must be stored in the approval and fixed to
+        ``adjustment`` for this release. This function does not authorize,
+        persist, refresh stale snapshots, or retry with a new ETag.
+        """
+        batch = self.plan_existing_inventory_adjustments(
+            household_id=household_id,
+            adjustments=(adjustment,),
+            recorded_at=recorded_at,
+        )
+        return ExistingInventoryAdjustmentPlan(
+            household_id=household_id,
+            operation_id=adjustment.operation_id,
+            approval_id=adjustment.approval_id,
+            inventory_update=batch.inventory_updates[0],
+            transaction=batch.transactions[0],
+            change_event=batch.change_events[0],
+            recorded_at=recorded_at,
+        )
+
+    def plan_existing_inventory_adjustments(
+        self,
+        *,
+        household_id: str,
+        adjustments: Sequence[ExistingInventoryAdjustmentInput],
+        recorded_at: datetime,
+    ) -> ExistingInventoryAdjustmentBatchPlan:
+        """Plan approved stock additions and combine Inventory writes per item."""
+        _identity(household_id, "Household")
+        _timestamp(recorded_at)
+        if not adjustments:
+            raise ShoppingPreviewError("At least one existing Inventory adjustment is required.")
+
+        seen_operations: set[str] = set()
+        seen_transactions: set[str] = set()
+        quantities: dict[str, int] = {}
+        base_quantities: dict[str, int] = {}
+        snapshots: dict[str, InventoryItem] = {}
+        etags: dict[str, str] = {}
+        operation_ids: dict[str, list[str]] = {}
+        transactions: list[Transaction] = []
+        change_events: list[ChangeEvent] = []
+
+        for adjustment in adjustments:
+            _identity(adjustment.operation_id, "Operation ID")
+            _identity(adjustment.transaction_id, "Transaction ID")
+            _identity(adjustment.approval_id, "Approval ID")
+            _identity(adjustment.expected_etag, "Inventory ETag")
+            if adjustment.operation_id in seen_operations:
+                raise ShoppingPreviewError("Adjustment operation IDs must be unique.")
+            if adjustment.transaction_id in seen_transactions:
+                raise ShoppingPreviewError("Adjustment transaction IDs must be unique.")
+            seen_operations.add(adjustment.operation_id)
+            seen_transactions.add(adjustment.transaction_id)
+
+            inventory = adjustment.inventory
+            if inventory.household_id != household_id:
+                raise ShoppingPreviewError(
+                    "Inventory target must belong to the requested household."
+                )
+            if inventory.quantity != adjustment.inventory_quantity_before:
+                raise ShoppingPreviewError(
+                    "Card-bound inventory_quantity_before must match the Inventory snapshot."
+                )
+            if adjustment.reason != TransactionReason.ADJUSTMENT:
+                raise ShoppingPreviewError("Existing stock additions require adjustment reason.")
+            quantity_before = _quantity(
+                adjustment.inventory_quantity_before,
+                "Inventory quantity before",
+                positive=False,
+            )
+            _quantity(inventory.quantity, "Inventory snapshot quantity", positive=False)
+            quantity = _quantity(adjustment.quantity_added, "Adjustment quantity")
+
+            item_id = inventory.item_id
+            previous_snapshot = snapshots.get(item_id)
+            if previous_snapshot is not None and (
+                previous_snapshot != inventory or etags[item_id] != adjustment.expected_etag
+            ):
+                raise ShoppingPreviewError(
+                    "Lines for one Inventory item must use the same snapshot and ETag."
+                )
+            snapshots[item_id] = inventory
+            etags[item_id] = adjustment.expected_etag
+            base_quantities[item_id] = quantity_before
+            quantities[item_id] = quantities.get(item_id, 0) + quantity
+            operation_ids.setdefault(item_id, []).append(adjustment.operation_id)
+
+            transactions.append(
+                Transaction(
+                    transaction_id=adjustment.transaction_id,
+                    household_id=household_id,
+                    item_id=item_id,
+                    operation_id=adjustment.operation_id,
+                    quantity_delta=quantity,
+                    reason=adjustment.reason,
+                    created_at=recorded_at,
+                )
+            )
+            change_events.append(
+                ChangeEvent(
+                    event_id=adjustment.operation_id,
+                    household_id=household_id,
+                    operation_id=adjustment.operation_id,
+                    approval_id=adjustment.approval_id,
+                    transaction_id=adjustment.transaction_id,
+                    shopping_item_id=None,
+                    item_id=item_id,
+                    occurred_at=recorded_at,
+                    recorded_at=recorded_at,
+                )
+            )
+
+        inventory_updates = tuple(
+            InventoryUpdate(
+                record=snapshots[item_id].model_copy(
+                    update={
+                        "quantity": base_quantities[item_id] + quantities[item_id],
+                        "updated_at": recorded_at,
+                    }
+                ),
+                expected_etag=etags[item_id],
+                operation_ids=tuple(operation_ids[item_id]),
+            )
+            for item_id in snapshots
+        )
+        return ExistingInventoryAdjustmentBatchPlan(
+            household_id=household_id,
+            inventory_updates=inventory_updates,
+            transactions=tuple(transactions),
+            change_events=tuple(change_events),
             recorded_at=recorded_at,
         )
 

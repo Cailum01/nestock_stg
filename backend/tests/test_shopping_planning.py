@@ -7,6 +7,7 @@ from app.models.domain import InventoryItem, ShoppingItem, TransactionReason
 from app.services.inventory_item_identity import resolve_inventory_item_id
 from app.services.shopping.planning import (
     AdjustmentInput,
+    ExistingInventoryAdjustmentInput,
     NewInventoryTarget,
     PurchaseInput,
     ShoppingPlanService,
@@ -452,6 +453,174 @@ def test_standalone_stock_addition_rejects_blank_household_and_naive_time():
             household_id=HOUSEHOLD,
             adjustment=source,
             recorded_at=RECORDED.replace(tzinfo=None),
+        )
+
+
+def test_existing_inventory_adjustment_plans_etag_guarded_increment_and_provenance():
+    source_inventory = purchase().inventory
+    source = ExistingInventoryAdjustmentInput(
+        operation_id="existing-stock-add-1",
+        transaction_id="existing-stock-transaction-1",
+        approval_id="existing-stock-approval-1",
+        inventory=source_inventory,
+        expected_etag="inventory-etag-current",
+        inventory_quantity_before=source_inventory.quantity,
+        quantity_added=2,
+        reason=TransactionReason.ADJUSTMENT,
+    )
+
+    result = ShoppingPlanService().plan_existing_inventory_adjustment(
+        household_id=HOUSEHOLD,
+        adjustment=source,
+        recorded_at=RECORDED,
+    )
+
+    assert result.household_id == HOUSEHOLD
+    assert result.operation_id == source.operation_id
+    assert result.approval_id == source.approval_id
+    assert result.inventory_update.record.quantity == source_inventory.quantity + 2
+    assert result.inventory_update.record.updated_at == RECORDED
+    assert result.inventory_update.record.item_id == source_inventory.item_id
+    assert result.inventory_update.record.location == source_inventory.location
+    assert result.inventory_update.expected_etag == source.expected_etag
+    assert result.inventory_update.operation_ids == (source.operation_id,)
+    assert result.transaction.reason is TransactionReason.ADJUSTMENT
+    assert result.transaction.quantity_delta == 2
+    assert result.transaction.item_id == source_inventory.item_id
+    assert result.transaction.operation_id == source.operation_id
+    assert result.transaction.created_at == RECORDED
+    assert result.change_event.event_id == source.operation_id
+    assert result.change_event.approval_id == source.approval_id
+    assert result.change_event.transaction_id == source.transaction_id
+    assert result.change_event.item_id == source_inventory.item_id
+    assert result.change_event.shopping_item_id is None
+    assert source_inventory.quantity == 3
+    assert (
+        ShoppingPlanService().plan_existing_inventory_adjustment(
+            household_id=HOUSEHOLD,
+            adjustment=source,
+            recorded_at=RECORDED,
+        )
+        == result
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [TransactionReason.CONSUMPTION, TransactionReason.PURCHASE],
+)
+def test_existing_inventory_adjustment_rejects_non_adjustment_reason_and_wrong_household(
+    reason,
+):
+    source = ExistingInventoryAdjustmentInput(
+        operation_id="existing-stock-add-2",
+        transaction_id="existing-stock-transaction-2",
+        approval_id="existing-stock-approval-2",
+        inventory=purchase().inventory,
+        expected_etag="inventory-etag-current",
+        inventory_quantity_before=3,
+        quantity_added=1,
+        reason=reason,
+    )
+    with pytest.raises(ShoppingPreviewError, match="require adjustment"):
+        ShoppingPlanService().plan_existing_inventory_adjustment(
+            household_id=HOUSEHOLD,
+            adjustment=source,
+            recorded_at=RECORDED,
+        )
+
+    source = ExistingInventoryAdjustmentInput(
+        **{**source.__dict__, "reason": TransactionReason.ADJUSTMENT}
+    )
+    with pytest.raises(ShoppingPreviewError, match="belong to the requested household"):
+        ShoppingPlanService().plan_existing_inventory_adjustment(
+            household_id="other-household",
+            adjustment=source,
+            recorded_at=RECORDED,
+        )
+
+
+def test_existing_inventory_adjustments_combine_rows_for_one_item_and_preserve_line_records():
+    snapshot = purchase().inventory
+    first = ExistingInventoryAdjustmentInput(
+        operation_id="existing-stock-batch-1",
+        transaction_id="existing-stock-batch-tx-1",
+        approval_id="existing-stock-batch-approval",
+        inventory=snapshot,
+        expected_etag="inventory-etag-batch",
+        inventory_quantity_before=snapshot.quantity,
+        quantity_added=2,
+        reason=TransactionReason.ADJUSTMENT,
+    )
+    second = ExistingInventoryAdjustmentInput(
+        operation_id="existing-stock-batch-2",
+        transaction_id="existing-stock-batch-tx-2",
+        approval_id="existing-stock-batch-approval",
+        inventory=snapshot,
+        expected_etag="inventory-etag-batch",
+        inventory_quantity_before=snapshot.quantity,
+        quantity_added=1,
+        reason=TransactionReason.ADJUSTMENT,
+    )
+
+    result = ShoppingPlanService().plan_existing_inventory_adjustments(
+        household_id=HOUSEHOLD,
+        adjustments=(first, second),
+        recorded_at=RECORDED,
+    )
+
+    assert len(result.inventory_updates) == 1
+    update = result.inventory_updates[0]
+    assert update.record.quantity == snapshot.quantity + 3
+    assert update.expected_etag == "inventory-etag-batch"
+    assert update.operation_ids == (first.operation_id, second.operation_id)
+    assert [tx.quantity_delta for tx in result.transactions] == [2, 1]
+    assert [tx.reason for tx in result.transactions] == [
+        TransactionReason.ADJUSTMENT,
+        TransactionReason.ADJUSTMENT,
+    ]
+    assert [event.operation_id for event in result.change_events] == [
+        first.operation_id,
+        second.operation_id,
+    ]
+    assert snapshot.quantity == 3
+
+
+def test_existing_inventory_adjustments_reject_mismatched_card_snapshot_and_etag():
+    snapshot = purchase().inventory
+    first = ExistingInventoryAdjustmentInput(
+        operation_id="existing-stock-conflict-1",
+        transaction_id="existing-stock-conflict-tx-1",
+        approval_id="existing-stock-conflict-approval",
+        inventory=snapshot,
+        expected_etag="inventory-etag-current",
+        inventory_quantity_before=snapshot.quantity,
+        quantity_added=1,
+        reason=TransactionReason.ADJUSTMENT,
+    )
+    stale = ExistingInventoryAdjustmentInput(
+        **{
+            **first.__dict__,
+            "operation_id": "existing-stock-conflict-2",
+            "transaction_id": "existing-stock-conflict-tx-2",
+            "expected_etag": "inventory-etag-stale",
+        }
+    )
+    with pytest.raises(ShoppingPreviewError, match="same snapshot and ETag"):
+        ShoppingPlanService().plan_existing_inventory_adjustments(
+            household_id=HOUSEHOLD,
+            adjustments=(first, stale),
+            recorded_at=RECORDED,
+        )
+
+    invalid_baseline = ExistingInventoryAdjustmentInput(
+        **{**first.__dict__, "inventory_quantity_before": snapshot.quantity + 1}
+    )
+    with pytest.raises(ShoppingPreviewError, match="inventory_quantity_before"):
+        ShoppingPlanService().plan_existing_inventory_adjustment(
+            household_id=HOUSEHOLD,
+            adjustment=invalid_baseline,
+            recorded_at=RECORDED,
         )
 
 

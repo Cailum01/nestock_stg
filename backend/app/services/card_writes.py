@@ -19,12 +19,21 @@
   「不是」 never reaches a builder: the approval service closes the card without
   writing.
 
+- A card with a line that adds to an item the household has, with no Shopping List
+  entry (`increase_stock`, Issue #206, contract section 10.1), goes whole to the same
+  no-Shopping builder as new-item cards, through its `build_stock_card`, with the
+  reader for the item's current version: new-item lines on the same card are written
+  with it in one batch. The builder is B1's (PR #208) with C1's existing-item plan;
+  while the configured builder has no `build_stock_card`, the card is refused here and
+  nothing is written, so `ApprovalService.save` stores no such card. It never goes to
+  C1's purchase builder.
+
 B1 puts this router in `get_approval_service` (`app/core/dependencies.py`).
 """
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from app.models.agent import ApprovalPresentation
 from app.models.domain import InventoryItem
@@ -35,11 +44,19 @@ from app.services.approvals import (
     DomainWritePlan,
     TargetChanged,
 )
+from app.services.cosmos_read import MappedDocument
 from app.services.inventory_item_identity import resolve_inventory_item_id
 from app.services.item_matching import match_term
-from app.services.purchase_inputs import UnsupportedAction, is_photo_card
+from app.services.purchase_inputs import (
+    CREATE_ITEM,
+    INCREASE_STOCK,
+    UnsupportedAction,
+    has_stock_increase,
+)
 
 PHOTO_WRITE_MISSING = "Photo new-item cards cannot be written yet (Issue #124)."
+INCREASE_STOCK_WRITE_MISSING = "Existing-item stock cards cannot be written yet (Issue #206)."
+INCREASE_STOCK_NOT_SUPPORTED = "The configured Inventory writer does not support increase_stock."
 NOT_SAME_ITEM_WRITES_NOTHING = "An item-match card answered 「不是」 writes nothing (section 10)."
 
 
@@ -47,6 +64,25 @@ class HouseholdItems(Protocol):
     """Reads a household's inventory items (B1's `CosmosReadRepository`)."""
 
     async def list_inventory(self, household_id: str) -> list[InventoryItem]: ...
+
+    async def read_inventory_item_with_etag(
+        self, *, household_id: str, item_id: str
+    ) -> MappedDocument[InventoryItem] | None: ...
+
+
+@runtime_checkable
+class StockCardBuilder(Protocol):
+    """A no-Shopping builder that also writes `increase_stock` lines (B1, PR #208).
+
+    It reads each item again through `inventory_reader` and checks it against the
+    version and quantity the card holds before planning the write.
+    """
+
+    async def build_stock_card(
+        self,
+        record: ApprovalRecord,
+        inventory_reader: HouseholdItems | None,
+    ) -> DomainWritePlan: ...
 
 
 class CardWriteRouter:
@@ -67,11 +103,21 @@ class CardWriteRouter:
             if record.selected_option_id != SAME_ITEM:
                 raise UnsupportedAction(NOT_SAME_ITEM_WRITES_NOTHING)
             return await self._purchases.build(record)
-        if is_photo_card(record):
+        increases = has_stock_increase(record)
+        if _is_stock_addition_card(record):
             if self._photo_items is None:
-                raise UnsupportedAction(PHOTO_WRITE_MISSING)
+                raise UnsupportedAction(
+                    INCREASE_STOCK_WRITE_MISSING if increases else PHOTO_WRITE_MISSING
+                )
             await self._check_still_new(record)
+            if increases:
+                if not isinstance(self._photo_items, StockCardBuilder):
+                    raise UnsupportedAction(INCREASE_STOCK_NOT_SUPPORTED)
+                return await self._photo_items.build_stock_card(record, self._household_items)
             return await self._photo_items.build(record)
+        if increases:
+            # Never C1's purchase builder: there is no Shopping List entry to complete.
+            raise UnsupportedAction(INCREASE_STOCK_WRITE_MISSING)
         return await self._purchases.build(record)
 
     async def _check_still_new(self, record: ApprovalRecord) -> None:
@@ -89,7 +135,11 @@ class CardWriteRouter:
         if self._household_items is None:
             return
         approved = set(record.approved_operation_ids or ())
-        lines = [op for op in record.operations if op.operation_id in approved]
+        lines = [
+            op
+            for op in record.operations
+            if op.operation_id in approved and op.action == CREATE_ITEM
+        ]
         if not lines:
             return
         items = await self._household_items.list_inventory(record.household_id)
@@ -98,3 +148,12 @@ class CardWriteRouter:
             others = [item for item in items if item.item_id != own]
             if match_term(str(operation.values.get("name") or ""), others).items:
                 raise TargetChanged(f"{operation.operation_id}: the household has it by now.")
+
+
+def _is_stock_addition_card(record: ApprovalRecord) -> bool:
+    """Only `create_item` and `increase_stock` lines, none from the Shopping List."""
+    return bool(record.operations) and all(
+        operation.action in (CREATE_ITEM, INCREASE_STOCK)
+        and not operation.values.get("shopping_item_id")
+        for operation in record.operations
+    )

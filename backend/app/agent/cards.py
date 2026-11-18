@@ -64,7 +64,7 @@ from app.models.agent import (
     CardChange,
     ResultKind,
 )
-from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus
+from app.models.domain import InventoryItem, ShoppingItem, ShoppingStatus, TransactionReason
 from app.services.approvals import (
     CONFIRM_ITEM_MATCH,
     NEW_ITEM,
@@ -87,6 +87,7 @@ from app.services.purchase_inputs import (
     COMPLETE_PURCHASE,
     CREATE_ITEM,
     IMAGE_REF,
+    INCREASE_STOCK,
     INPUT_ID,
     MAPPING_ETAG,
     PurchaseRecordReader,
@@ -584,6 +585,46 @@ def _new_item_again(op: Any, line: _NewItemLine) -> NewOperation:
     )
 
 
+PHOTO_SEEN = "（照片辨識）"
+"""Ends the description of a line made from a photo."""
+
+
+def stock_increase_operation(
+    *,
+    inventory: MappedDocument[InventoryItem],
+    quantity: int,
+    source: str,
+    transaction_id: str | None = None,
+) -> NewOperation:
+    """One card line: "add this many to an item the household has" (Issue #206).
+
+    No Shopping List entry: the user said they got more of it, or a photo shows it.
+    The format agreed in Issue #206 (contract section 10.1): `increase_stock` with the
+    item's `item_id`, `name` and `unit` as read, `quantity_added`, the
+    `transaction_id` for the write, `reason` (always `adjustment` in this version) and
+    `inventory_quantity_before`, the item's quantity in the same read as the ETag.
+    The one target is the item at that ETag, kept on the server only: an item changed
+    since is not written over. `source` ends the description: `SAID` or `PHOTO_SEEN`.
+    """
+    if inventory.etag is None:
+        raise ValueError("The item must be read with its ETag.")
+    item = inventory.record
+    return NewOperation(
+        action=INCREASE_STOCK,
+        description=f"{item.name} +{quantity} {item.unit}（家裡已有的品項）{source}",
+        values={
+            "item_id": item.item_id,
+            "name": item.name,
+            "quantity_added": quantity,
+            "unit": item.unit,
+            "transaction_id": transaction_id or uuid.uuid4().hex,
+            "reason": TransactionReason.ADJUSTMENT.value,
+            "inventory_quantity_before": item.quantity,
+        },
+        targets=[TargetVersion(record_id=inventory.document_id, etag=inventory.etag)],
+    )
+
+
 @dataclass(frozen=True)
 class PhotoItem:
     """A photo item with no household item of the same name or alias (Issue #124)."""
@@ -609,14 +650,17 @@ class PhotoCards:
         household_id: str,
         items: Sequence[PhotoItem],
         photo: CardPhoto | None = None,
+        more: Sequence[NewOperation] = (),
     ) -> dict[str, Any] | None:
         """Store one pending card for the items and return it for the App, or None.
 
         One item is a `single_action` card, several a `batch_action` card. Nothing but
         the pending card is written; a card that cannot be stored is not shown. With a
-        ready `photo`, every line keeps it (Issue #176): the items share the one photo.
+        ready `photo`, every new-item line keeps it (Issue #176): they share the one
+        photo. `more` are lines for items the household has (`stock_increase_operation`,
+        Issue #206), after the new items on the same card; they keep no photo.
         """
-        if not items:
+        if not items and not more:
             return None
         lines = [
             photo_item_operation(
@@ -624,6 +668,7 @@ class PhotoCards:
             )
             for item in items
         ]
+        lines.extend(more)
         presentation = (
             ApprovalPresentation.SINGLE_ACTION
             if len(lines) == 1

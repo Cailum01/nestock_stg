@@ -46,6 +46,7 @@ asks the user to say it again.
 | #175 | Item-match card: 「是」 writes the purchase in one card and remembers no alias; 「不是」 writes nothing; one unsure item per card; no photo item-match card (section 10) |
 | #188 | Photo and said new-item cards: name and location change on the card with `card_changes`, besides quantity (section 7.1) |
 | #176 | The photo sent with the message is kept with the record: photo new-item lines and one-line purchase cards hold its `image_ref`, `input_id` and mapping ETag; an item's photo is never replaced (sections 10, 11) |
+| #206 | Off: a line that adds to an item the household has with no Shopping List entry (`increase_stock`), from what the user says or a photo; `adjustment` only in this version; stored once B1 has wired its writer (section 10.1) |
 
 ## 2. Approval record
 
@@ -594,6 +595,55 @@ New-item cards from what the user says (Issue #168, 「我收到一瓶洗髮精�
   ]
 }
 ```
+
+### 10.1 Adding to an item the household has (Issue #206, off)
+
+Agreed in Issue #206 on 2026-11-18 by A1, B1, C1, C2 and B2. A1's part (the card and
+handing it to its writer) is behind `NESTOCK_STOCK_INCREASE=1`, not set in the cloud,
+until B1's writer is in `get_approval_service`. Nothing here changes what runs today.
+
+- When: the user says they got more of something the household has (`add_stock`), or
+  a photo shows it, and it is not a Shopping List purchase. While off, such an item
+  gets no line, as before (「家裡已經有…」).
+- The line: `action` `increase_stock`. `values`: `item_id`, `name` and `unit` (the
+  household item's, as read), `quantity_added` (a whole number ≥ 1: what was said or
+  seen, not always 1), `transaction_id`, `reason` and `inventory_quantity_before`
+  (the item's confirmed quantity in the same read as the ETag). One target, kept on
+  the server and never sent to the App: `inventory_item:{item_id}` at the ETag read
+  when the card was made. No `shopping_item_id`. The description ends with
+  （使用者說的） or （照片辨識）.
+- `reason` is `adjustment` on every line in this version: the card has no
+  「我買的／只是補上數量」 choice (C2 and B2, 2026-11-18). C1's planner and B1's
+  writer accept only `adjustment`; a card with any other `reason` is not written.
+- One line needs exactly one household item of that name or alias (#36 layers 1 and
+  2). Several: no line; said, the user is asked which; from a photo it is only
+  reported. Another unit than the item's: no line, the user is asked again in the
+  item's unit; nothing is converted. One item gets one line per card: said twice,
+  only the first counts (Issue #168).
+- A household item that two of a photo's items lead to gets no line: it is only
+  reported, since adding one sighting would record the wrong quantity.
+- Cards: only such lines is a card the App titles 「確認增加庫存」 (`single_action`
+  for one line, `batch_action` for several). New-item lines and these lines on one
+  card (`batch_action`, new items first) is 「確認庫存異動」: each line is ticked, and
+  nothing on it can be changed (name, quantity, location); `card_changes` for it are
+  refused and the card stays. A card of only new-item lines keeps its changes
+  (section 7.1, Issue #188). Only what is seen clearly gets a line, since a mixed
+  card cannot be corrected.
+- From a photo, only new-item lines keep the photo (Issue #176); a line that adds to
+  an item keeps none.
+- Confirming: `CardWriteRouter` hands the whole card to the no-Shopping builder that
+  writes new-item cards, through its `build_stock_card`, with the reader for the
+  item's current version; never to C1's purchase builder. C1's existing-item plan
+  plans from the stored values; B1 reads the item again, checks it against the card's
+  ETag and `inventory_quantity_before`, and replaces it under that ETag (quantity =
+  `inventory_quantity_before` + `quantity_added`) with the `adjustment` Transaction,
+  the change event, the receipts and the card's completion in one batch (PR #208,
+  PR #209). An ETag that no longer matches writes nothing and the user is asked again
+  (`needs_new_card`). While the configured builder has no `build_stock_card`, saving
+  such a card fails its check, so no card is stored or shown and the tool answers
+  `card_not_made`. The still-new check of section 10 reads only the new-item lines.
+- The reply after a confirmed write is the usual one, from the writer's per-line
+  `quantity_added`, `unit` and `inventory_quantity`.
 
 ## 11. Purchase card (v8 flow C)
 

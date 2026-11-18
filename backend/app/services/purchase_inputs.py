@@ -68,6 +68,9 @@ COMPLETE_PURCHASE = "complete_purchase"
 """`action` of a purchase card line (v8 tool `complete_purchase`)."""
 CREATE_ITEM = "create_item"
 """`action` of a line that buys a Shopping List entry the household does not have yet."""
+INCREASE_STOCK = "increase_stock"
+"""`action` of a line that adds to an item the household has, with no Shopping List
+entry (Issue #206, contract section 10.1)."""
 
 IMAGE_REF = "image_ref"
 INPUT_ID = "input_id"
@@ -234,6 +237,16 @@ def is_photo_card(record: ApprovalRecord) -> bool:
         operation.action == CREATE_ITEM and not operation.values.get("shopping_item_id")
         for operation in record.operations
     )
+
+
+def is_stock_increase(operation: StoredOperation) -> bool:
+    """A line that adds to an item the household has, not from the list (Issue #206)."""
+    return operation.action == INCREASE_STOCK
+
+
+def has_stock_increase(record: ApprovalRecord) -> bool:
+    """Whether any line of the card adds to an item the household has (Issue #206)."""
+    return any(is_stock_increase(operation) for operation in record.operations)
 
 
 class PhotoInputResolver:

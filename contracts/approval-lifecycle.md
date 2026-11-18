@@ -615,20 +615,13 @@ until B1's writer is in `get_approval_service`. Nothing here changes what runs t
 - `reason` is `adjustment` on every line in this version: the card has no
   「我買的／只是補上數量」 choice (C2 and B2, 2026-11-18). C1's planner and B1's
   writer accept only `adjustment`; a card with any other `reason` is not written.
-- One household item of that name or alias (#36 layers 1 and 2) gets one line.
-  Several get one line each, as candidates for the one thing, said or from a photo
-  (2026-11-18): each of these lines has the same `choice_group` in `values` and its
-  description also says where the item is and how many there are. The user keeps one
-  of them ticked. Confirming two lines with the same `choice_group` fixes and writes
-  nothing: `/agent/resume` answers 200 with outcome `choose_one`, a message saying to
-  keep one, and the same card in `pending_approval`, still pending. The App needs no
-  change: it ticks every line by default, as on any `batch_action` card.
-- Only items in the unit that was said or seen get a line; when none is, there is no
-  line and the user is asked again in the item's unit. Nothing is converted. One
-  item gets one line per card: said twice, only the first counts (Issue #168).
-- A household item that two of a photo's items lead to gets no line, nor do the
-  other candidates of those photo items: they are only reported, since adding one
-  sighting would record the wrong quantity.
+- One line needs exactly one household item of that name or alias (#36 layers 1 and
+  2). Several: no line; said, the user is asked which; from a photo it is only
+  reported. Another unit than the item's: no line, the user is asked again in the
+  item's unit; nothing is converted. One item gets one line per card: said twice,
+  only the first counts (Issue #168).
+- A household item that two of a photo's items lead to gets no line: it is only
+  reported, since adding one sighting would record the wrong quantity.
 - Cards: only such lines is a card the App titles 「確認增加庫存」 (`single_action`
   for one line, `batch_action` for several). New-item lines and these lines on one
   card (`batch_action`, new items first) is 「確認庫存異動」: each line is ticked, and

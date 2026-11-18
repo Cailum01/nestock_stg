@@ -325,8 +325,6 @@ class ResumeOutcome(StrEnum):
     """A record changed; the old card is cancelled and the Agent makes a new one."""
     NOT_WRITTEN = "not_written"
     """The write did not happen or its result is unknown; retry with the same card."""
-    CHOOSE_ONE = "choose_one"
-    """Several lines that stand for one thing were approved; the card stays pending."""
     INCONSISTENT = "inconsistent"
     """Some operation receipts exist without completion; stop and report (#27)."""
 
@@ -601,10 +599,6 @@ class ApprovalService:
                 )
                 return await self._cancel(record, etag, CancelReason.REPLACE_FAILED)
             approved_ids, option_id = _selection_for(record, request)
-            if _several_of_one_choice(record, approved_ids):
-                # Section 10.1: the lines are candidates for one thing the user said or
-                # showed. Nothing is fixed or written; the card stays pending as it was.
-                return ResumeResult(ResumeOutcome.CHOOSE_ONE, record)
             # decided_at is fixed before planning, so the builder can use it (for example as
             # the change event's recorded_at, Issue #60) and a retry plans with the same value.
             selected = record.model_copy(
@@ -904,25 +898,6 @@ def _check_card_shape(
         raise ValueError("Only a purchase-options card has options.")
     if presentation is ApprovalPresentation.SINGLE_ACTION and len(operations) != 1:
         raise ValueError("A single-action card has exactly one operation.")
-
-
-CHOICE_GROUP = "choice_group"
-"""`values` key of lines that are candidates for one thing (Issue #206): the user keeps
-one of the lines with the same value ticked; confirming several of them writes nothing."""
-
-
-def _several_of_one_choice(record: ApprovalRecord, approved_ids: Sequence[str]) -> bool:
-    """Whether two approved lines carry the same `choice_group` (section 10.1)."""
-    approved = set(approved_ids)
-    seen: set[str] = set()
-    for operation in record.operations:
-        group = operation.values.get(CHOICE_GROUP)
-        if operation.operation_id not in approved or not isinstance(group, str):
-            continue
-        if group in seen:
-            return True
-        seen.add(group)
-    return False
 
 
 def _selection_for(record: ApprovalRecord, request: ResumeRequest) -> tuple[list[str], str | None]:

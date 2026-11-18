@@ -41,7 +41,7 @@ from app.agent.cards import (
 )
 from app.models.agent import ApprovalPresentation
 from app.models.domain import InventoryItem
-from app.services.approvals import CHOICE_GROUP, ApprovalService, BatchTooLarge, NewOperation
+from app.services.approvals import ApprovalService, BatchTooLarge, NewOperation
 from app.services.cosmos_read import MappedDocument
 from app.services.item_matching import ItemMatch, match_term, normalize_term
 from app.services.purchase_inputs import INCREASE_STOCK
@@ -115,10 +115,7 @@ INCREASE_PROMPT_NOTE = (
     "卡片還沒按確認之前，一樣不要說已經記錄。"
 )
 INCREASE_CARD_NOTE = "卡上有幫家裡已有的品項加數量的項目，還沒有記錄。請使用者確認或取消。"
-CHOICE_CARD_NOTE = (
-    "卡上有幾項是同一樣東西的候選（家裡有好幾樣同名的）。請告訴使用者：這幾項只能留一項，"
-    "把不是的取消勾選，只留下他說的那一項，再按確認。"
-)
+WHICH_ONE = "家裡有好幾樣都叫「{names}」，請使用者說是哪一樣。"
 UNIT_DIFFERS = (
     "家裡的「{name}」單位是{unit}，跟說的{said}不同；請使用者用{unit}再說一次有幾{unit}。"
 )
@@ -158,40 +155,27 @@ class StockIncreases:
     def __init__(self, reader: ItemVersionReader) -> None:
         self._reader = reader
 
-    async def lines(
+    async def line(
         self, household_id: str, match: ItemMatch, *, quantity: int, unit: str, source: str
-    ) -> tuple[list[NewOperation], str | None]:
-        """(the lines, None) or ([], why there is none, for the model to say).
+    ) -> tuple[NewOperation | None, str | None]:
+        """(the line, None) or (None, why there is no line, for the model to say).
 
-        One household item of that name or alias: one line. Several: one line each, as
-        candidates for the one thing (`choice_group`); the user keeps one ticked on the
-        card. Only items in the unit that was said: a different unit is asked again,
-        never converted.
+        One line needs exactly one household item of that name or alias, in the
+        item's own unit: a different unit is asked again, never converted.
         """
-        if not match.items:
+        if match.ambiguous:
+            return None, WHICH_ONE.format(names="、".join(i.name for i in match.items))
+        item = match.matched
+        if item is None:
             raise ValueError("The household has no such item; this is a new-item line.")
-        same_unit = [
-            item for item in match.items if normalize_term(unit) == normalize_term(item.unit)
-        ]
-        if not same_unit:
-            item = match.items[0]
-            return [], UNIT_DIFFERS.format(name=item.name, unit=item.unit, said=unit)
-        group = normalize_term(match.term) if len(same_unit) > 1 else None
-        lines = []
-        for item in same_unit:
-            current = await self._reader.read_inventory_item_with_etag(
-                household_id=household_id, item_id=item.item_id
-            )
-            if current is None or current.etag is None:
-                continue
-            lines.append(
-                stock_increase_operation(
-                    inventory=current, quantity=quantity, source=source, choice_group=group
-                )
-            )
-        if not lines:
-            return [], ITEM_GONE.format(name=match.items[0].name)
-        return lines, None
+        if normalize_term(unit) != normalize_term(item.unit):
+            return None, UNIT_DIFFERS.format(name=item.name, unit=item.unit, said=unit)
+        current = await self._reader.read_inventory_item_with_etag(
+            household_id=household_id, item_id=item.item_id
+        )
+        if current is None or current.etag is None:
+            return None, ITEM_GONE.format(name=item.name)
+        return stock_increase_operation(inventory=current, quantity=quantity, source=source), None
 
 
 def _with_description(schema: dict[str, Any], description: str) -> dict[str, Any]:
@@ -252,15 +236,17 @@ class StockCards:
                 left_out.append({"name": item.name, "reason": HAVE_IT.format(names=names)})
                 continue
             if have.items:
-                more, why = await self._increases.lines(
+                line, why = await self._increases.line(
                     household_id, have, quantity=item.quantity, unit=item.unit, source=SAID
                 )
-                more = [line for line in more if line.values["item_id"] not in adding_to]
-                if not more:
-                    left_out.append({"name": item.name, "reason": why or SAID_TWICE})
+                if line is None:
+                    left_out.append({"name": item.name, "reason": why})
                     continue
-                adding_to.update(line.values["item_id"] for line in more)
-                lines.extend(more)
+                if line.values["item_id"] in adding_to:
+                    left_out.append({"name": item.name, "reason": SAID_TWICE})
+                    continue
+                adding_to.add(line.values["item_id"])
+                lines.append(line)
                 continue
             lines.append(
                 said_item_operation(
@@ -302,15 +288,9 @@ def _card_note(lines: Sequence[NewOperation]) -> str:
     increases = [line for line in lines if line.action == INCREASE_STOCK]
     if not increases:
         return STOCK_CARD_MADE
-    note = INCREASE_CARD_NOTE if len(increases) == len(lines) else STOCK_CARD_MADE
-    if len(increases) != len(lines):
-        note += INCREASE_CARD_NOTE
-    return note + increase_choice_note(increases)
-
-
-def increase_choice_note(lines: Sequence[NewOperation]) -> str:
-    """`CHOICE_CARD_NOTE` when the card has candidates for one thing, else nothing."""
-    return CHOICE_CARD_NOTE if any(CHOICE_GROUP in line.values for line in lines) else ""
+    if len(increases) == len(lines):
+        return INCREASE_CARD_NOTE
+    return STOCK_CARD_MADE + INCREASE_CARD_NOTE
 
 
 def _said_items(value: Any) -> Sequence[_Said]:

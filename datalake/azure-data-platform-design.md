@@ -128,6 +128,31 @@ approval-gated workflow, not a variation of the purchase builder:
 - Wiring the writer does not enable card generation or frontend handling; A1 and
   C2 must deliver and coordinate those surfaces before the flow is exposed.
 
+### Requirements for an approved existing-item stock-increase flow
+
+Issue #206 adds `increase_stock` as a no-Shopping operation distinct from creating
+a new Inventory item:
+
+- The stored operation binds `item_id`, `inventory_quantity_before`,
+  `quantity_added`, and `transaction_id`. The Transaction reason is fixed to
+  `adjustment`; no user-facing reason selection or `card_changes.reason` is used.
+  Its server-only target stores the Inventory document ID and ETag captured when
+  the card was created.
+- Before planning, B1 reads the Inventory item in the household partition and
+  verifies its ETag, quantity snapshot, item ID, name and unit against the card.
+  Missing or changed targets fail closed and require a new approval.
+- C1's pure planner returns one ETag-bound Inventory update, a positive-delta
+  Transaction with the fixed `adjustment` reason, and a ChangeEvent. The updated
+  quantity is the card-bound quantity plus the approved increment; `updated_at`
+  uses the approval's fixed decision time. It does not modify other Inventory fields.
+- B1 places each Inventory replacement, the per-operation Transaction and
+  ChangeEvent, operation receipts and completed approval in the same
+  household-partition transactional batch. ETag conflicts make the batch all-or-none;
+  retries reuse the stored operation identities and values.
+- A mixed `create_item`/`increase_stock` batch is supported, but every selected line
+  remains bound to its own stored operation identity. Forecasting never overwrites
+  the confirmed Inventory quantity.
+
 ### Out of scope for Skeleton v1
 
 - Write-capable cloud connections require an approved, bounded business workflow.
@@ -794,8 +819,22 @@ on the completed Shopping entry. If no planned quantity was supplied, do not
 invent one. Agent additions retain their HITL confirmation; a Direct Shopping
 UI submission is explicit user intent but still requires backend validation and
 must report success only after persistence. Both entry paths use C1's shared
-ShoppingService. Stable request identity and its binding to operation IDs,
-approvals, and receipts require cross-owner integration.
+ShoppingService. A direct add persists only the `ShoppingItem` and its
+`operation_receipt` in one household-partition batch. P0 does not persist the
+proposed `shopping_intent_event`: it is not an approved record type, and the
+purchase `ChangeEvent` is not applicable because a direct add creates neither an
+Inventory change nor a Transaction. Any separate provenance event needs a
+reviewed schema decision before implementation.
+
+For the Direct Shopping API, C1 may add a route-specific Pydantic request model
+under `backend/app/models`; `request_id` and `name` are required, `quantity`
+(positive integer) and `unit` are optional. The household scope comes from the
+server, not the request body; no price is accepted or persisted. FastAPI derives
+the public schema from that model, and the existing `ShoppingItem` remains the
+response model. The same stable `request_id` must be reused for a retry so the
+operation receipt can return the prior result or reject changed values. Mapping
+an Agent card's stored `operation_id` to this Direct API identity is a separate
+A1/C1 integration decision.
 
 B2 has identified a possible need for an authoritative time marking when an
 Inventory quantity was last confirmed, distinct from general `updated_at`.
@@ -1156,6 +1195,11 @@ to the latest state, and deletes require explicit handling.
   operation receipt and completed approval to that same batch. B1's application
   composition routes these cards through A1's `CardWriteRouter`; this storage
   support does not itself enable A1 card generation or C2 presentation.
+- Per #206, an existing-item increase uses the target Inventory version stored
+  on the card. B1 re-reads and checks that ETag and `inventory_quantity_before`,
+  then batches an `if_match_etag` Inventory replacement with the positive-delta
+  Transaction, unlinked ChangeEvent, receipt and completed approval. A stale card
+  fails before writes; a race after the read is rejected atomically by Cosmos.
 - Batch placement for a purchase: the merged inventory update goes in
   `shared_operations`; each purchased item's shopping-item update, Transaction and
   change event go in `operations_by_id[operation_id]`. Replace operations require

@@ -2,19 +2,26 @@
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from pydantic import JsonValue
 
 from app.models.agent import ApprovalPresentation
-from app.models.domain import MediaProcessingStatus, TransactionReason
+from app.models.domain import (
+    ChangeEvent,
+    InventoryItem,
+    MediaProcessingStatus,
+    Transaction,
+    TransactionReason,
+)
 from app.services.approvals import (
     ApprovalRecord,
     ApprovalStatus,
     DomainWritePlan,
+    StoredOperation,
     TargetChanged,
 )
-from app.services.cosmos_read import CosmosDocumentMapper
+from app.services.cosmos_read import CosmosDocumentMapper, MappedDocument
 from app.services.cosmos_write import CreateDocument, ReplaceDocument, change_event_create
 from app.services.inventory_item_identity import resolve_inventory_item_id
 from app.services.media_mapping import (
@@ -25,11 +32,13 @@ from app.services.media_retention_work import build_pending_media_retention_work
 from app.services.shopping.planning import (
     AdjustmentInput,
     AdjustmentPlan,
+    InventoryUpdate,
     ShoppingPlanService,
 )
 from app.services.shopping.preview import ShoppingPreviewError
 
 CREATE_ITEM = "create_item"
+INCREASE_STOCK = "increase_stock"
 
 
 class PhotoAdjustmentInputResolver(Protocol):
@@ -50,8 +59,41 @@ class AdjustmentPlanner(Protocol):
     ) -> AdjustmentPlan: ...
 
 
+class ExistingInventoryReader(Protocol):
+    async def read_inventory_item_with_etag(
+        self, *, household_id: str, item_id: str
+    ) -> MappedDocument[InventoryItem] | None: ...
+
+
+class ExistingInventoryAdjustmentPlan(Protocol):
+    household_id: str
+    operation_id: str
+    approval_id: str
+    inventory_update: InventoryUpdate
+    transaction: Transaction
+    change_event: ChangeEvent
+    recorded_at: datetime
+
+
+@runtime_checkable
+class ExistingInventoryAdjustmentPlanner(Protocol):
+    def plan_existing_inventory_adjustment(
+        self,
+        *,
+        household_id: str,
+        operation_id: str,
+        approval_id: str,
+        transaction_id: str,
+        inventory: InventoryItem,
+        expected_etag: str,
+        quantity_added: int,
+        reason: TransactionReason,
+        recorded_at: datetime,
+    ) -> ExistingInventoryAdjustmentPlan: ...
+
+
 class PhotoItemWriteBuilder:
-    """Build the atomic domain writes for a confirmed no-Shopping create-item card.
+    """Build atomic writes for approved no-Shopping Inventory stock cards.
 
     ApprovalService adds operation receipts and the completed approval to this plan
     and commits the whole group through B1's transactional repository.
@@ -68,6 +110,21 @@ class PhotoItemWriteBuilder:
         self._media_mapping_storage = media_mapping_storage
 
     async def build(self, record: ApprovalRecord) -> DomainWritePlan:
+        return await self._build(record, inventory_reader=None)
+
+    async def build_stock_card(
+        self,
+        record: ApprovalRecord,
+        inventory_reader: ExistingInventoryReader | None,
+    ) -> DomainWritePlan:
+        return await self._build(record, inventory_reader=inventory_reader)
+
+    async def _build(
+        self,
+        record: ApprovalRecord,
+        *,
+        inventory_reader: ExistingInventoryReader | None,
+    ) -> DomainWritePlan:
         if record.status not in (ApprovalStatus.PENDING, ApprovalStatus.CONFIRMED):
             raise ShoppingPreviewError("Only a pending trial or confirmed card can be planned.")
         if record.presentation not in (
@@ -98,27 +155,47 @@ class PhotoItemWriteBuilder:
         if [operation.operation_id for operation in selected_operations] != selected_ids:
             raise ShoppingPreviewError("Selected operations must retain card order.")
         if any(
-            operation.action != CREATE_ITEM
-            or operation.targets
+            operation.action not in (CREATE_ITEM, INCREASE_STOCK)
             or operation.values.get("shopping_item_id")
             for operation in record.operations
         ):
             raise ShoppingPreviewError(
-                "This builder accepts only new-item cards without Shopping targets."
-            )
-
-        adjustments = tuple(self._resolver.resolve(record))
-        if [adjustment.operation_id for adjustment in adjustments] != selected_ids:
-            raise ShoppingPreviewError(
-                "Resolved adjustments must exactly match the approved card selection."
+                "Inventory stock cards accept only create_item and increase_stock lines."
             )
 
         stored_by_id = {operation.operation_id: operation for operation in record.operations}
+        selected_create_operations = [
+            operation for operation in selected_operations if operation.action == CREATE_ITEM
+        ]
+        selected_increase_operations = [
+            operation for operation in selected_operations if operation.action == INCREASE_STOCK
+        ]
+        for operation in record.operations:
+            if operation.action == CREATE_ITEM and operation.targets:
+                raise ShoppingPreviewError("New-item lines cannot carry target versions.")
+            if operation.action == INCREASE_STOCK:
+                _stock_target(operation)
+
         operations_by_id: dict[str, tuple[CreateDocument, ...]] = {}
         outcomes: dict[str, dict[str, JsonValue]] = {}
         transaction_ids: set[str] = set()
         item_ids: set[str] = set()
-        retention_by_input: dict[str, ReplaceDocument] = {}
+        shared_replacements: dict[tuple[str, str], ReplaceDocument] = {}
+
+        adjustments: tuple[AdjustmentInput, ...] = ()
+        if selected_create_operations:
+            create_ids = [operation.operation_id for operation in selected_create_operations]
+            create_record = record.model_copy(
+                update={
+                    "operations": selected_create_operations,
+                    "approved_operation_ids": create_ids,
+                }
+            )
+            adjustments = tuple(self._resolver.resolve(create_record))
+            if [adjustment.operation_id for adjustment in adjustments] != create_ids:
+                raise ShoppingPreviewError(
+                    "Resolved adjustments must exactly match the approved card selection."
+                )
 
         for adjustment in adjustments:
             operation = stored_by_id[adjustment.operation_id]
@@ -172,10 +249,11 @@ class PhotoItemWriteBuilder:
                 ):
                     raise TargetChanged(f"input:{input_id}")
                 retention = build_media_mapping_retention_update(mapping, ttl_seconds=None)
-                previous = retention_by_input.get(input_id)
+                replacement_key = ("media", input_id)
+                previous = shared_replacements.get(replacement_key)
                 if previous is not None and previous != retention:
                     raise ShoppingPreviewError("Photo mapping updates must agree.")
-                retention_by_input[input_id] = retention
+                shared_replacements[replacement_key] = retention
                 if inventory.image_ref not in (None, image_ref):
                     raise ShoppingPreviewError(
                         "The new inventory item already has a different photo."
@@ -206,9 +284,96 @@ class PhotoItemWriteBuilder:
                 "unit": inventory.unit,
             }
 
+        if selected_increase_operations:
+            if inventory_reader is None:
+                raise ShoppingPreviewError(
+                    "Configure B1 Inventory reads before writing increase_stock lines."
+                )
+            if not isinstance(self._planner, ExistingInventoryAdjustmentPlanner):
+                raise ShoppingPreviewError(
+                    "Configure C1's existing Inventory adjustment planner before writing."
+                )
+            for operation in selected_increase_operations:
+                values = operation.values
+                item_id = _stored_text(values, "item_id")
+                name = _stored_text(values, "name")
+                unit = _stored_text(values, "unit")
+                transaction_id = _stored_text(values, "transaction_id")
+                quantity_added = _stored_integer(values, "quantity_added", minimum=1)
+                quantity_before = _stored_integer(values, "inventory_quantity_before", minimum=0)
+                stored_reason = values.get("reason")
+                if stored_reason not in (None, TransactionReason.ADJUSTMENT.value):
+                    raise ShoppingPreviewError(
+                        "The reason for increase_stock is fixed to adjustment."
+                    )
+                reason = TransactionReason.ADJUSTMENT
+                target = _stock_target(operation)
+                if operation.operation_id in transaction_ids or item_id in item_ids:
+                    raise ShoppingPreviewError(
+                        "Stock operation and Inventory identities must be unique per card."
+                    )
+                transaction_ids.add(operation.operation_id)
+                transaction_ids.add(transaction_id)
+                item_ids.add(item_id)
+
+                mapped = await inventory_reader.read_inventory_item_with_etag(
+                    household_id=record.household_id,
+                    item_id=item_id,
+                )
+                if (
+                    mapped is None
+                    or mapped.etag != target.etag
+                    or mapped.document_id != target.record_id
+                    or mapped.record.household_id != record.household_id
+                    or mapped.record.item_id != item_id
+                    or mapped.record.name != name
+                    or mapped.record.unit != unit
+                    or mapped.record.quantity != quantity_before
+                ):
+                    raise TargetChanged(target.record_id)
+
+                plan = self._planner.plan_existing_inventory_adjustment(
+                    household_id=record.household_id,
+                    operation_id=operation.operation_id,
+                    approval_id=record.approval_id,
+                    transaction_id=transaction_id,
+                    inventory=mapped.record,
+                    expected_etag=target.etag,
+                    quantity_added=quantity_added,
+                    reason=reason,
+                    recorded_at=record.decided_at,
+                )
+                self._validate_existing_plan(
+                    record=record,
+                    operation=operation,
+                    inventory=mapped.record,
+                    expected_etag=target.etag,
+                    quantity_added=quantity_added,
+                    reason=reason,
+                    plan=plan,
+                )
+                update = plan.inventory_update
+                transaction = plan.transaction
+                event = plan.change_event
+                operations_by_id[operation.operation_id] = (
+                    CreateDocument(CosmosDocumentMapper.to_document(transaction)),
+                    change_event_create(event),
+                )
+                shared_replacements[("inventory", item_id)] = ReplaceDocument(
+                    CosmosDocumentMapper.to_document(update.record),
+                    if_match_etag=update.expected_etag,
+                )
+                outcomes[operation.operation_id] = {
+                    "item_id": item_id,
+                    "transaction_id": transaction_id,
+                    "quantity_added": quantity_added,
+                    "inventory_quantity": update.record.quantity,
+                    "unit": unit,
+                }
+
         return DomainWritePlan(
             operations_by_id=operations_by_id,
-            shared_operations=tuple(retention_by_input.values()),
+            shared_operations=tuple(shared_replacements.values()),
             outcome=outcomes,
         )
 
@@ -254,6 +419,56 @@ class PhotoItemWriteBuilder:
         ):
             raise ShoppingPreviewError("The adjustment plan does not match the approved card.")
 
+    @staticmethod
+    def _validate_existing_plan(
+        *,
+        record: ApprovalRecord,
+        operation: StoredOperation,
+        inventory: InventoryItem,
+        expected_etag: str,
+        quantity_added: int,
+        reason: TransactionReason,
+        plan: ExistingInventoryAdjustmentPlan,
+    ) -> None:
+        update = plan.inventory_update
+        updated_inventory = update.record
+        transaction = plan.transaction
+        event = plan.change_event
+        expected_inventory = inventory.model_copy(
+            update={
+                "quantity": inventory.quantity + quantity_added,
+                "updated_at": record.decided_at,
+            }
+        )
+        if (
+            plan.household_id != record.household_id
+            or plan.operation_id != operation.operation_id
+            or plan.approval_id != record.approval_id
+            or plan.recorded_at != record.decided_at
+            or update.expected_etag != expected_etag
+            or update.operation_ids != (operation.operation_id,)
+            or updated_inventory != expected_inventory
+            or transaction.household_id != record.household_id
+            or transaction.operation_id != operation.operation_id
+            or transaction.transaction_id != operation.values.get("transaction_id")
+            or transaction.item_id != inventory.item_id
+            or transaction.quantity_delta != quantity_added
+            or transaction.reason is not reason
+            or transaction.created_at != record.decided_at
+            or event.event_id != operation.operation_id
+            or event.household_id != record.household_id
+            or event.operation_id != operation.operation_id
+            or event.approval_id != record.approval_id
+            or event.transaction_id != transaction.transaction_id
+            or event.shopping_item_id is not None
+            or event.item_id != inventory.item_id
+            or event.occurred_at != record.decided_at
+            or event.recorded_at != record.decided_at
+        ):
+            raise ShoppingPreviewError(
+                "The existing Inventory adjustment plan does not match the approved card."
+            )
+
 
 def _photo_media_values(
     values: dict[str, JsonValue],
@@ -275,3 +490,31 @@ def _photo_media_values(
             "Photo attachments require stored image_ref, input_id and mapping_etag values."
         )
     return input_id, image_ref, mapping_etag
+
+
+def _stock_target(operation: StoredOperation):
+    if len(operation.targets) != 1:
+        raise ShoppingPreviewError(
+            "An increase_stock line must have exactly one Inventory target version."
+        )
+    target = operation.targets[0]
+    item_id = _stored_text(operation.values, "item_id")
+    if target.record_id != f"inventory_item:{item_id}" or not target.etag.strip():
+        raise ShoppingPreviewError(
+            "An increase_stock target must match its stored item_id and ETag."
+        )
+    return target
+
+
+def _stored_text(values: dict[str, JsonValue], key: str) -> str:
+    value = values.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ShoppingPreviewError(f"Stored {key} must be a non-empty string.")
+    return value
+
+
+def _stored_integer(values: dict[str, JsonValue], key: str, *, minimum: int) -> int:
+    value = values.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ShoppingPreviewError(f"Stored {key} must be an integer >= {minimum}.")
+    return value

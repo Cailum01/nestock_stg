@@ -7,7 +7,9 @@ must look up the shopping list first (prompt 買回來了 rule 1), gets those ro
 and its next turn is checked. An `add_stock` case with `inventory` works the same
 way with `list_inventory` (prompt 家裡多了東西 rule 1): the model gets those rows
 back the way the Agent shapes them, and its next turn is checked. Both card tools are
-offered as the Agent offers them when Cosmos is configured.
+offered as the Agent offers them when Cosmos is configured. A case with
+`stock_increase: true` (Issue #206) is asked as with `NESTOCK_STOCK_INCREASE=1`:
+`add_stock` has the description, and the model gets the system note, of that switch.
 The live test calls the model synchronously: `asyncio.run` per case with one
 shared model left its connection pool on a closed event loop, so every second
 case failed with "Event loop is closed" on Windows.
@@ -22,7 +24,7 @@ import pytest
 from app.agent.cards import PURCHASE_TOOL_SCHEMA
 from app.agent.llm import build_chat_model, load_azure_settings
 from app.agent.read_agent import PHOTO_ATTACHED, TOOL_SCHEMAS, load_system_prompt
-from app.agent.stock_cards import STOCK_TOOL_SCHEMA
+from app.agent.stock_cards import INCREASE_PROMPT_NOTE, INCREASE_TOOL_SCHEMA, STOCK_TOOL_SCHEMA
 from app.services.item_matching import normalize_term
 
 CASES_PATH = Path(__file__).resolve().parents[2] / "evals" / "a1_tool_cases.json"
@@ -36,6 +38,7 @@ A1_TOOLS = {
     "add_stock",
 }
 OFFERED = [*TOOL_SCHEMAS, PURCHASE_TOOL_SCHEMA, STOCK_TOOL_SCHEMA]
+OFFERED_INCREASING = [*TOOL_SCHEMAS, PURCHASE_TOOL_SCHEMA, INCREASE_TOOL_SCHEMA]
 TOOLS = {schema["function"]["name"]: schema["function"] for schema in OFFERED}
 
 
@@ -114,6 +117,28 @@ def test_inventory_rows_go_with_stock_cases():
         assert all({"item_id", "name", "unit"} <= row.keys() for row in rows), case["id"]
 
 
+def test_the_increase_switch_goes_with_stock_cases_and_has_its_own_examples():
+    switched = [case for case in CASES if "stock_increase" in case]
+    assert all(case["stock_increase"] is True for case in switched)
+    assert all(case["tool"] == "add_stock" for case in switched)
+    kinds = Counter(case["kind"] for case in switched)
+    assert kinds["positive"] >= 3 and kinds["negative"] >= 1
+    household = [
+        case
+        for case in switched
+        if case["kind"] == "positive"
+        and any(row["name"] == case["args_contain"]["items"] for row in case["inventory"])
+    ]
+    assert len(household) >= 3  # ones the household has, which is what the switch adds
+
+
+def test_the_tool_differs_only_in_its_description_when_increasing():
+    plain, increasing = STOCK_TOOL_SCHEMA["function"], INCREASE_TOOL_SCHEMA["function"]
+    assert increasing["name"] == plain["name"] == "add_stock"
+    assert increasing["parameters"] == plain["parameters"]
+    assert increasing["description"] != plain["description"]
+
+
 def _inventory_answer(rows, args):
     """`list_inventory` as `ReadAgent._inventory_answer` shapes it for the model."""
     name = str(args.get("item_name") or "").strip()
@@ -152,7 +177,8 @@ def live_model():
     settings = load_azure_settings()
     if settings is None:
         pytest.skip("Azure OpenAI is not configured; live tool selection not run")
-    return build_chat_model(settings).bind_tools(OFFERED)
+    model = build_chat_model(settings)
+    return {False: model.bind_tools(OFFERED), True: model.bind_tools(OFFERED_INCREASING)}
 
 
 @pytest.mark.live_eval
@@ -160,7 +186,11 @@ def live_model():
 def test_live_model_selects_the_expected_tools(live_model, case):
     from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
+    increasing = bool(case.get("stock_increase"))
+    live_model = live_model[increasing]
     messages = [SystemMessage(load_system_prompt())]
+    if increasing:
+        messages.append(SystemMessage(INCREASE_PROMPT_NOTE))  # as `ReadAgent.respond` does
     if case.get("photo"):
         messages.append(SystemMessage(PHOTO_ATTACHED))
     messages.append(HumanMessage(case["utterance"]))

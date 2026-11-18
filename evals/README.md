@@ -5,7 +5,7 @@
 - `b2_tool_cases.json`：B2 兩個工具（`get_reorder_candidates`、`get_consumption_forecast`）的
   範例語句與容易混淆的反例。每個工具至少 3 句正面範例，另有反例。對應 v8 第 20 節的工具負責人驗收項目。
 
-- `a1_tool_cases.json`：庫存、待購、照片、查價四個工具，加上「買回來了」的確認卡工具 `complete_purchase`，共 22 個案例，與 B2 案例共用格式。
+- `a1_tool_cases.json`：庫存、待購、照片、查價四個工具，加上「買回來了」的確認卡工具 `complete_purchase`，以及「家裡多了東西」的確認卡工具 `add_stock`，共 34 個案例，與 B2 案例共用格式。其中 `stock-inc-*` 6 個是「家裡已有的品項加數量」（Issue #206）打開時的案例。
 
 ## 欄位
 
@@ -19,6 +19,7 @@
 | `must_not_call` | 第一輪不能呼叫的工具 |
 | `args_contain` | 呼叫時參數需包含的文字（選填） |
 | `photo` | `true` 表示附有照片，測試加入 Agent 使用的照片提示（選填） |
+| `stock_increase` | 只用在 `add_stock` 的案例：`true` 表示「家裡已有的品項加數量」是打開的（`NESTOCK_STOCK_INCREASE=1`），測試會用打開時的工具說明和系統提示來問模型；沒有這個欄位的案例照關閉時檢查（選填） |
 | `shopping_list` | 只用在 `complete_purchase` 的案例：模型第一輪要先查待購清單，測試回給它這幾筆，`expect_calls`、`must_not_call`、`args_contain` 檢查的是下一輪（選填） |
 
 ## 怎麼跑

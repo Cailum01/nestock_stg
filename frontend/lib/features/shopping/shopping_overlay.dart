@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import 'commerce_options_client.dart';
 import 'shopping_view_client.dart';
 
 class ShoppingOverlay extends StatefulWidget {
@@ -7,9 +9,13 @@ class ShoppingOverlay extends StatefulWidget {
     super.key,
     required this.client,
     required this.onClose,
+    this.commerceClient = const UnavailableCommerceOptionsClient(),
+    this.onOpenProductUrl,
   });
   final ShoppingViewClient client;
   final VoidCallback onClose;
+  final CommerceOptionsClient commerceClient;
+  final Future<bool> Function(Uri url)? onOpenProductUrl;
   @override
   State<ShoppingOverlay> createState() => _ShoppingOverlayState();
 }
@@ -20,6 +26,7 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
   final _localItems = <ShoppingViewItem>[];
   bool _adding = false;
   String? _addError;
+  final _commerceRequests = <String>{};
 
   void _openAdd() => setState(() {
     _adding = true;
@@ -44,6 +51,47 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
       _addError = null;
       _nameController.clear();
     });
+  }
+
+  Future<void> _showRecommendations(ShoppingViewItem item) async {
+    if (!_commerceRequests.add(item.name)) return;
+    setState(() {});
+    CommerceOptionsView result;
+    try {
+      result = await widget.commerceClient.lookup(item.name);
+    } catch (_) {
+      result = const CommerceOptionsView(
+        status: CommerceOptionsStatus.unavailable,
+        message: '目前無法取得採購推薦，請稍後再試。',
+      );
+    } finally {
+      if (mounted) setState(() => _commerceRequests.remove(item.name));
+    }
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) => _CommerceRecommendationSheet(
+        keyword: item.name,
+        result: result,
+        onOpenProductUrl: _openProductUrl,
+      ),
+    );
+  }
+
+  Future<void> _openProductUrl(Uri url) async {
+    try {
+      final opened =
+          await (widget.onOpenProductUrl?.call(url) ??
+              launchUrl(url, mode: LaunchMode.externalApplication));
+      if (!opened) throw StateError('launch-failed');
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('無法開啟商品連結，請稍後再試。')));
+      }
+    }
   }
 
   @override
@@ -102,6 +150,20 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
                             return ListTile(
                               dense: true,
                               title: Text(item.name),
+                              trailing: _commerceRequests.contains(item.name)
+                                  ? const SizedBox(
+                                      width: 24,
+                                      height: 24,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : TextButton(
+                                      key: Key('shopping-procure-${item.name}'),
+                                      onPressed: () =>
+                                          _showRecommendations(item),
+                                      child: const Text('採購 >'),
+                                    ),
                             );
                           },
                         ),
@@ -160,3 +222,129 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
     ),
   );
 }
+
+class _CommerceRecommendationSheet extends StatelessWidget {
+  const _CommerceRecommendationSheet({
+    required this.keyword,
+    required this.result,
+    required this.onOpenProductUrl,
+  });
+
+  final String keyword;
+  final CommerceOptionsView result;
+  final Future<void> Function(Uri url) onOpenProductUrl;
+
+  @override
+  Widget build(BuildContext context) {
+    final options = result.options;
+    final hasOptions =
+        result.status == CommerceOptionsStatus.success && options.isNotEmpty;
+    final message = hasOptions
+        ? null
+        : result.status == CommerceOptionsStatus.noMatch ||
+              result.status == CommerceOptionsStatus.success
+        ? '找不到「$keyword」的採購推薦。'
+        : '目前無法取得採購推薦，請稍後再試。';
+    return SafeArea(
+      child: LayoutBuilder(
+        builder: (context, constraints) => ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: constraints.maxHeight * .75),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                child: Text(
+                  '推薦採購',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
+              if (message != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                  child: Text(message),
+                )
+              else
+                Flexible(
+                  child: ListView.separated(
+                    key: const Key('commerce-options-list'),
+                    shrinkWrap: true,
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                    itemCount: options.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 10),
+                    itemBuilder: (context, index) => _CommerceOptionTile(
+                      option: options[index],
+                      onOpenProductUrl: onOpenProductUrl,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CommerceOptionTile extends StatelessWidget {
+  const _CommerceOptionTile({
+    required this.option,
+    required this.onOpenProductUrl,
+  });
+
+  final CommerceOptionView option;
+  final Future<void> Function(Uri url) onOpenProductUrl;
+
+  Uri? get _productUri {
+    final rawUrl = option.productUrl;
+    final uri = rawUrl == null ? null : Uri.tryParse(rawUrl);
+    return uri != null &&
+            (uri.scheme == 'https' || uri.scheme == 'http') &&
+            uri.hasAuthority
+        ? uri
+        : null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final uri = _productUri;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(option.title, style: Theme.of(context).textTheme.titleSmall),
+            if (option.store != null) ...[
+              const SizedBox(height: 4),
+              Text(option.store!),
+            ],
+            if (option.estimatedPrice != null) ...[
+              const SizedBox(height: 4),
+              Text('NT\$${_priceText(option.estimatedPrice!)}'),
+            ],
+            if (option.unitSpec != null) ...[
+              const SizedBox(height: 4),
+              Text(option.unitSpec!),
+            ],
+            if (uri != null)
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  key: Key('commerce-open-${option.title}'),
+                  onPressed: () => onOpenProductUrl(uri),
+                  child: const Text('前往購買 >'),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _priceText(num value) => value == value.truncateToDouble()
+    ? value.toStringAsFixed(0)
+    : value.toString();

@@ -4,7 +4,7 @@
 on, that item gets an `increase_stock` line on the card instead of being left out.
 A1's part only: the card, and `CardWriteRouter` handing it to the builder for these
 lines. That builder is B1's and C1's; here `_Writer` stands in for it, and the app's
-own composition (which has none yet) stores no such card.
+own composition uses the real writer and planner.
 """
 
 import asyncio
@@ -296,8 +296,8 @@ def test_without_its_writer_no_such_card_is_stored():
     assert container.of_type("pending_approval") == []
 
 
-def test_the_apps_own_composition_has_no_writer_for_it_yet():
-    """Until B1 and C1 add theirs, the app stores no card that adds to a household item."""
+def test_the_apps_own_composition_stores_card_without_writing_inventory():
+    """The app stores the approval; domain writes wait for the user's confirmation."""
     container = FakeCosmosContainer()
     for record in (MOUSE, shopping()):
         container.put(record)
@@ -305,9 +305,13 @@ def test_the_apps_own_composition_has_no_writer_for_it_yet():
 
     response, result, _ = said(reads, approvals, one_more())
 
-    assert response.pending_approval is None
-    assert result == json.loads(CARD_FAILED)
-    assert container.of_type("pending_approval") == []
+    card = response.pending_approval
+    assert card is not None
+    assert result["note"] == INCREASE_CARD_NOTE
+    (stored_card,) = container.of_type("pending_approval")
+    assert stored_card["status"] == "pending"
+    (stored_item,) = container.of_type("inventory_item")
+    assert stored_item["quantity"] == MOUSE.quantity
     assert container.of_type("transaction") == []
 
 

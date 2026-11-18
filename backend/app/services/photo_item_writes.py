@@ -32,6 +32,7 @@ from app.services.media_retention_work import build_pending_media_retention_work
 from app.services.shopping.planning import (
     AdjustmentInput,
     AdjustmentPlan,
+    ExistingInventoryAdjustmentInput,
     InventoryUpdate,
     ShoppingPlanService,
 )
@@ -81,13 +82,7 @@ class ExistingInventoryAdjustmentPlanner(Protocol):
         self,
         *,
         household_id: str,
-        operation_id: str,
-        approval_id: str,
-        transaction_id: str,
-        inventory: InventoryItem,
-        expected_etag: str,
-        quantity_added: int,
-        reason: TransactionReason,
+        adjustment: ExistingInventoryAdjustmentInput,
         recorded_at: datetime,
     ) -> ExistingInventoryAdjustmentPlan: ...
 
@@ -332,15 +327,19 @@ class PhotoItemWriteBuilder:
                 ):
                     raise TargetChanged(target.record_id)
 
-                plan = self._planner.plan_existing_inventory_adjustment(
-                    household_id=record.household_id,
+                adjustment = ExistingInventoryAdjustmentInput(
                     operation_id=operation.operation_id,
-                    approval_id=record.approval_id,
                     transaction_id=transaction_id,
+                    approval_id=record.approval_id,
                     inventory=mapped.record,
                     expected_etag=target.etag,
+                    inventory_quantity_before=quantity_before,
                     quantity_added=quantity_added,
                     reason=reason,
+                )
+                plan = self._planner.plan_existing_inventory_adjustment(
+                    household_id=record.household_id,
+                    adjustment=adjustment,
                     recorded_at=record.decided_at,
                 )
                 self._validate_existing_plan(

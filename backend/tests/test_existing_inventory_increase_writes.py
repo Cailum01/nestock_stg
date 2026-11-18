@@ -1,12 +1,11 @@
 import asyncio
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from test_approvals_cosmos_write import FakeCosmosContainer
 
 from app.models.agent import ApprovalPresentation, ResumeRequest
-from app.models.domain import ChangeEvent, InventoryItem, Transaction, TransactionReason
+from app.models.domain import InventoryItem, TransactionReason
 from app.services.approvals import (
     ApprovalService,
     NewOperation,
@@ -18,77 +17,12 @@ from app.services.cosmos_read import CosmosDocumentMapper, CosmosReadRepository
 from app.services.cosmos_write import CosmosWriteRepository
 from app.services.photo_item_writes import PhotoItemWriteBuilder
 from app.services.purchase_inputs import PhotoInputResolver
-from app.services.shopping.planning import InventoryUpdate, ShoppingPlanService
+from app.services.shopping.planning import ShoppingPlanService
 from app.services.shopping.preview import ShoppingPreviewError
 
 HOME = "stock-increase-household"
 ITEM_ID = "dish-soap"
 T0 = datetime(2026, 11, 18, 3, 0, tzinfo=timezone.utc)
-
-
-@dataclass(frozen=True)
-class ExistingInventoryPlan:
-    household_id: str
-    operation_id: str
-    approval_id: str
-    inventory_update: InventoryUpdate
-    transaction: Transaction
-    change_event: ChangeEvent
-    recorded_at: datetime
-
-
-class Planner(ShoppingPlanService):
-    def plan_existing_inventory_adjustment(
-        self,
-        *,
-        household_id,
-        operation_id,
-        approval_id,
-        transaction_id,
-        inventory,
-        expected_etag,
-        quantity_added,
-        reason,
-        recorded_at,
-    ):
-        updated_inventory = inventory.model_copy(
-            update={
-                "quantity": inventory.quantity + quantity_added,
-                "updated_at": recorded_at,
-            }
-        )
-        transaction = Transaction(
-            transaction_id=transaction_id,
-            household_id=household_id,
-            item_id=inventory.item_id,
-            operation_id=operation_id,
-            quantity_delta=quantity_added,
-            reason=reason,
-            created_at=recorded_at,
-        )
-        event = ChangeEvent(
-            event_id=operation_id,
-            household_id=household_id,
-            operation_id=operation_id,
-            approval_id=approval_id,
-            transaction_id=transaction_id,
-            item_id=inventory.item_id,
-            occurred_at=recorded_at,
-            recorded_at=recorded_at,
-        )
-        return ExistingInventoryPlan(
-            household_id=household_id,
-            operation_id=operation_id,
-            approval_id=approval_id,
-            inventory_update=InventoryUpdate(
-                record=updated_inventory,
-                expected_etag=expected_etag,
-                operation_ids=(operation_id,),
-            ),
-            transaction=transaction,
-            change_event=event,
-            recorded_at=recorded_at,
-        )
 
 
 class UnexpectedPurchaseBuilder:
@@ -147,7 +81,7 @@ def _setup(*, reason="adjustment", mixed=False, save=True):
             targets=[TargetVersion(record_id=f"inventory_item:{ITEM_ID}", etag=etag)],
         )
     )
-    builder = PhotoItemWriteBuilder(PhotoInputResolver(), planner=Planner())
+    builder = PhotoItemWriteBuilder(PhotoInputResolver(), planner=ShoppingPlanService())
     router = CardWriteRouter(
         purchases=UnexpectedPurchaseBuilder(),
         photo_items=builder,

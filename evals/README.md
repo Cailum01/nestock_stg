@@ -5,7 +5,7 @@
 - `b2_tool_cases.json`：B2 兩個工具（`get_reorder_candidates`、`get_consumption_forecast`）的
   範例語句與容易混淆的反例。每個工具至少 3 句正面範例，另有反例。對應 v8 第 20 節的工具負責人驗收項目。
 
-- `a1_tool_cases.json`：庫存、待購、照片、查價四個工具，加上「買回來了」的確認卡工具 `complete_purchase`，以及「家裡多了東西」的確認卡工具 `add_stock`，共 34 個案例，與 B2 案例共用格式。其中 `stock-inc-*` 6 個是「家裡已有的品項加數量」（Issue #206）打開時的案例。
+- `a1_tool_cases.json`：庫存、待購、照片、查價四個工具，加上「買回來了」的確認卡工具 `complete_purchase`，以及「家裡多了東西」的確認卡工具 `add_stock`，與 B2 案例共用格式。其中 `stock-inc-*` 是「家裡已有的品項加數量」（Issue #206）打開時的案例。
 
 ## 欄位
 

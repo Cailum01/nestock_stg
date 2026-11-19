@@ -296,6 +296,30 @@ def test_without_its_writer_no_such_card_is_stored():
     assert container.of_type("pending_approval") == []
 
 
+def test_the_apps_own_composition_writes_the_increase_once_the_user_confirms():
+    """PR #211 B2 review: on by default, card to confirm to write with the app's own parts."""
+    container = FakeCosmosContainer()
+    for record in (MOUSE, shopping()):
+        container.put(record)
+    reads, approvals = _app_approvals(container)
+    response, _, _ = said(reads, approvals, one_more(quantity=2))
+    card = response.pending_approval
+    (line,) = card.operations
+
+    reply = _confirm(approvals, card)
+
+    assert reply["results"][0]["data"]["outcome"] == "completed"
+    assert container.get("inventory_item:mouse")["quantity"] == MOUSE.quantity + 2
+    (transaction,) = container.of_type("transaction")
+    assert (transaction["reason"], transaction["quantity_delta"]) == ("adjustment", 2)
+    assert transaction["item_id"] == "mouse"
+    (event,) = container.of_type("change_event")
+    assert event["event_id"] == line.operation_id
+    assert event.get("shopping_item_id") is None
+    assert container.get(f"pending_approval:{card.approval_id}")["status"] == "completed"
+    assert len(container.of_type("inventory_item")) == 1
+
+
 def test_the_apps_own_composition_stores_card_without_writing_inventory():
     """The app stores the approval; domain writes wait for the user's confirmation."""
     container = FakeCosmosContainer()
@@ -550,13 +574,34 @@ def test_off_a_photo_of_a_household_item_is_only_reported_as_before():
         ({}, True),
         ({"NESTOCK_STOCK_INCREASE": ""}, True),
         ({"NESTOCK_STOCK_INCREASE": "1"}, True),
+        ({"NESTOCK_STOCK_INCREASE": "true"}, True),
+        ({"NESTOCK_STOCK_INCREASE": "yes"}, True),
         ({"NESTOCK_STOCK_INCREASE": "0"}, False),
         ({"NESTOCK_STOCK_INCREASE": " 0 "}, False),
-        ({"NESTOCK_STOCK_INCREASE": "false"}, True),
+        ({"NESTOCK_STOCK_INCREASE": "false"}, False),
+        ({"NESTOCK_STOCK_INCREASE": "FALSE"}, False),
+        ({"NESTOCK_STOCK_INCREASE": "off"}, False),
+        ({"NESTOCK_STOCK_INCREASE": "Off"}, False),
+        ({"NESTOCK_STOCK_INCREASE": "no"}, False),
+        ({"NESTOCK_STOCK_INCREASE": "NO"}, False),
     ],
-    ids=["unset", "empty", "1", "0", "0 with spaces", "another word"],
+    ids=[
+        "unset",
+        "empty",
+        "1",
+        "true",
+        "yes",
+        "0",
+        "0 with spaces",
+        "false",
+        "FALSE",
+        "off",
+        "Off",
+        "no",
+        "NO",
+    ],
 )
-def test_the_switch_is_on_unless_set_to_0(environment, on):
+def test_the_switch_is_on_unless_switched_off(environment, on):
     assert stock_increase_on(environment) is on
 
 

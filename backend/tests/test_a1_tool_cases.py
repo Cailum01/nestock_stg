@@ -174,7 +174,7 @@ def _looked_up(case, call):
 
 
 @pytest.fixture(scope="module")
-def live_model():
+def live_models():
     settings = load_azure_settings()
     if settings is None:
         pytest.skip("Azure OpenAI is not configured; live tool selection not run")
@@ -184,11 +184,11 @@ def live_model():
 
 @pytest.mark.live_eval
 @pytest.mark.parametrize("case", CASES, ids=[c["id"] for c in CASES])
-def test_live_model_selects_the_expected_tools(live_model, case):
+def test_live_model_selects_the_expected_tools(live_models, case):
     from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
     increasing = bool(case.get("stock_increase"))
-    live_model = live_model[increasing]
+    live_model = live_models[increasing]
     messages = [SystemMessage(load_system_prompt())]
     if increasing:
         messages.append(SystemMessage(INCREASE_PROMPT_NOTE))  # as `ReadAgent.respond` does

@@ -46,7 +46,7 @@ asks the user to say it again.
 | #175 | Item-match card: 「是」 writes the purchase in one card and remembers no alias; 「不是」 writes nothing; one unsure item per card; no photo item-match card (section 10) |
 | #188 | Photo and said new-item cards: name and location change on the card with `card_changes`, besides quantity (section 7.1) |
 | #176 | The photo sent with the message is kept with the record: photo new-item lines and one-line purchase cards hold its `image_ref`, `input_id` and mapping ETag; an item's photo is never replaced (sections 10, 11) |
-| #206 | A line that adds to an item the household has with no Shopping List entry (`increase_stock`), from what the user says or a photo; `adjustment` only in this version; on unless `NESTOCK_STOCK_INCREASE=0` (section 10.1) |
+| #206 | A line that adds to an item the household has with no Shopping List entry (`increase_stock`), from what the user says or a photo; `adjustment` only in this version; on unless `NESTOCK_STOCK_INCREASE` is `0`, `false`, `off` or `no` (section 10.1) |
 
 ## 2. Approval record
 
@@ -600,12 +600,13 @@ New-item cards from what the user says (Issue #168, 「我收到一瓶洗髮精�
 
 Agreed in Issue #206 on 2026-11-18 by A1, B1, C1, C2 and B2. A1's card
 (PR #207), C1's plan (PR #209) and B1's writer (PR #208) are in `get_approval_service`.
-It is on without any setting. `NESTOCK_STOCK_INCREASE=0` turns it off with no code
-change: a household item is then left out of the card, as before Issue #206.
+It is on without any setting. `NESTOCK_STOCK_INCREASE` set to `0`, `false`, `off` or
+`no` (any case) turns it off with no code change: a household item is then left out
+of the card, as before Issue #206.
 
 - When: the user says they got more of something the household has (`add_stock`), or
-  a photo shows it, and it is not a Shopping List purchase. With
-  `NESTOCK_STOCK_INCREASE=0`, such an item gets no line, as before (「家裡已經有…」).
+  a photo shows it, and it is not a Shopping List purchase. Switched off, such an
+  item gets no line, as before (「家裡已經有…」).
 - The line: `action` `increase_stock`. `values`: `item_id`, `name` and `unit` (the
   household item's, as read), `quantity_added` (a whole number ≥ 1: what was said or
   seen, not always 1), `transaction_id`, `reason` and `inventory_quantity_before`

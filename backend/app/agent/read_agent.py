@@ -61,6 +61,7 @@ from app.agent.cards import (
 from app.agent.stock_cards import (
     ADD_STOCK,
     INCREASE_CARD_NOTE,
+    STOCK_INCREASE_OFF,
     STOCK_INCREASE_VAR,
     StockCards,
     StockIncreases,
@@ -1062,6 +1063,7 @@ def get_read_agent() -> ReadAgent | None:
 
     inventory = get_inventory_service()
     tools = QueryTools(inventory, get_shopping_service())
+    increases = _stock_increases()
     return ReadAgent(
         build_chat_model(settings),
         tools,
@@ -1077,9 +1079,10 @@ def get_read_agent() -> ReadAgent | None:
         # writer through A1's `CardWriteRouter` (`get_approval_service`, PR #171).
         photo_cards=_photo_cards(),
         # Issue #168: said new-item cards, written the same way as photo cards.
-        stock=_stock_cards(),
-        # Issue #206: the same lines for household items a photo shows; off by default.
-        increases=_stock_increases(),
+        # Issue #206: the same lines for household items, said or in a photo; on
+        # unless switched off (`stock_increase_on`). Made once, for both.
+        stock=_stock_cards(increases),
+        increases=increases,
     )
 
 
@@ -1091,20 +1094,21 @@ def _photo_cards() -> PhotoCards | None:
     return PhotoCards(approvals)
 
 
-def _stock_cards() -> StockCards | None:
+def _stock_cards(increases: StockIncreases | None) -> StockCards | None:
     """The `add_stock` tool needs approval storage and the inventory list: Cosmos only."""
     approvals = get_approval_service()
     reader = get_cosmos_read_repository()
     if approvals is None or reader is None:
         return None
-    return StockCards(reader, approvals, _stock_increases())
+    return StockCards(reader, approvals, increases)
 
 
 def _stock_increases() -> StockIncreases | None:
     """Adding to an item the household has (Issue #206): Cosmos only, on by default.
 
-    `NESTOCK_STOCK_INCREASE=0` turns it off; a household item is then left out of
-    the card as before. Its write is B1's and C1's, in `get_approval_service`.
+    `NESTOCK_STOCK_INCREASE=0` (or `false`, `off`, `no`) turns it off; a household
+    item is then left out of the card as before. Its write is B1's and C1's, in
+    `get_approval_service`.
     """
     reader = get_cosmos_read_repository()
     if reader is None or not stock_increase_on():
@@ -1113,13 +1117,15 @@ def _stock_increases() -> StockIncreases | None:
 
 
 def stock_increase_on(environment: Mapping[str, str] | None = None) -> bool:
-    """Adding to household items is on unless `NESTOCK_STOCK_INCREASE=0` (Issue #206).
+    """Adding to household items is on unless switched off (Issue #206).
 
-    Unset, or any other value, is on: nobody has to set anything for it to work, and
-    the cloud sets `0` only to turn it off without a code change.
+    `NESTOCK_STOCK_INCREASE` set to `0`, `false`, `off` or `no` (any case) turns it
+    off, so whichever of them someone types in an emergency works (PR #211 B2
+    review). Unset, or any other value, is on: nobody has to set anything for it to
+    work, and turning it off needs no code change.
     """
     env = os.environ if environment is None else environment
-    return env.get(STOCK_INCREASE_VAR, "").strip() != "0"
+    return env.get(STOCK_INCREASE_VAR, "").strip().lower() not in STOCK_INCREASE_OFF
 
 
 def _purchase_cards() -> PurchaseCards | None:

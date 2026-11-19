@@ -6,14 +6,16 @@
 
 ## Start here
 
-When you open your AI coding tool, paste this first
-(replace with your own owner code, name and GitHub account):
+When you open your AI coding tool in this personal STG repository, paste this:
 
-> I am B1 任軒 (GitHub: Cailum01). Read README.md and AGENTS.md first
-> and follow their rules.
+> I maintain this STG repository solo. Read README.md and AGENTS.md first.
+> Do not require an owner code. I can commit and push directly to `origin/stg`
+> without a pull request or review. Changes for shared DEV still follow its PR
+> process.
 
-Your scope is listed in "Where each owner extends" below. Branches,
-uploads and new folders are handled by your AI tool following AGENTS.md.
+The owner map below describes the original shared DEV ownership boundaries; it is
+reference information only and does not limit changes in this STG repository.
+Branches, uploads and new folders are handled by your AI tool following AGENTS.md.
 
 Repository: `nestock`. Flutter Android/iOS frontend and FastAPI backend for six
 developers. It started as a runnable Skeleton v1 and is now being built into the P0
@@ -176,7 +178,7 @@ data, so run `pytest` in a window without these variables. The fixed household i
 
 Azure deployment helpers are in `deploy/`.
 
-## Where each owner extends
+## Original shared DEV owner map (reference only for STG)
 
 | Owner | Member | GitHub | Starting point |
 | --- | --- | --- | --- |

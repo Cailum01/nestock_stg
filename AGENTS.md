@@ -2,21 +2,22 @@
 
 ## Session start (read first)
 
-1. The user states their owner code (A1–C2). If not, ask first. Never guess.
-2. Only modify paths owned by that code (README "Where each owner extends").
-   Before touching shared files or another owner's paths, stop, explain why,
-   and wait for approval.
-3. Git workflow (run it for the user):
-   - Before creating a branch, switch to `main` and pull the latest changes.
-   - Branch: `feature/<code>-<topic>`, e.g. `feature/b1-cosmos-spike`.
-   - Stage only changed files by path; never `git add .`.
-   - List the files to the user and wait for confirmation before committing.
-   - Commit with the user's own Git identity, not as the AI.
-   - Before pushing, pull the latest `main` into your branch and resolve conflicts locally.
-   - Push the branch and open a pull request to `main`. Never push to `main`.
-   - When opening a pull request, request a reviewer from the owner table.
-     For shared files, request `jasonko13w` or `Cailum01`.
-   - Never commit `.env`, keys or local environments.
+This is the user's personal STG repository, maintained by one person. Do not ask
+for an A1–C2 owner code or restrict changes to the original owner areas listed in
+the README.
+
+## Git workflow
+
+- `origin/stg` is the personal maintenance branch. Work directly on `stg` when
+  changes are only for this repository. Commit and push to `origin/stg` without
+  creating a pull request or waiting for review.
+- Before pushing, fetch and fast-forward from `origin/stg`; do not force-push.
+- Changes intended for the shared DEV repository (`upstream`) must still use a
+  short-lived feature branch based on the latest `upstream/main` and a pull request.
+  Never push `stg` directly to `upstream`.
+- Stage only changed files by path; never `git add .`.
+- Commit with the user's own Git identity, not as the AI.
+- Never commit `.env`, keys or local environments.
 4. Planned locations — create only when first needed; any other new
    top-level folder needs team agreement:
    - `prompts/` Agent and vision prompts
@@ -86,7 +87,7 @@ six-owner foundation small and independently usable.
    no card tool and `/agent/resume` returns 503. Do not interpret generic proposed
    values or a client boolean as permission to write.
 
-## Owners and intentionally open decisions
+## Original DEV owners and intentionally open decisions
 
 | Owner | Extension area | Owner-defined decisions |
 | --- | --- | --- |
@@ -126,7 +127,8 @@ Shopping List add agreed in Issue #52 is a separate, C1-owned path.
 ## Validation and collaboration
 
 Read `README.md`, `docs/architecture.md`, and `contracts/README.md` before changing
-boundaries. Run Flutter format/analyze/test for frontend changes and backend
+boundaries. Original DEV owner assignments do not restrict STG work. Run Flutter
+format/analyze/test for frontend changes and backend
 ruff/pytest for backend changes. Keep dependency lockfiles. Add meaningful tests
 for changed behavior; do not claim unavailable platform checks passed. Never
 commit credentials, SDK paths, local environments or build output.

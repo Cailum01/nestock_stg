@@ -600,9 +600,9 @@ New-item cards from what the user says (Issue #168, 「我收到一瓶洗髮精�
 
 Agreed in Issue #206 on 2026-11-18 by A1, B1, C1, C2 and B2. A1's card
 (PR #207), C1's plan (PR #209) and B1's writer (PR #208) are in `get_approval_service`.
-It is on without any setting. `NESTOCK_STOCK_INCREASE` set to `0`, `false`, `off` or
-`no` (any case) turns it off with no code change: a household item is then left out
-of the card, as before Issue #206.
+To turn it off, set `NESTOCK_STOCK_INCREASE=0` (`false`, `off` or `no` also work, in
+any case); unset, it is on. Turning it off needs no code change: a household item is
+then left out of the card, as before Issue #206.
 
 - When: the user says they got more of something the household has (`add_stock`), or
   a photo shows it, and it is not a Shopping List purchase. Switched off, such an

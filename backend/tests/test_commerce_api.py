@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
+from identity_test_support import authenticated_client
 
 from app.core.dependencies import get_commerce_service
 from app.main import app
@@ -20,7 +21,11 @@ from app.services.commerce.biggo import BigGoCommerceProvider
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(app)
+    test_client = authenticated_client(app)
+    try:
+        yield test_client
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_commerce_options_empty_or_whitespace_keyword(client: TestClient) -> None:
@@ -153,5 +158,16 @@ def test_commerce_options_service_unavailable(client: TestClient) -> None:
         assert data["code"] == "COMMERCE_SEARCH_FAILED"
         assert data["message"] == "外部比價服務暫時無法取得資料"
         assert data["options"] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_commerce_options_requires_install_authentication() -> None:
+    """Requests without valid install credentials must be rejected."""
+    app.dependency_overrides.clear()
+    try:
+        with TestClient(app) as anonymous_client:
+            response = anonymous_client.get("/api/commerce/options", params={"keyword": "衛生紙"})
+        assert response.status_code == 401
     finally:
         app.dependency_overrides.clear()

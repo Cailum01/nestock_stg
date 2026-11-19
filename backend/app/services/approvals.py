@@ -518,6 +518,8 @@ class ApprovalService:
         """Handle the App's confirm or cancel for one card."""
         stored = await self._load(request.household_id, request.approval_id)
         record = ApprovalRecord.from_document(stored.document)
+        if record.household_id != request.household_id:
+            raise ApprovalNotFound("Approval scope does not match the stored card.")
         if not request.approved:
             return await self._cancel(record, stored.etag, CancelReason.USER)
         return await self._approve(record, stored.etag, request)

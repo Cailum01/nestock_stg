@@ -4,14 +4,19 @@ import 'package:http/http.dart' as http;
 
 import '../domain/agent_client.dart';
 import '../domain/agent_view_data.dart';
+import '../../onboarding/domain/household_context.dart';
+import '../../onboarding/data/secure_transport_client.dart';
 
-class HttpAgentClient implements PhotoAwareAgentClient {
+class HttpAgentClient
+    implements PhotoAwareAgentClient, HouseholdBoundAgentClient {
   HttpAgentClient({
     required this.baseUrl,
+    required this.householdContext,
     http.Client? client,
     this.timeout = const Duration(seconds: 75),
-  }) : client = client ?? http.Client();
+  }) : client = SecureTransportClient(innerClient: client);
   final Uri baseUrl;
+  final HouseholdRequestContext householdContext;
   final http.Client client;
   final Duration timeout;
 
@@ -30,18 +35,35 @@ class HttpAgentClient implements PhotoAwareAgentClient {
   }) =>
       _send('送出修改', null, replacesApprovalId: approvalId, cardChanges: changes);
 
+  @override
+  Future<AgentReply> submitCardChangesInHousehold({
+    required String approvalId,
+    required List<CardChange> changes,
+    required String householdId,
+  }) => _send(
+    '送出修改',
+    null,
+    replacesApprovalId: approvalId,
+    cardChanges: changes,
+    householdIdOverride: householdId,
+  );
+
   Future<AgentReply> _send(
     String message,
     String? imageRef, {
     String? replacesApprovalId,
     List<CardChange>? cardChanges,
+    String? householdIdOverride,
   }) async {
+    final scope = householdContext.snapshot(
+      householdIdOverride: householdIdOverride,
+    );
     final response = await client
         .post(
           baseUrl.resolve('/agent/messages'),
-          headers: {'Content-Type': 'application/json'},
+          headers: {...scope.headers, 'Content-Type': 'application/json'},
           body: jsonEncode({
-            'household_id': 'demo-household',
+            'household_id': scope.householdId,
             'message': message,
             'image_ref': ?imageRef,
             'replaces_approval_id': ?replacesApprovalId,
@@ -56,7 +78,10 @@ class HttpAgentClient implements PhotoAwareAgentClient {
     if (decoded is! Map) {
       throw const FormatException('Agent response must be an object');
     }
-    return _replyFromBody(Map<String, dynamic>.from(decoded));
+    return _replyFromBody(
+      Map<String, dynamic>.from(decoded),
+      householdId: scope.householdId,
+    );
   }
 
   @override
@@ -66,12 +91,45 @@ class HttpAgentClient implements PhotoAwareAgentClient {
     String? selectedOptionId,
     List<String>? approvedOperationIds,
   }) async {
+    return _resume(
+      approvalId: approvalId,
+      approved: approved,
+      selectedOptionId: selectedOptionId,
+      approvedOperationIds: approvedOperationIds,
+    );
+  }
+
+  @override
+  Future<AgentReply> resumeInHousehold({
+    required String approvalId,
+    required bool approved,
+    required String householdId,
+    String? selectedOptionId,
+    List<String>? approvedOperationIds,
+  }) => _resume(
+    approvalId: approvalId,
+    approved: approved,
+    householdIdOverride: householdId,
+    selectedOptionId: selectedOptionId,
+    approvedOperationIds: approvedOperationIds,
+  );
+
+  Future<AgentReply> _resume({
+    required String approvalId,
+    required bool approved,
+    String? householdIdOverride,
+    String? selectedOptionId,
+    List<String>? approvedOperationIds,
+  }) async {
+    final scope = householdContext.snapshot(
+      householdIdOverride: householdIdOverride,
+    );
     final response = await client
         .post(
           baseUrl.resolve('/agent/resume'),
-          headers: {'Content-Type': 'application/json'},
+          headers: {...scope.headers, 'Content-Type': 'application/json'},
           body: jsonEncode({
-            'household_id': 'demo-household',
+            'household_id': scope.householdId,
             'approval_id': approvalId,
             'approved': approved,
             'selected_option_id': ?selectedOptionId,
@@ -86,10 +144,16 @@ class HttpAgentClient implements PhotoAwareAgentClient {
     if (decoded is! Map) {
       throw const FormatException('Agent response must be an object');
     }
-    return _replyFromBody(Map<String, dynamic>.from(decoded));
+    return _replyFromBody(
+      Map<String, dynamic>.from(decoded),
+      householdId: scope.householdId,
+    );
   }
 
-  AgentReply _replyFromBody(Map<String, dynamic> body) {
+  AgentReply _replyFromBody(
+    Map<String, dynamic> body, {
+    required String householdId,
+  }) {
     final message = body['message'];
     if (message is! String) {
       throw const FormatException('Agent response message must be a string');
@@ -132,11 +196,17 @@ class HttpAgentClient implements PhotoAwareAgentClient {
     return AgentReply(
       message: message,
       results: results,
-      approval: _approvalFromJson(body['pending_approval']),
+      approval: _approvalFromJson(
+        body['pending_approval'],
+        householdId: householdId,
+      ),
     );
   }
 
-  ApprovalView? _approvalFromJson(dynamic rawApproval) {
+  ApprovalView? _approvalFromJson(
+    dynamic rawApproval, {
+    required String householdId,
+  }) {
     if (rawApproval == null) return null;
     if (rawApproval is! Map) {
       throw const FormatException('Pending approval must be an object');
@@ -170,6 +240,7 @@ class HttpAgentClient implements PhotoAwareAgentClient {
       presentation: presentation,
       operations: operations,
       options: options,
+      householdId: householdId,
     );
   }
 

@@ -4,6 +4,9 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as image;
 
+import '../onboarding/domain/household_context.dart';
+import '../onboarding/data/secure_transport_client.dart';
+
 abstract interface class PhotoUpload {
   Future<String> upload(Uint8List photo);
 }
@@ -32,10 +35,12 @@ class PhotoNetworkConfig {
 class HttpPhotoUpload implements PhotoUpload {
   HttpPhotoUpload({
     required this.config,
+    required this.householdContext,
     http.Client? client,
     this.timeout = const Duration(seconds: 20),
-  }) : client = client ?? http.Client();
+  }) : client = SecureTransportClient(innerClient: client);
   final PhotoNetworkConfig config;
+  final HouseholdRequestContext householdContext;
   final http.Client client;
   final Duration timeout;
 
@@ -53,12 +58,13 @@ class HttpPhotoUpload implements PhotoUpload {
     if (bytes.length > 10485760) {
       throw const FormatException('Image exceeds 10 MiB');
     }
+    final scope = householdContext.snapshot();
     final auth = await client
         .post(
           config.apiBase.resolve('/api/media/upload-authorization'),
-          headers: {'Content-Type': 'application/json'},
+          headers: {...scope.headers, 'Content-Type': 'application/json'},
           body: jsonEncode({
-            'household_id': 'demo-household',
+            'household_id': scope.householdId,
             'filename': 'camera_capture.jpg',
             'content_type': 'image/jpeg',
             'file_size_bytes': bytes.length,
@@ -70,10 +76,24 @@ class HttpPhotoUpload implements PhotoUpload {
     final ref = data['image_ref'] as String;
     if (ref.isEmpty) throw const FormatException('Empty image reference');
     final headers = Map<String, String>.from(data['required_headers'] as Map);
+    final uploadHeaders = Map<String, String>.fromEntries(
+      headers.entries.where(
+        (entry) =>
+            entry.key.toLowerCase() != 'authorization' &&
+            entry.key.toLowerCase() != 'x-household-id',
+      ),
+    );
+    final uploadUri = config.adaptUploadUrl(
+      Uri.parse(data['upload_url'] as String),
+    );
+    final putHeaders = <String, String>{...uploadHeaders};
+    if (_hasSameOrigin(uploadUri, config.apiBase)) {
+      putHeaders.addAll(scope.headers);
+    }
     final result = await client
         .put(
-          config.adaptUploadUrl(Uri.parse(data['upload_url'] as String)),
-          headers: headers,
+          uploadUri,
+          headers: putHeaders,
           body: bytes,
         )
         .timeout(timeout);
@@ -82,4 +102,19 @@ class HttpPhotoUpload implements PhotoUpload {
     }
     return ref;
   }
+}
+
+bool _hasSameOrigin(Uri left, Uri right) {
+  int effectivePort(Uri uri) {
+    if (uri.hasPort) return uri.port;
+    return switch (uri.scheme.toLowerCase()) {
+      'http' => 80,
+      'https' => 443,
+      _ => -1,
+    };
+  }
+
+  return left.scheme.toLowerCase() == right.scheme.toLowerCase() &&
+      left.host.toLowerCase() == right.host.toLowerCase() &&
+      effectivePort(left) == effectivePort(right);
 }

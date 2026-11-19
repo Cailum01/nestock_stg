@@ -8,6 +8,9 @@ import 'package:http/testing.dart';
 import 'package:nestock/app.dart';
 import 'package:nestock/features/agent/data/mock_agent_client.dart';
 import 'package:nestock/features/speech/speech_client.dart';
+
+import 'household_test_support.dart';
+
 import 'package:nestock/shared/data/demo_catalog.dart';
 
 class TestRecorder implements SpeechRecorder {
@@ -126,8 +129,11 @@ void main() {
   test('multipart transcription response', () async {
     final client = HttpSpeechClient(
       Uri.parse('http://localhost:8000'),
+      householdContext: testHouseholdContext,
       client: MockClient((request) async {
         expect(request.url.path, '/api/speech/transcribe');
+        expect(request.headers['authorization'], 'Bearer test-install-token');
+        expect(request.headers['x-household-id'], 'test-household');
         expect(
           request.headers['content-type'],
           contains('multipart/form-data'),

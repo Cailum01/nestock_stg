@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from identity_test_support import authenticated_client
 
 from app.api.forecast import get_clock, get_forecast_service, router
 from app.core.config import settings
@@ -35,7 +36,7 @@ def client(*, confirmed: bool = False, paused: bool = False) -> TestClient:
             DemoTransactionHistory(clock=lambda: NOW),
             ForecastSettings(time_semantics_confirmed=not paused),
         )
-    return TestClient(app)
+    return authenticated_client(app)
 
 
 def inventory_items():

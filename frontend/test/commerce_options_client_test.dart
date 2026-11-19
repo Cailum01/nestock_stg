@@ -5,16 +5,21 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:nestock/features/shopping/commerce_options_client.dart';
 
+import 'household_test_support.dart';
+
 void main() {
   final base = Uri.parse('https://api.example.test');
 
   test('HTTP commerce client URL-encodes the shopping item keyword', () async {
     final client = HttpCommerceOptionsClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient((request) async {
         expect(request.method, 'GET');
         expect(request.url.path, '/api/commerce/options');
         expect(request.url.queryParameters['keyword'], '舒潔 衛生紙');
+        expect(request.headers['authorization'], 'Bearer test-install-token');
+        expect(request.headers['x-household-id'], 'test-household');
         return http.Response.bytes(
           utf8.encode(
             jsonEncode({
@@ -47,6 +52,7 @@ void main() {
   test('HTTP commerce client skips malformed individual options', () async {
     final client = HttpCommerceOptionsClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient(
         (_) async => http.Response.bytes(
           utf8.encode(
@@ -75,14 +81,17 @@ void main() {
     () async {
       final malformed = HttpCommerceOptionsClient(
         baseUrl: base,
+        householdContext: testHouseholdContext,
         client: MockClient((_) async => http.Response('[]', 200)),
       );
       final failed = HttpCommerceOptionsClient(
         baseUrl: base,
+        householdContext: testHouseholdContext,
         client: MockClient((_) async => http.Response('unavailable', 503)),
       );
       final missingOptions = HttpCommerceOptionsClient(
         baseUrl: base,
+        householdContext: testHouseholdContext,
         client: MockClient(
           (_) async => http.Response('{"status":"success"}', 200),
         ),

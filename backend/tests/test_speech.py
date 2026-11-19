@@ -5,6 +5,7 @@ import httpx
 import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
+from identity_test_support import authenticated_client
 
 from app.core.dependencies import (
     _reset_speech_service_for_test,
@@ -488,7 +489,7 @@ def test_api_route_transcribe_speech_returns_502_on_upstream_failure(monkeypatch
 
     app.dependency_overrides[get_speech_service] = lambda: FaultySpeechService()
     try:
-        client = TestClient(app)
+        client = authenticated_client(app)
         fake_audio = b"\x00\x00\x00\x20ftypM4A " + b"x" * 100
         response = client.post(
             "/api/speech/transcribe",
@@ -507,7 +508,7 @@ def test_api_route_transcribe_speech_returns_503_when_unconfigured():
     """驗證未配置語音服務 (None) 時，API 端點正確回傳 HTTP 503 Service Unavailable。"""
     app.dependency_overrides[get_speech_service] = lambda: None
     try:
-        client = TestClient(app)
+        client = authenticated_client(app)
         fake_audio = b"\x00\x00\x00\x20ftypM4A " + b"x" * 100
         response = client.post(
             "/api/speech/transcribe",
@@ -515,6 +516,20 @@ def test_api_route_transcribe_speech_returns_503_when_unconfigured():
         )
         assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert "Speech service is not configured" in response.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_api_route_transcribe_speech_requires_install_authentication():
+    """Requests without valid install credentials must be rejected."""
+    app.dependency_overrides.clear()
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/speech/transcribe",
+                files={"file": ("recording.m4a", b"audio", "audio/m4a")},
+            )
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
     finally:
         app.dependency_overrides.clear()
 

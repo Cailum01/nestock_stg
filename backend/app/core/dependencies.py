@@ -3,12 +3,27 @@ import logging
 import os
 import threading
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
+from fastapi import Depends, Header, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.models.identity import (
+    HTTP_ID_MAX_LENGTH,
+    DeviceRecord,
+    HouseholdContextHeader,
+    HouseholdMembership,
+)
 from app.services.approvals import ApprovalService
+from app.services.bootstrap_issuer import (
+    BootstrapIssuerRepository,
+    BootstrapIssuerService,
+    FirestoreBootstrapIssuerRepository,
+)
 from app.services.commerce import BaseCommerceProvider, FallbackCommerceProvider
 from app.services.cosmos_read import (
     CosmosInventoryService,
@@ -19,10 +34,19 @@ from app.services.cosmos_read import (
 from app.services.cosmos_sdk import create_azure_cosmos_repositories
 from app.services.cosmos_write import CosmosWriteRepository, TransactionalBatchClient
 from app.services.demo import DemoInventoryService, DemoShoppingService
+from app.services.firestore_identity import FirestoreIdentityRepository, seed_bootstrap_challenges
+from app.services.firestore_sdk import (
+    FirestoreDocumentQueryClient,
+    FirestoreTransactionalBatchClient,
+    FirestoreWriteRepository,
+)
+from app.services.google_identity import GoogleIdentityService
+from app.services.identity import IdentityRepository, IdentityService
 from app.services.interfaces import InventoryService, ShoppingService
 from app.services.media_mapping import CosmosMediaMappingStorage, MediaMappingPort
 from app.services.media_retention_work import CosmosMediaRetentionWorkItemStorage
 from app.services.provisional_storage.azure_blob_adapter import AzureBlobMediaStorage
+from app.services.provisional_storage.gcs_adapter import GCSMediaStorage
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.provisional_storage.local_staging_adapter import LocalStagingMediaStorage
 from app.services.shopping.intents import ShoppingIntentService
@@ -41,6 +65,139 @@ if TYPE_CHECKING:
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 SKIP_DOTENV_VAR = "NESTOCK_SKIP_DOTENV"
+_bearer_auth = HTTPBearer(auto_error=False)
+
+
+@dataclass(frozen=True)
+class AuthorizedHousehold:
+    """Authenticated install and membership authorized for the requested scope."""
+
+    device: DeviceRecord
+    membership: HouseholdMembership
+
+    @property
+    def device_id(self) -> str:
+        return self.device.device_id
+
+    @property
+    def household_id(self) -> str:
+        return self.membership.household_id
+
+
+# WO-007 supplies the durable implementation. Never substitute demo or process-local state.
+identity_repository: IdentityRepository | None = None
+bootstrap_issuer_repository: BootstrapIssuerRepository | None = None
+
+
+def get_identity_repository() -> IdentityRepository | None:
+    return identity_repository
+
+
+def get_identity_service() -> IdentityService | None:
+    repository = get_identity_repository()
+    return IdentityService(repository) if repository is not None else None
+
+
+def get_required_identity_service(
+    service: IdentityService | None = Depends(get_identity_service),
+) -> IdentityService:
+    if service is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Identity repository is not configured.",
+        )
+    return service
+
+
+def get_google_identity_service() -> GoogleIdentityService | None:
+    repository = get_identity_repository()
+    audience = os.environ.get("NESTOCK_GOOGLE_CLIENT_ID", "").strip()
+    if repository is None or not audience:
+        return None
+    if not callable(getattr(repository, "provision_google_install", None)):
+        return None
+    return GoogleIdentityService(repository, audience=audience)  # type: ignore[arg-type]
+
+
+def get_required_google_identity_service(
+    service: GoogleIdentityService | None = Depends(get_google_identity_service),
+) -> GoogleIdentityService:
+    if service is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Google identity is not configured.",
+        )
+    return service
+
+
+def get_bootstrap_issuer_service() -> BootstrapIssuerService | None:
+    repository = bootstrap_issuer_repository
+    if repository is None:
+        return None
+    subjects = frozenset(
+        value.strip()
+        for value in os.environ.get("NESTOCK_BOOTSTRAP_OPERATOR_SUBJECTS", "").split(",")
+        if value.strip()
+    )
+    return BootstrapIssuerService(
+        repository,
+        audience=os.environ.get("NESTOCK_BOOTSTRAP_ISSUER_AUDIENCE"),
+        operator_subjects=subjects,
+    )
+
+
+def get_required_bootstrap_issuer_service(
+    service: BootstrapIssuerService | None = Depends(get_bootstrap_issuer_service),
+) -> BootstrapIssuerService:
+    if service is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Bootstrap issuer repository is not configured.",
+        )
+    return service
+
+
+async def get_authenticated_install(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_auth),
+    service: IdentityService | None = Depends(get_identity_service),
+) -> DeviceRecord:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "A per-install bearer credential is required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if service is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Identity repository is not configured.",
+        )
+    return await service.authenticate(credentials.credentials)
+
+
+async def get_authorized_household(
+    device: DeviceRecord = Depends(get_authenticated_install),
+    requested_household_id: str | None = Header(
+        default=None,
+        alias="X-Household-Id",
+        min_length=1,
+        max_length=HTTP_ID_MAX_LENGTH,
+    ),
+    service: IdentityService = Depends(get_required_identity_service),
+) -> AuthorizedHousehold:
+    if requested_household_id is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "X-Household-Id is required.",
+        )
+    requested = HouseholdContextHeader.model_validate(
+        {"X-Household-Id": requested_household_id}
+    ).requested_household_id
+    membership = await service.authorize_household(
+        device_id=device.device_id,
+        household_id=requested,
+    )
+    return AuthorizedHousehold(device=device, membership=membership)
 
 
 def _load_local_env() -> None:
@@ -117,6 +274,137 @@ def _create_cosmos_composition(
     )
 
 
+def _create_selected_composition(
+    environment: Mapping[str, str] | None = None,
+) -> tuple[
+    InventoryService,
+    ShoppingService,
+    CosmosReadRepository | None,
+    CosmosWriteRepository | None,
+    DocumentQueryClient | None,
+    IdentityRepository | None,
+    BootstrapIssuerRepository | None,
+]:
+    """Resolve the explicitly selected persistence provider without demo fallback."""
+    env = os.environ if environment is None else environment
+    provider = env.get("NESTOCK_DATA_PROVIDER")
+    cosmos_names = (
+        "NESTOCK_COSMOS_ENDPOINT",
+        "NESTOCK_COSMOS_DATABASE",
+        "NESTOCK_COSMOS_CONTAINER",
+    )
+    firestore_names = (
+        "NESTOCK_FIRESTORE_PROJECT_ID",
+        "NESTOCK_FIRESTORE_DATABASE",
+        "NESTOCK_BOOTSTRAP_CHALLENGE_HASHES",
+    )
+    azure_media_names = (
+        "AZURE_STORAGE_CONNECTION_STRING",
+        "AZURE_STORAGE_BLOB_ENDPOINT",
+        "NESTOCK_STORAGE_ACCOUNT_URL",
+    )
+    if provider is None:
+        if any(
+            env.get(name)
+            for name in (*firestore_names, "NESTOCK_GCS_PROJECT_ID", "NESTOCK_GCS_BUCKET")
+        ):
+            raise RuntimeError(
+                "Google Cloud settings require explicit NESTOCK_DATA_PROVIDER=firestore."
+            )
+        if any(env.get(name) for name in azure_media_names) and not any(
+            env.get(name) for name in cosmos_names
+        ):
+            raise RuntimeError(
+                "Azure media settings require an explicit durable data provider; "
+                "demo data is disabled for cloud media."
+            )
+        inventory, shopping, read_repo, write_repo, document_reader = _create_cosmos_composition(
+            env
+        )
+        return inventory, shopping, read_repo, write_repo, document_reader, None, None
+
+    provider = provider.strip().lower()
+    if provider == "demo":
+        if any(
+            env.get(name)
+            for name in (
+                *cosmos_names,
+                *firestore_names,
+                "NESTOCK_GCS_PROJECT_ID",
+                "NESTOCK_GCS_BUCKET",
+                *azure_media_names,
+            )
+        ):
+            raise RuntimeError("NESTOCK_DATA_PROVIDER=demo cannot be combined with cloud settings.")
+        return DemoInventoryService(), DemoShoppingService(), None, None, None, None, None
+    if provider == "cosmos":
+        if any(env.get(name) for name in firestore_names) or any(
+            env.get(name) for name in ("NESTOCK_GCS_PROJECT_ID", "NESTOCK_GCS_BUCKET")
+        ):
+            raise RuntimeError("Cosmos provider cannot be combined with Firestore/GCS settings.")
+        inventory, shopping, read_repo, write_repo, document_reader = _create_cosmos_composition(
+            env
+        )
+        if read_repo is None or write_repo is None or document_reader is None:
+            raise RuntimeError(
+                "NESTOCK_DATA_PROVIDER=cosmos requires complete NESTOCK_COSMOS_* settings."
+            )
+        return inventory, shopping, read_repo, write_repo, document_reader, None, None
+    if provider != "firestore":
+        raise RuntimeError("NESTOCK_DATA_PROVIDER must be cosmos, firestore, or demo.")
+
+    if any(env.get(name) for name in cosmos_names):
+        raise RuntimeError("Firestore provider cannot be combined with NESTOCK_COSMOS_* settings.")
+    if any(env.get(name) for name in azure_media_names):
+        raise RuntimeError("Firestore provider cannot be combined with Azure Blob settings.")
+    missing = [name for name in firestore_names if not env.get(name, "").strip()]
+    if missing:
+        raise RuntimeError(
+            "Firestore configuration is incomplete; missing " + ", ".join(missing) + "."
+        )
+    if env.get("NESTOCK_MEDIA_PROVIDER", "").strip().lower() != "gcs":
+        raise RuntimeError("Firestore provider requires explicit NESTOCK_MEDIA_PROVIDER=gcs.")
+    challenge_hashes = tuple(
+        value.strip()
+        for value in env["NESTOCK_BOOTSTRAP_CHALLENGE_HASHES"].split(",")
+        if value.strip()
+    )
+    if not challenge_hashes:
+        raise RuntimeError("NESTOCK_BOOTSTRAP_CHALLENGE_HASHES must include at least one hash.")
+
+    try:
+        from google.cloud import firestore
+
+        firestore_client = firestore.Client(
+            project=env["NESTOCK_FIRESTORE_PROJECT_ID"].strip(),
+            database=env["NESTOCK_FIRESTORE_DATABASE"].strip(),
+        )
+        seed_bootstrap_challenges(firestore_client, challenge_hashes)
+    except Exception as error:
+        raise RuntimeError(
+            "Firestore initialization failed; verify ADC credentials and provider settings."
+        ) from error
+    atexit.register(firestore_client.close)
+
+    query_client = FirestoreDocumentQueryClient(firestore_client)
+    batch_client = FirestoreTransactionalBatchClient(firestore_client)
+    read_repository = CosmosReadRepository(query_client)
+    write_repository = FirestoreWriteRepository(
+        firestore_client,
+        query_client=query_client,
+        transactional_client=batch_client,
+    )
+    return (
+        CosmosInventoryService(read_repository),
+        CosmosShoppingService(read_repository),
+        read_repository,
+        write_repository,
+        query_client,
+        FirestoreIdentityRepository(firestore_client),
+        FirestoreBootstrapIssuerRepository(firestore_client),
+    )
+
+
 def _create_vision_service(
     inventory: InventoryService,
     media: MediaStorageService,
@@ -169,10 +457,108 @@ def _create_media_storage_service(
                 write_client=AzureCosmosTransactionalBatchClient(client_obj._container),
             )
 
+    selected_provider = env.get("NESTOCK_MEDIA_PROVIDER")
+    if selected_provider is not None:
+        selected_provider = selected_provider.strip().lower()
+        if selected_provider not in {"azure", "gcs", "local"}:
+            raise RuntimeError("NESTOCK_MEDIA_PROVIDER must be azure, gcs, or local.")
+    if selected_provider == "gcs":
+        if any(
+            env.get(name)
+            for name in (
+                "AZURE_STORAGE_CONNECTION_STRING",
+                "AZURE_STORAGE_BLOB_ENDPOINT",
+                "NESTOCK_STORAGE_ACCOUNT_URL",
+            )
+        ):
+            raise RuntimeError("GCS media provider cannot be combined with Azure Blob settings.")
+        required = ("NESTOCK_GCS_PROJECT_ID", "NESTOCK_GCS_BUCKET")
+        missing = [name for name in required if not env.get(name, "").strip()]
+        if missing:
+            raise RuntimeError(
+                "GCS configuration is incomplete; missing " + ", ".join(missing) + "."
+            )
+        if mapping_port is None:
+            raise RuntimeError("GCS media requires a durable household media-mapping repository.")
+        if env.get("NESTOCK_DATA_PROVIDER", "").strip().lower() != "firestore":
+            raise RuntimeError("GCS media requires NESTOCK_DATA_PROVIDER=firestore.")
+        parsed_staging_url = urlsplit(base_url or "")
+        if (
+            parsed_staging_url.scheme != "https"
+            or not parsed_staging_url.hostname
+            or parsed_staging_url.username
+            or parsed_staging_url.password
+            or parsed_staging_url.path.rstrip("/") != "/staging/upload"
+            or parsed_staging_url.query
+            or parsed_staging_url.fragment
+        ):
+            raise RuntimeError(
+                "GCS media requires NESTOCK_STAGING_BASE_URL to be a fixed HTTPS "
+                "URL ending in /staging/upload."
+            )
+        try:
+            from google.cloud import storage
+
+            storage_client = storage.Client(project=env["NESTOCK_GCS_PROJECT_ID"].strip())
+            bucket = storage_client.bucket(env["NESTOCK_GCS_BUCKET"].strip())
+            bucket.reload()
+            iam = bucket.iam_configuration
+            if not getattr(iam, "uniform_bucket_level_access_enabled", False):
+                raise RuntimeError("GCS bucket must enforce uniform bucket-level access.")
+            if getattr(iam, "public_access_prevention", None) != "enforced":
+                raise RuntimeError("GCS bucket must enforce public access prevention.")
+            atexit.register(storage_client.close)
+            return GCSMediaStorage(
+                bucket=bucket,
+                base_staging_url=base_url,
+                mapping_port=mapping_port,
+                vision_service=_resolve_vision_service_for_media,
+            )
+        except RuntimeError:
+            raise
+        except Exception as error:
+            raise RuntimeError(
+                "GCS initialization failed; verify ADC credentials, bucket access, and settings."
+            ) from error
+    if selected_provider == "local":
+        if any(
+            env.get(name)
+            for name in (
+                "AZURE_STORAGE_CONNECTION_STRING",
+                "AZURE_STORAGE_BLOB_ENDPOINT",
+                "NESTOCK_STORAGE_ACCOUNT_URL",
+                "NESTOCK_GCS_BUCKET",
+            )
+        ):
+            raise RuntimeError(
+                "Local media provider cannot be combined with cloud storage settings."
+            )
+        return LocalStagingMediaStorage(
+            base_staging_url=base_url,
+            mapping_port=mapping_port,
+            vision_service=_resolve_vision_service_for_media,
+        )
+
     # 偵測雲端 Azure Blob Storage 配置 (支援連線字串或 Endpoint + DefaultAzureCredential)
     conn_str = env.get("AZURE_STORAGE_CONNECTION_STRING")
     blob_endpoint = env.get("AZURE_STORAGE_BLOB_ENDPOINT") or env.get("NESTOCK_STORAGE_ACCOUNT_URL")
     container_name = env.get("AZURE_STORAGE_CONTAINER_NAME") or "media"
+    if selected_provider == "azure":
+        if (
+            env.get("NESTOCK_GCS_PROJECT_ID")
+            or env.get("NESTOCK_GCS_BUCKET")
+            or env.get("NESTOCK_DATA_PROVIDER") == "firestore"
+        ):
+            raise RuntimeError(
+                "Azure media provider cannot be combined with Firestore/GCS settings."
+            )
+        if not conn_str and not blob_endpoint:
+            raise RuntimeError(
+                "Azure media provider requires AZURE_STORAGE_CONNECTION_STRING or "
+                "AZURE_STORAGE_BLOB_ENDPOINT."
+            )
+    elif env.get("NESTOCK_GCS_BUCKET"):
+        raise RuntimeError("GCS settings require explicit NESTOCK_MEDIA_PROVIDER=gcs.")
 
     kwargs: dict[str, Any] = {
         "container_name": container_name,
@@ -188,12 +574,8 @@ def _create_media_storage_service(
             blob_client = BlobServiceClient.from_connection_string(conn_str)
             return AzureBlobMediaStorage(blob_service_client=blob_client, **kwargs)
         except Exception as exc:
-            logger.error(
-                "Failed to initialize AzureBlobMediaStorage from connection string: %s", exc
-            )
-            raise RuntimeError(
-                f"Azure Blob Storage configuration failed from connection string: {exc}"
-            ) from exc
+            logger.error("Failed to initialize Azure Blob Storage from connection string.")
+            raise RuntimeError("Azure Blob Storage configuration failed.") from exc
     elif blob_endpoint:
         try:
             from azure.identity import DefaultAzureCredential
@@ -203,10 +585,8 @@ def _create_media_storage_service(
             blob_client = BlobServiceClient(account_url=blob_endpoint, credential=credential)
             return AzureBlobMediaStorage(blob_service_client=blob_client, **kwargs)
         except Exception as exc:
-            logger.error("Failed to initialize AzureBlobMediaStorage from blob endpoint: %s", exc)
-            raise RuntimeError(
-                f"Azure Blob Storage configuration failed from blob endpoint: {exc}"
-            ) from exc
+            logger.error("Failed to initialize Azure Blob Storage from blob endpoint.")
+            raise RuntimeError("Azure Blob Storage configuration failed.") from exc
 
     return LocalStagingMediaStorage(
         base_staging_url=base_url,
@@ -222,9 +602,16 @@ _load_local_env()
     cosmos_read_repository,
     cosmos_write_repository,
     cosmos_document_reader,
-) = _create_cosmos_composition()
+    identity_repository,
+    bootstrap_issuer_repository,
+) = _create_selected_composition()
 media_storage_service: MediaStorageService = _create_media_storage_service(
-    read_repository=cosmos_read_repository
+    read_repository=cosmos_read_repository,
+    write_client=(
+        cosmos_write_repository.transactional_batch_client
+        if cosmos_write_repository is not None
+        else None
+    ),
 )
 _speech_service: SpeechToTextService | None = None
 _speech_service_resolved: bool = False

@@ -811,6 +811,9 @@ integer and `ShoppingItem.unit` is optional: a Shopping entry may contain only
 its `name`, and omitting quantity must not silently default it to `1`. This
 does not make weight or volume package specifications inventory quantities,
 and it does not constrain B2's calculated forecast values to integers.
+Existing Cosmos documents with quantity/unit retain those values on mapping;
+documents without them read as `None` and serialize with null fields. No
+quantity default or backfill migration is applied.
 
 Keep the planned Shopping quantity distinct from the actual purchased quantity.
 On purchase completion, only the user-confirmed actual integer quantity updates

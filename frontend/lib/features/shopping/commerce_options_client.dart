@@ -2,6 +2,9 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../onboarding/data/secure_transport_client.dart';
+import '../onboarding/domain/household_context.dart';
+
 enum CommerceOptionsStatus { success, noMatch, unavailable }
 
 class CommerceOptionView {
@@ -54,21 +57,25 @@ class UnavailableCommerceOptionsClient implements CommerceOptionsClient {
 class HttpCommerceOptionsClient implements CommerceOptionsClient {
   HttpCommerceOptionsClient({
     required this.baseUrl,
+    required this.householdContext,
     http.Client? client,
     this.timeout = const Duration(seconds: 15),
-  }) : client = client ?? http.Client();
+  }) : client = SecureTransportClient(innerClient: client);
 
   final Uri baseUrl;
+  final HouseholdRequestContext householdContext;
   final http.Client client;
   final Duration timeout;
 
   @override
   Future<CommerceOptionsView> lookup(String keyword) async {
+    final scope = householdContext.snapshot();
     final response = await client
         .get(
           baseUrl
               .resolve('/api/commerce/options')
               .replace(queryParameters: {'keyword': keyword}),
+          headers: scope.headers,
         )
         .timeout(timeout);
     if (response.statusCode != 200) {
@@ -130,6 +137,14 @@ class HttpCommerceOptionsClient implements CommerceOptionsClient {
 CommerceOptionsClient commerceOptionsClientForTransport({
   required String transport,
   required Uri baseUrl,
+  HouseholdRequestContext? householdContext,
+  http.Client? client,
 }) => transport == 'mock'
     ? const UnavailableCommerceOptionsClient()
-    : HttpCommerceOptionsClient(baseUrl: baseUrl);
+    : HttpCommerceOptionsClient(
+        baseUrl: baseUrl,
+        householdContext:
+            householdContext ??
+            (throw ArgumentError('HTTP commerce requires household context.')),
+        client: client,
+      );

@@ -50,11 +50,13 @@ class ApprovalView {
     required this.presentation,
     required this.operations,
     this.options = const [],
+    this.householdId,
   });
   final String id;
   final ApprovalPresentation presentation;
   final List<OperationView> operations;
   final List<ApprovalOptionView> options;
+  final String? householdId;
 }
 
 /// Local-only card content for the Confirmation Card presentation prototype.

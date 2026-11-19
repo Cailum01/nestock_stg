@@ -2,6 +2,9 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../onboarding/domain/household_context.dart';
+import '../onboarding/data/secure_transport_client.dart';
+
 /// Presentation projection only; this does not define the backend wire contract.
 class ShoppingViewItem {
   const ShoppingViewItem({
@@ -34,18 +37,21 @@ class DemoShoppingViewClient implements ShoppingViewClient {
 class HttpShoppingViewClient implements ShoppingViewClient {
   HttpShoppingViewClient({
     required this.baseUrl,
+    required this.householdContext,
     http.Client? client,
     this.timeout = const Duration(seconds: 15),
-  }) : client = client ?? http.Client();
+  }) : client = SecureTransportClient(innerClient: client);
 
   final Uri baseUrl;
+  final HouseholdRequestContext householdContext;
   final http.Client client;
   final Duration timeout;
 
   @override
   Future<List<ShoppingViewItem>> load() async {
+    final scope = householdContext.snapshot();
     final response = await client
-        .get(baseUrl.resolve('/shopping'))
+        .get(baseUrl.resolve('/shopping'), headers: scope.headers)
         .timeout(timeout);
     if (response.statusCode != 200) {
       throw StateError('Shopping request failed (${response.statusCode})');
@@ -84,6 +90,12 @@ class HttpShoppingViewClient implements ShoppingViewClient {
 ShoppingViewClient shoppingViewClientForTransport({
   required String transport,
   required Uri baseUrl,
+  HouseholdRequestContext? householdContext,
 }) => transport == 'mock'
     ? const DemoShoppingViewClient()
-    : HttpShoppingViewClient(baseUrl: baseUrl);
+    : HttpShoppingViewClient(
+        baseUrl: baseUrl,
+        householdContext:
+            householdContext ??
+            (throw ArgumentError('HTTP shopping requires household context.')),
+      );

@@ -5,11 +5,14 @@ from fastapi.testclient import TestClient
 
 from app.api.forecast import get_clock, get_forecast_service, router
 from app.core.config import settings
+from app.core.dependencies import AuthorizedHousehold, get_authorized_household
 from app.models.domain import InventoryItem, Transaction, TransactionReason
+from app.models.identity import DeviceRecord, HouseholdMembership, HouseholdRole
 from app.services.forecast import ForecastService, ForecastSettings
 
 NOW = datetime(2026, 11, 12, tzinfo=UTC)
 HOUSEHOLD = settings.demo_household_id
+TEST_DEVICE_ID = "forecast-test-device"
 
 
 class FakeInventory:
@@ -60,6 +63,21 @@ def client(items, records, *, confirmed: bool = True) -> TestClient:
         FakeInventory(items),
         FakeHistory(records),
         ForecastSettings(time_semantics_confirmed=confirmed),
+    )
+    device = DeviceRecord(
+        device_id=TEST_DEVICE_ID,
+        credential_hash="0" * 64,
+        created_at=NOW,
+    )
+    membership = HouseholdMembership(
+        household_id=HOUSEHOLD,
+        device_id=TEST_DEVICE_ID,
+        role=HouseholdRole.OWNER,
+        created_at=NOW,
+    )
+    app.dependency_overrides[get_authorized_household] = lambda: AuthorizedHousehold(
+        device=device,
+        membership=membership,
     )
     return TestClient(app)
 
@@ -118,3 +136,12 @@ def test_reorder_does_not_change_inventory():
 def test_reorder_is_read_only():
     with client(ITEMS, RECORDS) as c:
         assert c.post("/forecast/reorder").status_code == 405
+
+
+def test_reorder_requires_authorized_household():
+    with client(ITEMS, RECORDS) as c:
+        c.app.dependency_overrides.pop(get_authorized_household)
+        response = c.get("/forecast/reorder")
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "A per-install bearer credential is required."

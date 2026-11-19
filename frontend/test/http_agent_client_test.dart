@@ -9,6 +9,8 @@ import 'package:nestock/features/agent/data/mock_agent_client.dart';
 import 'package:nestock/features/agent/domain/agent_client.dart';
 import 'package:nestock/features/agent/domain/agent_view_data.dart';
 
+import 'household_test_support.dart';
+
 void main() {
   final base = Uri.parse('http://10.0.2.2:8000');
   test(
@@ -16,11 +18,14 @@ void main() {
     () async {
       final client = HttpAgentClient(
         baseUrl: base,
+        householdContext: testHouseholdContext,
         client: MockClient((request) async {
           expect(request.url.path, '/agent/messages');
           expect(request.method, 'POST');
+          expect(request.headers['authorization'], 'Bearer test-install-token');
+          expect(request.headers['x-household-id'], 'test-household');
           expect(jsonDecode(request.body), {
-            'household_id': 'demo-household',
+            'household_id': 'test-household',
             'message': '查詢',
             'image_ref': 'opaque:Ref',
           });
@@ -54,6 +59,7 @@ void main() {
   test('server errors fail safely', () async {
     final client = HttpAgentClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient((_) async => http.Response('', 501)),
     );
     await expectLater(client.send('查詢'), throwsStateError);
@@ -63,6 +69,7 @@ void main() {
     () async {
       final client = HttpAgentClient(
         baseUrl: base,
+        householdContext: testHouseholdContext,
         client: MockClient((request) async {
           if (request.url.path == '/agent/messages') {
             return http.Response.bytes(
@@ -100,7 +107,7 @@ void main() {
           }
           expect(request.url.path, '/agent/resume');
           expect(jsonDecode(request.body), {
-            'household_id': 'demo-household',
+            'household_id': 'test-household',
             'approval_id': 'approval-match-1',
             'approved': true,
             'selected_option_id': 'new_item',
@@ -137,6 +144,7 @@ void main() {
     final requests = <Map<String, dynamic>>[];
     final client = HttpAgentClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient((request) async {
         requests.add(
           Map<String, dynamic>.from(jsonDecode(request.body) as Map),
@@ -153,9 +161,9 @@ void main() {
     await client.send('衛生紙：數量改成 3', replacesApprovalId: 'approval-1');
 
     expect(requests, [
-      {'household_id': 'demo-household', 'message': '一般聊天'},
+      {'household_id': 'test-household', 'message': '一般聊天'},
       {
-        'household_id': 'demo-household',
+        'household_id': 'test-household',
         'message': '衛生紙：數量改成 3',
         'replaces_approval_id': 'approval-1',
       },
@@ -164,10 +172,11 @@ void main() {
   test('submits only explicit structured card changes', () async {
     final client = HttpAgentClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient((request) async {
         expect(request.url.path, '/agent/messages');
         expect(jsonDecode(request.body), {
-          'household_id': 'demo-household',
+          'household_id': 'test-household',
           'message': '送出修改',
           'replaces_approval_id': 'approval-1',
           'card_changes': [
@@ -206,10 +215,11 @@ void main() {
   test('rejecting an approval omits selection fields', () async {
     final client = HttpAgentClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient((request) async {
         expect(request.url.path, '/agent/resume');
         expect(jsonDecode(request.body), {
-          'household_id': 'demo-household',
+          'household_id': 'test-household',
           'approval_id': 'approval-1',
           'approved': false,
         });
@@ -231,6 +241,7 @@ void main() {
     () async {
       final client = HttpAgentClient(
         baseUrl: base,
+        householdContext: testHouseholdContext,
         client: MockClient((request) async {
           if (request.url.path == '/agent/messages') {
             return http.Response.bytes(
@@ -260,7 +271,7 @@ void main() {
             );
           }
           expect(jsonDecode(request.body), {
-            'household_id': 'demo-household',
+            'household_id': 'test-household',
             'approval_id': 'approval-options-1',
             'approved': true,
             'selected_option_id': 'option-1',
@@ -289,9 +300,10 @@ void main() {
   test('batch resume sends exact backend operation IDs', () async {
     final client = HttpAgentClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient((request) async {
         expect(jsonDecode(request.body), {
-          'household_id': 'demo-household',
+          'household_id': 'test-household',
           'approval_id': 'approval-batch-1',
           'approved': true,
           'approved_operation_ids': ['operation-a'],
@@ -315,6 +327,7 @@ void main() {
     () async {
       final client = HttpAgentClient(
         baseUrl: base,
+        householdContext: testHouseholdContext,
         client: MockClient(
           (_) async => http.Response.bytes(
             utf8.encode(
@@ -360,6 +373,7 @@ void main() {
     final messages = <String>[];
     final client = HttpAgentClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient((request) async {
         messages.add((jsonDecode(request.body) as Map)['message'] as String);
         return http.Response(
@@ -378,6 +392,7 @@ void main() {
   test('request timeout is exposed and mock remains usable', () async {
     final client = HttpAgentClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       timeout: const Duration(milliseconds: 10),
       client: MockClient((_) => Completer<http.Response>().future),
     );

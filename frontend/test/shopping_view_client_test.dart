@@ -5,15 +5,20 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:nestock/features/shopping/shopping_view_client.dart';
 
+import 'household_test_support.dart';
+
 void main() {
   final base = Uri.parse('http://10.0.2.2:8000');
 
   test('HTTP Shopping client maps populated shopping records', () async {
     final client = HttpShoppingViewClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient((request) async {
         expect(request.method, 'GET');
         expect(request.url.path, '/shopping');
+        expect(request.headers['authorization'], 'Bearer test-install-token');
+        expect(request.headers['x-household-id'], 'test-household');
         return http.Response.bytes(
           utf8.encode(
             jsonEncode([
@@ -38,6 +43,7 @@ void main() {
   test('HTTP Shopping client maps an empty response', () async {
     final client = HttpShoppingViewClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient((_) async => http.Response('[]', 200)),
     );
 
@@ -49,6 +55,7 @@ void main() {
     () async {
       final client = HttpShoppingViewClient(
         baseUrl: base,
+        householdContext: testHouseholdContext,
         client: MockClient(
           (_) async => http.Response.bytes(
             utf8.encode(
@@ -79,6 +86,7 @@ void main() {
   test('HTTP Shopping client skips malformed records safely', () async {
     final client = HttpShoppingViewClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient(
         (_) async => http.Response.bytes(
           utf8.encode(
@@ -102,6 +110,7 @@ void main() {
   test('HTTP failures do not return demo Shopping data', () async {
     final client = HttpShoppingViewClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient((_) async => http.Response('unavailable', 503)),
     );
 
@@ -110,7 +119,11 @@ void main() {
 
   test('Shopping client transport wiring selects HTTP or demo clients', () {
     expect(
-      shoppingViewClientForTransport(transport: 'http', baseUrl: base),
+      shoppingViewClientForTransport(
+        transport: 'http',
+        baseUrl: base,
+        householdContext: testHouseholdContext,
+      ),
       isA<HttpShoppingViewClient>(),
     );
     expect(

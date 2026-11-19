@@ -124,6 +124,23 @@ abstract interface class AgentClient {
   });
 }
 
+/// Optional port for carrying the household scope already bound to a card.
+abstract interface class HouseholdBoundAgentClient {
+  Future<AgentReply> submitCardChangesInHousehold({
+    required String approvalId,
+    required List<CardChange> changes,
+    required String householdId,
+  });
+
+  Future<AgentReply> resumeInHousehold({
+    required String approvalId,
+    required bool approved,
+    required String householdId,
+    String? selectedOptionId,
+    List<String>? approvedOperationIds,
+  });
+}
+
 /// Optional capability for sending an uploaded, opaque photo reference.
 abstract interface class PhotoAwareAgentClient implements AgentClient {
   Future<AgentReply> sendWithPhoto(String message, String imageRef);

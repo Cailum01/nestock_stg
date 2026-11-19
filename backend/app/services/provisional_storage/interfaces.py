@@ -31,6 +31,10 @@ class MediaStorageService(Protocol):
         """Issue a short-lived, narrowly scoped upload authorization and reserve image_ref."""
         ...
 
+    async def is_upload_token_scoped_to(self, upload_token: str, household_id: str) -> bool:
+        """Verify an unconsumed staging token belongs to the authorized household."""
+        ...
+
     async def verify_media_exists(self, household_id: str, image_ref: str) -> bool:
         """Check whether media bytes exist and belong to the specified household."""
         ...

@@ -6,6 +6,7 @@ temporary folder, and the three settings are cleared for each test.
 
 import pytest
 from fastapi.testclient import TestClient
+from identity_test_support import install_scope_override
 
 from app.agent import llm
 from app.agent.llm import ENV_VARS, AzureOpenAISettings, load_azure_settings
@@ -145,6 +146,7 @@ class FailingAgent:
 def test_model_failure_answers_502_without_details_or_writes(error):
     app = create_app()
     app.dependency_overrides[get_read_agent] = lambda: FailingAgent(error)
+    install_scope_override(app, HOUSEHOLD)
     with TestClient(app) as client:
         before = [client.get(path).json() for path in ["/inventory", "/shopping"]]
 

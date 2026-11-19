@@ -17,14 +17,22 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.core.config import settings
-from app.core.dependencies import get_inventory_service
+from app.api.identity import IdentityErrorRoute
+from app.core.dependencies import (
+    AuthorizedHousehold,
+    get_authorized_household,
+    get_inventory_service,
+)
 from app.models.forecast import ItemForecast
 from app.services.cosmos_transaction_history import create_transaction_history
 from app.services.forecast import ForecastService, ItemNotFoundError
 from app.services.interfaces import InventoryService, TransactionHistory
 
-router = APIRouter(prefix="/forecast", tags=["forecast"])
+router = APIRouter(
+    prefix="/forecast",
+    tags=["forecast"],
+    route_class=IdentityErrorRoute,
+)
 
 # Cosmos when NESTOCK_COSMOS_* are set, otherwise demo history with a setup hint.
 transaction_history: TransactionHistory = create_transaction_history()
@@ -49,8 +57,9 @@ def get_forecast_service(
 async def household_forecast(
     service: Annotated[ForecastService, Depends(get_forecast_service)],
     clock: Annotated[Callable[[], datetime], Depends(get_clock)],
+    context: Annotated[AuthorizedHousehold, Depends(get_authorized_household)],
 ) -> list[ItemForecast]:
-    return await service.forecast_household(settings.demo_household_id, clock())
+    return await service.forecast_household(context.household_id, clock())
 
 
 # Defined before "/{item_id}" so "reorder" is never read as an item id.
@@ -58,13 +67,14 @@ async def household_forecast(
 async def reorder_candidates(
     service: Annotated[ForecastService, Depends(get_forecast_service)],
     clock: Annotated[Callable[[], datetime], Depends(get_clock)],
+    context: Annotated[AuthorizedHousehold, Depends(get_authorized_household)],
 ) -> list[ItemForecast]:
     """Items worth restocking soon, soonest first. Empty when none qualify.
 
     Same selection the Agent should reuse (`ForecastService.reorder_candidates`).
     Estimates only: nothing here changes confirmed inventory or the shopping list.
     """
-    summary = await service.reorder_candidates(settings.demo_household_id, clock())
+    summary = await service.reorder_candidates(context.household_id, clock())
     return summary.candidates
 
 
@@ -77,8 +87,9 @@ async def item_forecast(
     item_id: str,
     service: Annotated[ForecastService, Depends(get_forecast_service)],
     clock: Annotated[Callable[[], datetime], Depends(get_clock)],
+    context: Annotated[AuthorizedHousehold, Depends(get_authorized_household)],
 ) -> ItemForecast:
     try:
-        return await service.forecast_item(settings.demo_household_id, item_id, clock())
+        return await service.forecast_item(context.household_id, item_id, clock())
     except ItemNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found") from exc

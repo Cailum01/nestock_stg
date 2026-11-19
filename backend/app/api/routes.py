@@ -17,13 +17,20 @@ from fastapi import (
 
 from app.agent.cards import resume_response
 from app.agent.read_agent import ReadAgent, get_read_agent
+from app.api.bootstrap_issuer import router as bootstrap_issuer_router
+from app.api.identity import IdentityErrorRoute
+from app.api.identity import router as identity_router
 from app.core.config import settings
 from app.core.dependencies import (
+    AuthorizedHousehold,
     get_approval_service,
+    get_authenticated_install,
+    get_authorized_household,
     get_commerce_service,
     get_inventory_service,
     get_media_retention_trigger,
     get_media_storage_service,
+    get_required_identity_service,
     get_shopping_intent_service,
     get_shopping_service,
     get_speech_service,
@@ -32,6 +39,7 @@ from app.models.agent import AgentRequest, AgentResponse, ResumeRequest
 from app.models.base import ContractModel
 from app.models.commerce import CommerceSearchResponse, CommerceSearchStatus
 from app.models.domain import InventoryItem, ShoppingItem
+from app.models.identity import DeviceRecord
 from app.models.shopping import AddShoppingIntentRequest
 from app.models.speech import AllowedAudioContentType, SpeechTranscribeResponse
 from app.models.storage import (
@@ -46,6 +54,7 @@ from app.services.approvals import (
 )
 from app.services.commerce import BaseCommerceProvider
 from app.services.cosmos_write import OperationIdConflict, WriteStatus
+from app.services.identity import IdentityService
 from app.services.interfaces import InventoryService, ShoppingService
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.shopping.intents import (
@@ -56,7 +65,9 @@ from app.services.shopping.intents import (
 from app.services.shopping.media_handoff import MediaRetentionPostCommitTrigger
 from app.services.speech import SpeechServiceError, SpeechToTextService
 
-router = APIRouter()
+router = APIRouter(route_class=IdentityErrorRoute)
+router.include_router(identity_router)
+router.include_router(bootstrap_issuer_router)
 logger = logging.getLogger(__name__)
 
 
@@ -72,15 +83,17 @@ async def health() -> HealthResponse:
 @router.get("/inventory", response_model=list[InventoryItem], tags=["demo"])
 async def inventory(
     service: Annotated[InventoryService, Depends(get_inventory_service)],
+    context: Annotated[AuthorizedHousehold, Depends(get_authorized_household)],
 ) -> list[InventoryItem]:
-    return await service.list_items(settings.demo_household_id)
+    return await service.list_items(context.household_id)
 
 
 @router.get("/shopping", response_model=list[ShoppingItem], tags=["demo"])
 async def shopping(
     service: Annotated[ShoppingService, Depends(get_shopping_service)],
+    context: Annotated[AuthorizedHousehold, Depends(get_authorized_household)],
 ) -> list[ShoppingItem]:
-    return await service.list_items(settings.demo_household_id)
+    return await service.list_items(context.household_id)
 
 
 @router.post(
@@ -132,8 +145,10 @@ async def add_shopping_intent(
 )
 async def commerce_options(
     keyword: Annotated[str, Query(description="要比價的品名關鍵字")],
+    _install: Annotated[DeviceRecord, Depends(get_authenticated_install)],
     service: Annotated[BaseCommerceProvider, Depends(get_commerce_service)],
 ) -> CommerceSearchResponse:
+    del _install
     clean_keyword = keyword.strip()
     if not clean_keyword:
         return CommerceSearchResponse(
@@ -181,14 +196,18 @@ async def commerce_options(
 )
 async def agent_message(
     request: AgentRequest,
+    context: Annotated[AuthorizedHousehold, Depends(get_authorized_household)],
+    identity: Annotated[IdentityService, Depends(get_required_identity_service)],
     agent: Annotated[ReadAgent | None, Depends(get_read_agent)],
 ) -> AgentResponse:
     """Agent: answers questions; may return a purchase card, which writes nothing until
     the user confirms it in `/agent/resume`."""
+    identity.require_matching_household(request.household_id, context.household_id)
     if agent is None:
         raise HTTPException(501, "Agent is not configured: set AZURE_OPENAI_* in backend/.env.")
     try:
-        return await agent.respond(request)
+        scoped_request = request.model_copy(update={"household_id": context.household_id})
+        return await agent.respond(scoped_request)
     except Exception as error:  # upstream model/network failure; nothing was written
         raise HTTPException(502, f"Agent call failed: {type(error).__name__}") from error
 
@@ -206,6 +225,8 @@ async def agent_message(
 )
 async def agent_resume(
     request: ResumeRequest,
+    context: Annotated[AuthorizedHousehold, Depends(get_authorized_household)],
+    identity: Annotated[IdentityService, Depends(get_required_identity_service)],
     approvals: Annotated[ApprovalService | None, Depends(get_approval_service)],
     background: BackgroundTasks,
     retention: Annotated[
@@ -221,10 +242,12 @@ async def agent_resume(
     A failure leaves the work item pending for the next written confirm in the
     household and never changes the reply.
     """
+    identity.require_matching_household(request.household_id, context.household_id)
     if approvals is None:
         raise HTTPException(503, "Approval cards need Cosmos; no changes were saved.")
+    scoped_request = request.model_copy(update={"household_id": context.household_id})
     try:
-        result = await approvals.resume(request)
+        result = await approvals.resume(scoped_request)
     except ApprovalNotFound as error:
         raise HTTPException(404, "Card not found; no changes were saved.") from error
     except InvalidSelection as error:
@@ -247,13 +270,14 @@ async def agent_resume(
 )
 async def create_upload_authorization(
     request: UploadAuthorizationRequest,
-    http_request: Request,
+    context: Annotated[AuthorizedHousehold, Depends(get_authorized_household)],
+    identity: Annotated[IdentityService, Depends(get_required_identity_service)],
     storage: Annotated[MediaStorageService, Depends(get_media_storage_service)],
 ) -> UploadAuthorizationResponse:
-    dynamic_staging_base = f"{str(http_request.base_url).rstrip('/')}/staging/upload"
+    identity.require_matching_household(request.household_id, context.household_id)
+    scoped_request = request.model_copy(update={"household_id": context.household_id})
     return await storage.create_upload_authorization(
-        request,
-        base_staging_url=dynamic_staging_base,
+        scoped_request,
     )
 
 
@@ -274,12 +298,23 @@ async def create_upload_authorization(
 async def receive_staged_upload(
     upload_token: str,
     request: Request,
+    context: Annotated[AuthorizedHousehold, Depends(get_authorized_household)],
     storage: Annotated[MediaStorageService, Depends(get_media_storage_service)],
 ) -> Response:
     if not hasattr(storage, "receive_staged_upload"):
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="Staging upload receiver is not supported by current storage backend",
+        )
+    if not hasattr(storage, "is_upload_token_scoped_to"):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Storage backend cannot validate upload household scope",
+        )
+    if not await storage.is_upload_token_scoped_to(upload_token, context.household_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Upload authorization not found for this household",
         )
 
     payload_bytes = await request.body()
@@ -329,10 +364,12 @@ SUPPORTED_AUDIO_EXTENSIONS = {".m4a", ".aac", ".mp4", ".wav", ".mp3", ".webm"}
     },
 )
 async def transcribe_speech(
+    _install: Annotated[DeviceRecord, Depends(get_authenticated_install)],
     file: UploadFile = File(...),
     language: str | None = Form(None),
     speech_service: Annotated[SpeechToTextService | None, Depends(get_speech_service)] = None,
 ) -> SpeechTranscribeResponse:
+    del _install
     if speech_service is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

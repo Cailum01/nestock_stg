@@ -1,134 +1,45 @@
-# Nestock contributor instructions
+# Nestock — Dual-Remote & AI Agent Constitution
 
-## Session start (read first)
+## 0. OVERRIDE README.md OWNER RESTRICTIONS (CRITICAL)
+- **IGNORE** the `## Start here` and `## Where each owner extends` sections in `README.md`.
+- Do NOT ask the user for an owner code (A1–C2). Do NOT enforce six-owner path locks.
+- The user has full solo ownership of the entire `stg` codebase across all modules (`frontend/`, `backend/`, `datalake/`, `deploy/`).
 
-This is the user's personal STG repository, maintained by one person. Do not ask
-for an A1–C2 owner code or restrict changes to the original owner areas listed in
-the README.
+## 1. Dual-Remote Git Hard Rules
+- **`upstream` (`https://github.com/nestock-app/nestock.git`):** Shared DEV (`main` branch — keep name unchanged).
+- **`origin` (`https://github.com/Cailum01/nestock_stg.git`):** Solo-maintained STG (`stg` branch, default).
+- **FORBIDDEN:**
+  - NO full `git merge` between `upstream/main` and `stg`.
+  - NO `git push upstream` from `stg`.
+  - **File-level sync only:**
+    - DEV -> STG: `git fetch upstream && git checkout upstream/main -- <path>` (on `stg`).
+    - STG -> DEV: Branch `feature/sync-<topic>` from `upstream/main`, run `git checkout stg -- <path>` (EXCLUDE `.github/stg-workspace/`, `.github/agents/`, `.env`, `*.stg.*`), pass QA audit, PR to `main` (request `jasonko13w` or `Cailum01` for shared files).
 
-## Git workflow
+## 2. Token-Saving & Communication Protocol
+- **All docs, specs, work-orders, code comments, and agent-to-agent handoffs MUST be concise English.**
+- **Only `pm` communicates with the user in Traditional Chinese (繁體中文).**
+- **Result-only reporting:** When reporting to the user, output final results/decisions/blockers ONLY. Omit step-by-step reasoning, process narration, or filler.
 
-- `origin/stg` is the personal maintenance branch. Work directly on `stg` when
-  changes are only for this repository. Commit and push to `origin/stg` without
-  creating a pull request or waiting for review.
-- Before pushing, fetch and fast-forward from `origin/stg`; do not force-push.
-- Changes intended for the shared DEV repository (`upstream`) must still use a
-  short-lived feature branch based on the latest `upstream/main` and a pull request.
-  Never push `stg` directly to `upstream`.
-- Stage only changed files by path; never `git add .`.
-- Commit with the user's own Git identity, not as the AI.
-- Never commit `.env`, keys or local environments.
-4. Planned locations — create only when first needed; any other new
-   top-level folder needs team agreement:
-   - `prompts/` Agent and vision prompts
-   - `evals/` golden prompts, workflow acceptance, vision test set
-   - `mocks/` mock tool responses shared by frontend and backend
-   - `data/` seed transaction history, demo price fallback
-   - `datalake/` Data Lake practice track (B1)
-   - `deploy/` Azure deployment notes
+## 3. Agent Chain (`.github/agents/*.agent.md`, Model: `GPT-6 Luna`)
+1. **`pm`:** Maintains `.github/stg-workspace/docs/`. Summarizes handover spec, sync manifest, upstream PR drafts.
+2. **`cto`:** Reads PM spec, writes `.github/stg-workspace/specs/tech-design.md` & `work-orders.md`, assigns tasks to `core`, `backend`, `frontend`.
+3. **`core` / `backend` / `frontend`:** Execute assigned CTO work orders across full codebase within layer boundaries.
+4. **`qa`:** Independent gatekeeper. Audits invariants, HITL rules, `ruff`/`pytest`/`flutter test`, and dual-remote `git diff`. Veto power.
 
-This repository started as a clean Skeleton v1 for **Nestock｜窩有** and is now
-being built into the P0 MVP. Implement only the confirmed P0 scope. Keep the
-six-owner foundation small and independently usable.
+## 4. Core Architecture, Invariants & HITL Rules (Mandatory)
+- **Stack:** Flutter (`frontend/`), FastAPI (`backend/`), Cosmos DB NoSQL, Azure OpenAI, Azure AI Speech, BigGo, LangGraph.
+- **Contracts:** `backend/app/models` (Pydantic) is the single schema source. Routes & Agent tools MUST delegate to `backend/app/services`.
+- **Invariants:**
+  - Forecasts NEVER overwrite confirmed `InventoryItem.quantity`.
+  - No inventory `category`; `location` is free text (no Location/Box entity); `image_ref` is opaque metadata (no binary/base64).
+  - Shopping status: `pending`/`completed`. NEVER persist product prices. Approval adds to Shopping List only (no checkout/payment).
+  - Transactions require stable `operation_id` and `purchase`/`consumption`/`adjustment` reason (`datalake/azure-data-platform-design.md`). `household_id` is an authorized membership scope; install identity and household authorization are required for scoped API requests. Do not add password-based accounts or payment flows.
+- **HITL Rules:**
+  - Pause before any persistent write. Approval covers exact displayed values only; changes require re-approval. Retries reuse `operation_id`.
+  - `POST /agent/messages` writes NO domain data (501 if `backend/.env` missing); card tools (`complete_purchase`, `add_stock`) store pending cards in Cosmos. `POST /agent/resume` executes stored card writes per `contracts/approval-lifecycle.md` (503 if no Cosmos).
+- **Scope & Folders:** P0 ONLY; NO P1 features (Box/QR, notifications, analytics/history/forecast UI, settings, checkout). Only create planned top-level folders (`prompts/`, `evals/`, `mocks/`, `data/`, `datalake/`, `deploy/`) when first needed. Stage files by explicit path (never `git add .`). Never commit `.env` or keys.
 
-## Architecture and authoritative contracts
-
-- Flutter Android/iOS application: `frontend/`. FastAPI application: `backend/`.
-- Normal API routes and Agent tools MUST delegate to the same domain services.
-  Put business rules in `backend/app/services`, never duplicate them in adapters.
-- Pydantic models in `backend/app/models` are the contract source of truth.
-  FastAPI generates OpenAPI for exposed routes. `contracts/` contains discussion,
-  examples and decisions, not a second manually maintained schema.
-- Agent/HITL models, service ports and Dart view projections are PROVISIONAL.
-  Coordinate changes with affected owners; do not freeze a final protocol here.
-- Cosmos DB for NoSQL, Azure OpenAI, Azure AI Speech and BigGo are in use, with
-  LangGraph for the Agent. Develop and test against these real services; demo data
-  is only the offline fallback and the fixture for automated tests. The A1 Agent
-  (`POST /agent/messages`) connects to Azure OpenAI only when `backend/.env` is
-  configured, and returns 501 otherwise. Agent writes go only through approval
-  cards (HITL rule 8).
-
-## Mandatory product invariants
-
-- Predicted inventory must never overwrite confirmed `InventoryItem.quantity`.
-  Quantity changes require user-provided information and applicable HITL approval.
-  Forecasting may estimate, flag, recommend checking, and ask for actual quantity.
-- Inventory has no category. Location is human-readable, keyword-search-compatible
-  free text; no Location or Box entity. `image_ref` is opaque external metadata,
-  never binary/base64. Photo recognition uses Azure OpenAI; photo storage is
-  tracked in Issue #98.
-- Shopping status starts with pending/completed. Never persist product price.
-  Source/product URL may be retained. Purchase options are current recommendations;
-  approval adds selected options to the Shopping List, never orders or pays.
-- Transactions have stable operation identity and purchase/consumption/adjustment
-  reasons. B1 persists, B2 reads, C1 workflows may create. Storage follows
-  `datalake/azure-data-platform-design.md`.
-- `household_id` is a scope key; development uses `demo-household`. No Household
-  feature, authentication, login, registration, accounts or membership management.
-
-## HITL rules for future implementations
-
-1. Read-only queries, inference, normalization and planning may precede approval.
-2. Resolve the proposed change, then pause BEFORE any persistent mutation.
-3. Group related writes for one user intent into one approval where appropriate.
-4. Approval covers only operations and relevant values actually shown to the user.
-5. Changed target, quantity, location, selected purchase option or other relevant
-   value requires fresh approval.
-6. Retries of the same logical write reuse the same operation identity. UI retries,
-   timeouts, lost responses and Agent resume must never duplicate logical writes.
-7. Backend validation is mandatory; frontend validation is not authorization.
-8. `POST /agent/messages` writes no domain data. Its card tools, `complete_purchase`
-   (v8 flow C) and `add_stock` (a new item not from the Shopping List, Issue #168;
-   also more of an item the household has, as an `adjustment`, Issue #206, unless
-   `NESTOCK_STOCK_INCREASE` is `0`, `false`, `off` or `no`), store a pending
-   approval card and return it.
-   `POST /agent/resume` writes only what that stored card holds, after the checks in
-   `contracts/approval-lifecycle.md`. Cards need Cosmos; without it the Agent offers
-   no card tool and `/agent/resume` returns 503. Do not interpret generic proposed
-   values or a client boolean as permission to write.
-
-## Original DEV owners and intentionally open decisions
-
-| Owner | Extension area | Owner-defined decisions |
-| --- | --- | --- |
-| A1 | `backend/app/agent`, `tools`, Agent contracts | LangGraph graph/state, tool registry, checkpoints, interrupt/resume, final protocol and approval validation |
-| A2 | future adapters in `services`/`tools` | Vision, naming normalization, image processing/storage, commerce provider, purchase-option retrieval |
-| B1 | domain models and persistence under `services` | Cosmos containers, partition keys, indexes, embedding/referencing, atomic persistence and durable idempotency |
-| B2 | `TransactionHistory` and future forecast services | Forecast/consumption algorithms, reorder thresholds, refresh and history aggregation |
-| C1 | shopping service and future orchestration | ShoppingService internals, complete_purchase, cross-domain persistence |
-| C2 | `frontend` | Scene visuals, responsive hotspots, page/overlay/sheet presentation, animation, final view-model and wire mapping |
-
-Transaction storage/partitioning, history aggregation and complete_purchase
-atomicity require cross-owner decisions. The Cosmos design is in
-`datalake/azure-data-platform-design.md`; do not infer it from models.
-Leave missing owner-specific decisions as interfaces/documented gaps.
-Cross-owner decisions are tracked as GitHub Issues (since 2026-11-04, Issue #29).
-`contracts/open-decisions.md` only records the earlier items and points to where
-each was decided. Follow the decision in a closed Issue. If the relevant Issue is
-still open, do not choose an answer yourself; tell the user.
-
-## Frontend scope
-
-Keep one scene-based Agent Home with conversation/input, photo entry, inventory
-cabinet and shopping-cart entry points. Inventory and Shopping remain independent
-views. Inject `AgentClient`; never expose LangGraph internals to widgets. Keep
-reusable loading/error states, generic result cards and approval extension points.
-Do not add primary three-tab navigation or spend skeleton work on final art/animation.
-
-## Excluded scope
-
-No speculative P1: full Box/QR, notification center, scheduler, push notifications,
-analytics, transaction-history UI, prediction/promotion dashboards, settings,
-advanced animation, external checkout or payment. Do not add common-but-unagreed
-fields or entities. Agent approval storage and resume follow
-`contracts/approval-lifecycle.md`; add no Agent write path outside it. The App's direct
-Shopping List add agreed in Issue #52 is a separate, C1-owned path.
-
-## Validation and collaboration
-
-Read `README.md`, `docs/architecture.md`, and `contracts/README.md` before changing
-boundaries. Original DEV owner assignments do not restrict STG work. Run Flutter
-format/analyze/test for frontend changes and backend
-ruff/pytest for backend changes. Keep dependency lockfiles. Add meaningful tests
-for changed behavior; do not claim unavailable platform checks passed. Never
-commit credentials, SDK paths, local environments or build output.
+## 5. User Approval Gate for Design Changes (Mandatory)
+- Before changing user-visible behavior or architecture involving identity/authentication, login UX, persistence/retention, household lifecycle/scope, public ingress/IAM, billing, external services, or deployment, present the proposed design and obtain explicit user approval.
+- Requests to "continue", "finish", or "deploy" authorize work only within an already-approved design. Silence, user unavailability, or an agent-selected default are NOT approval.
+- If approval is unavailable, stop before design-dependent implementation or deployment and report the decision needed. QA must reject unapproved design changes.

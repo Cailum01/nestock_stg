@@ -5,15 +5,20 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:nestock/features/inventory/inventory_view_client.dart';
 
+import 'household_test_support.dart';
+
 void main() {
   final base = Uri.parse('http://10.0.2.2:8000');
 
   test('HTTP Inventory client maps populated inventory records', () async {
     final client = HttpInventoryViewClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient((request) async {
         expect(request.method, 'GET');
         expect(request.url.path, '/inventory');
+        expect(request.headers['authorization'], 'Bearer test-install-token');
+        expect(request.headers['x-household-id'], 'test-household');
         return http.Response.bytes(
           utf8.encode(
             jsonEncode([
@@ -47,6 +52,7 @@ void main() {
   test('HTTP Inventory client skips malformed individual records', () async {
     final client = HttpInventoryViewClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient(
         (_) async => http.Response.bytes(
           utf8.encode(
@@ -72,6 +78,7 @@ void main() {
   test('HTTP Inventory client rejects malformed top-level payloads', () async {
     final client = HttpInventoryViewClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient(
         (_) async => http.Response.bytes(
           utf8.encode(jsonEncode({'name': '白米'})),
@@ -87,6 +94,7 @@ void main() {
   test('HTTP Inventory client surfaces non-success responses', () async {
     final client = HttpInventoryViewClient(
       baseUrl: base,
+      householdContext: testHouseholdContext,
       client: MockClient((_) async => http.Response('unavailable', 503)),
     );
 
@@ -98,6 +106,7 @@ void main() {
     () async {
       final client = HttpInventoryViewClient(
         baseUrl: base,
+        householdContext: testHouseholdContext,
         client: MockClient(
           (_) => throw http.ClientException('network unavailable'),
         ),
@@ -111,7 +120,11 @@ void main() {
     'Inventory client transport wiring selects HTTP or demo clients',
     () async {
       expect(
-        inventoryViewClientForTransport(transport: 'http', baseUrl: base),
+        inventoryViewClientForTransport(
+          transport: 'http',
+          baseUrl: base,
+          householdContext: testHouseholdContext,
+        ),
         isA<HttpInventoryViewClient>(),
       );
       expect(

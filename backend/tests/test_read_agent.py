@@ -5,6 +5,7 @@ import json
 from datetime import UTC, date, datetime
 
 from fastapi.testclient import TestClient
+from identity_test_support import install_scope_override
 from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent.read_agent import TOOL_SCHEMAS, ReadAgent, get_read_agent, load_system_prompt
@@ -126,6 +127,7 @@ def test_flow_b_lookup_shows_shopping_list_and_writes_nothing():
     model = ScriptedModel(_call("list_inventory"), AIMessage(content="庫存裡沒有找到 AA 電池。"))
     app = create_app()
     app.dependency_overrides[get_read_agent] = lambda: _agent(model)
+    install_scope_override(app, HOUSEHOLD)
     with TestClient(app) as client:
         before = [client.get(path).json() for path in ["/inventory", "/shopping"]]
         response = client.post(
@@ -372,6 +374,7 @@ def test_route_answers_and_writes_nothing():
     model = ScriptedModel(_call("list_inventory"), AIMessage(content="還有 2 包白米。"))
     app = create_app()
     app.dependency_overrides[get_read_agent] = lambda: _agent(model)
+    install_scope_override(app, HOUSEHOLD)
     with TestClient(app) as client:
         before = [client.get(path).json() for path in ["/inventory", "/shopping"]]
         response = client.post(
@@ -401,6 +404,7 @@ def test_route_accepts_image_ref_instead_of_422():
     model = ScriptedModel(AIMessage(content="照片辨識還沒開放。"), AIMessage(content="有。"))
     app = create_app()
     app.dependency_overrides[get_read_agent] = lambda: _agent(model)
+    install_scope_override(app, HOUSEHOLD)
     with TestClient(app) as client:
         response = client.post(
             "/agent/messages",
@@ -569,6 +573,7 @@ def test_price_search_through_the_route_writes_nothing():
     )
     app = create_app()
     app.dependency_overrides[get_read_agent] = lambda: _price_agent(model, commerce)
+    install_scope_override(app, HOUSEHOLD)
     with TestClient(app) as client:
         before = [client.get(path).json() for path in ["/inventory", "/shopping"]]
         response = client.post(

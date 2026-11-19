@@ -113,6 +113,32 @@ def test_document_mapping_round_trips_domain_record(model, record_type, public_i
     assert identity_field in document
 
 
+def test_shopping_document_mapping_accepts_missing_optional_quantity_fields():
+    item = ShoppingItem(
+        shopping_item_id="milk",
+        household_id="home",
+        name="Milk",
+        status="pending",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    legacy_document = CosmosDocumentMapper.to_document(item)
+    legacy_document.pop("quantity")
+    legacy_document.pop("unit")
+
+    mapped = CosmosDocumentMapper.from_document(
+        ShoppingItem,
+        legacy_document,
+        household_id="home",
+    )
+
+    assert mapped.quantity is None
+    assert mapped.unit is None
+    rewritten_document = CosmosDocumentMapper.to_document(mapped)
+    assert rewritten_document["quantity"] is None
+    assert rewritten_document["unit"] is None
+
+
 def test_document_mapping_normalizes_offset_timestamps_to_utc():
     item = InventoryItem(
         item_id="rice",

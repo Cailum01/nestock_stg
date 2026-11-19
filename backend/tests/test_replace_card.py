@@ -11,6 +11,7 @@ from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from identity_test_support import install_scope_override
 from langchain_core.messages import AIMessage, SystemMessage
 from test_purchase_cards import (
     HOME,
@@ -96,6 +97,7 @@ def test_the_route_takes_replaces_approval_id():
     )
     app = create_app()
     app.dependency_overrides[get_read_agent] = lambda: agent(model, reader, approvals)
+    install_scope_override(app, HOME)
     body = {
         "household_id": HOME,
         "message": "衛生紙：數量改成 1",

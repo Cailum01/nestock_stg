@@ -60,6 +60,7 @@ class AgentHome extends StatefulWidget {
     required this.photoUpload,
     required this.speechRecorder,
     required this.speechClient,
+    this.appBarActions = const [],
   });
   final AgentClient client;
   final PhotoClient photoClient;
@@ -70,6 +71,7 @@ class AgentHome extends StatefulWidget {
   final InventoryViewClient inventoryClient;
   final ShoppingViewClient shoppingClient;
   final CommerceOptionsClient commerceOptionsClient;
+  final List<Widget> appBarActions;
   @override
   State<AgentHome> createState() => _AgentHomeState();
 }
@@ -156,10 +158,19 @@ class _AgentHomeState extends State<AgentHome> {
           _submitCardChanges(currentReply: currentReply, changes: changes);
     });
     try {
-      final reply = await widget.client.submitCardChanges(
-        approvalId: approval.id,
-        changes: changes,
-      );
+      final client = widget.client;
+      final householdId = approval.householdId;
+      final reply = client is HouseholdBoundAgentClient && householdId != null
+          ? await (client as HouseholdBoundAgentClient)
+                .submitCardChangesInHousehold(
+                  approvalId: approval.id,
+                  changes: changes,
+                  householdId: householdId,
+                )
+          : await client.submitCardChanges(
+              approvalId: approval.id,
+              changes: changes,
+            );
       if (!mounted || generation != _conversationGeneration) return;
       final code = _cardChangeResultCode(reply);
       final returnedCard = reply.approval;
@@ -763,14 +774,28 @@ class _AgentHomeState extends State<AgentHome> {
                               required approved,
                               selectedOptionId,
                               approvedOperationIds,
-                            }) => _perform(
-                              () => widget.client.resume(
-                                approvalId: entry.reply!.approval!.id,
-                                approved: approved,
-                                selectedOptionId: selectedOptionId,
-                                approvedOperationIds: approvedOperationIds,
-                              ),
-                            ),
+                            }) => _perform(() {
+                              final approval = entry.reply!.approval!;
+                              final client = widget.client;
+                              return client is HouseholdBoundAgentClient &&
+                                      approval.householdId != null
+                                  ? (client as HouseholdBoundAgentClient)
+                                        .resumeInHousehold(
+                                          approvalId: approval.id,
+                                          approved: approved,
+                                          householdId: approval.householdId!,
+                                          selectedOptionId: selectedOptionId,
+                                          approvedOperationIds:
+                                              approvedOperationIds,
+                                        )
+                                  : client.resume(
+                                      approvalId: approval.id,
+                                      approved: approved,
+                                      selectedOptionId: selectedOptionId,
+                                      approvedOperationIds:
+                                          approvedOperationIds,
+                                    );
+                            }),
                         onSubmitCardChanges: (changes) => _submitCardChanges(
                           currentReply: entry.reply!,
                           changes: changes,
@@ -850,6 +875,7 @@ class _AgentHomeState extends State<AgentHome> {
                 title: const Text('Nestock｜窩有', style: TextStyle(fontSize: 18)),
                 backgroundColor: Colors.transparent,
                 surfaceTintColor: Colors.transparent,
+                actions: widget.appBarActions,
               ),
               body: SafeArea(
                 child: Column(

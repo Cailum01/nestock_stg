@@ -8,6 +8,9 @@ import 'package:http_parser/http_parser.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
+import '../onboarding/domain/household_context.dart';
+import '../onboarding/data/secure_transport_client.dart';
+
 abstract interface class SpeechRecorder {
   Future<void> start();
   Future<Uint8List> stop();
@@ -55,9 +58,13 @@ abstract interface class SpeechClient {
 }
 
 class HttpSpeechClient implements SpeechClient {
-  HttpSpeechClient(this.baseUrl, {http.Client? client})
-    : client = client ?? http.Client();
+  HttpSpeechClient(
+    this.baseUrl, {
+    required this.householdContext,
+    http.Client? client,
+  }) : client = SecureTransportClient(innerClient: client);
   final Uri baseUrl;
+  final HouseholdRequestContext householdContext;
   final http.Client client;
   @override
   Future<String> transcribe(Uint8List bytes) async {
@@ -68,6 +75,7 @@ class HttpSpeechClient implements SpeechClient {
       'POST',
       baseUrl.resolve('/api/speech/transcribe'),
     );
+    request.headers.addAll(householdContext.snapshot().headers);
     request.files.add(
       http.MultipartFile.fromBytes(
         'file',

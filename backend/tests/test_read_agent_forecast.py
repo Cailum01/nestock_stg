@@ -9,6 +9,7 @@ import json
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
+from identity_test_support import install_scope_override
 from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent.read_agent import ReadAgent, get_read_agent, load_system_prompt
@@ -319,6 +320,7 @@ def test_forecast_through_the_route_writes_nothing():
     )
     app = create_app()
     app.dependency_overrides[get_read_agent] = lambda: _agent(model, _real_forecast(switch_on=True))
+    install_scope_override(app, HOUSEHOLD)
     with TestClient(app) as client:
         before = [client.get(path).json() for path in ["/inventory", "/shopping"]]
         response = client.post(

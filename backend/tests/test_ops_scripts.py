@@ -391,7 +391,7 @@ def run_deploy(tmp_path, role_out="", role_rc=0, list_rc=0):
     log.write_text("")
     env = {
         **os.environ,
-        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "PATH": os.pathsep.join((str(bin_dir), os.environ["PATH"])),
         "AZ_LOG": str(log),
         "ROLE_OUT": role_out,
         "ROLE_RC": str(role_rc),

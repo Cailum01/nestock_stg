@@ -1,12 +1,16 @@
-/// Future HTTP adapters may consume this; widgets and offline mocks do not.
 class AppConfig {
-  const AppConfig({required this.apiBaseUrl});
-  final String apiBaseUrl;
+  const AppConfig({required this.apiBaseUrl, required this.mediaApiBaseUrl});
 
-  static const local = AppConfig(
-    apiBaseUrl: String.fromEnvironment(
-      'API_BASE_URL',
-      defaultValue: 'http://10.0.2.2:8000',
-    ),
+  final String apiBaseUrl;
+  final String mediaApiBaseUrl;
+
+  /// Values are compile-time so a published app cannot silently change hosts.
+  /// Identity and household APIs use `API_BASE_URL`; upload authorization and
+  /// speech use `MEDIA_API_BASE`.
+  /// Android secure-storage data survives app updates, but disabling backup
+  /// means restore/reinstall requires a fresh bootstrap or recovery code.
+  static const fromEnvironment = AppConfig(
+    apiBaseUrl: String.fromEnvironment('API_BASE_URL', defaultValue: ''),
+    mediaApiBaseUrl: String.fromEnvironment('MEDIA_API_BASE', defaultValue: ''),
   );
 }

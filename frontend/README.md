@@ -10,6 +10,16 @@ when returned. Photo-aware requests can forward an uploaded, opaque `image_ref`.
 Backend Pydantic models remain the contract source of truth; Dart view types and
 the current HTTP mapping are provisional.
 
+Cloud builds use `API_BASE_URL` and `MEDIA_API_BASE` over HTTPS, and set
+`NESTOCK_GOOGLE_CLIENT_ID` to the Google Web OAuth client ID with
+`--dart-define`. The same client ID must be configured as the backend
+`NESTOCK_GOOGLE_CLIENT_ID`. The first sign-in may require Google account
+selection; later installs silently restore the same account's default
+household when Android can restore its Google session. The backend verifies the
+Google ID token and returns a separate Nestock bearer. Configure the Android
+package name and signing SHA-1 in the Google OAuth client; never put a client
+secret in the app.
+
 ## C2 development
 
 For Android Emulator, the HTTP clients default to `http://10.0.2.2:8000`.
@@ -25,12 +35,14 @@ For a physical Android device using `adb reverse tcp:8000 tcp:8000`, set
 on localhost. With the emulator default `http://10.0.2.2:8000`, local staging
 upload URLs are adapted to the emulator host address.
 
-For local Agent fixtures, use `--dart-define=AGENT_TRANSPORT=mock` and optionally
-select `--dart-define=MOCK_SCENARIO=batchAction`. Scenarios are `conversation`
+For local Agent fixtures, use `--dart-define=AGENT_TRANSPORT=mock` and optionally select
+`--dart-define=MOCK_SCENARIO=batchAction`. Scenarios are `conversation`
 (default), `completed`, `singleAction`, `batchAction`, `purchaseOptions`,
-`partialSuccess`, `error`, and `timeout`. These are
-presentation fixtures, not backend lifecycle or wire statuses. Selecting the mock
-Agent does not disable the independently configured photo or speech HTTP clients.
+`partialSuccess`, `error`, and `timeout`. Mock transport opens the home directly
+without household onboarding and uses local demo inventory/shopping data; it
+does not write to the backend. Photo upload and speech still require an
+authenticated live household session and are unavailable in this mode. These
+are presentation fixtures, not backend lifecycle or wire statuses.
 
 Vision and Confirmation presentation fixtures are test-only injected `AgentClient`
 responses under `test/agent_fixtures.dart`; no user-entered runtime command opens

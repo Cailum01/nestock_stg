@@ -104,6 +104,13 @@ class BaseMediaStorageLifecycle:
         resp_kw = {"upload_url": f"{base}/{token}", "image_ref": image_ref}
         return UploadAuthorizationResponse(expires_in_seconds=300, required_headers=hdrs, **resp_kw)
 
+    async def is_upload_token_scoped_to(self, upload_token: str, household_id: str) -> bool:
+        """Check token household binding before an authenticated upload is received."""
+        info = self._pending_tokens.get(upload_token)
+        if info is None or time.time() > info["expires_at"]:
+            return False
+        return info["household_id"] == household_id
+
     async def _fail_on_upload_error(
         self, hid: str, image_ref: str, reason: MediaFailureReason
     ) -> None:

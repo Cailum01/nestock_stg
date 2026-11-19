@@ -85,6 +85,26 @@ void main() {
     expect(testCamera.calls, 1);
   });
 
+  testWidgets('local mock entry opens the home without household onboarding', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      NestockApp(
+        agentClient: MockAgentClient(scenario: MockScenario.conversation),
+        catalog: const DemoCatalog(),
+      ),
+    );
+
+    expect(
+      tester
+          .widget<MaterialApp>(find.byType(MaterialApp))
+          .debugShowCheckedModeBanner,
+      isFalse,
+    );
+    expect(find.text('Connect a household'), findsNothing);
+    expect(find.text('Nestock｜窩有'), findsOneWidget);
+  });
+
   for (final approved in [true, false]) {
     testWidgets('mock decision $approved never changes the catalog', (
       tester,

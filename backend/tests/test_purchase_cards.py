@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
+from identity_test_support import install_scope_override
 from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent.cards import (
@@ -503,6 +504,7 @@ def resume_app(approvals):
     app = create_app()
     app.dependency_overrides[get_approval_service] = lambda: approvals
     app.dependency_overrides[get_read_agent] = lambda: None
+    install_scope_override(app, HOME)
     return app
 
 
@@ -600,10 +602,20 @@ def test_unknown_card_and_wrong_selection_are_refused():
                 "selected_option_id": "o-1",
             },
         )
+        foreign_operation = client.post(
+            "/agent/resume",
+            json={
+                "household_id": HOME,
+                "approval_id": card.approval_id,
+                "approved": True,
+                "approved_operation_ids": ["operation-from-another-household"],
+            },
+        )
 
     assert unknown.status_code == 404
-    assert other_household.status_code == 404
+    assert other_household.status_code == 403
     assert wrong_selection.status_code == 409
+    assert foreign_operation.status_code == 409
     assert container.get("inventory_item:tissue")["quantity"] == 1
 
 

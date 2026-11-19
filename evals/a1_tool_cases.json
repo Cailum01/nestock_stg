@@ -1,5 +1,5 @@
 {
-  "_about": "A1 tool selection cases (v8 section 20: >=3 example utterances and >=1 confusion case per tool) for the read tools wired in backend/app/agent/read_agent.py besides B2's two. Same fields as b2_tool_cases.json, plus optional `photo`: true means the request carries a photo, so the test adds the same PHOTO_ATTACHED system message the Agent adds. Optional `shopping_list` (complete_purchase cases): the rows a first `list_shopping` call gets back; the test checks that the model looks up the list first, answers it with these rows, and applies `expect_calls`, `must_not_call` and `args_contain` to the model's next turn. Per v8 the tool owners are B1 (list_inventory), C1 (list_shopping) and A2 (analyze_photo, search_purchase_options); they may edit or add cases. complete_purchase is A1's card tool (v8 flow C), offered when Cosmos is configured; the live test offers it as the Agent does then. C1 owns the Golden Prompts set and may merge these in.",
+  "_about": "A1 tool selection cases (v8 section 20: >=3 example utterances and >=1 confusion case per tool) for the read tools wired in backend/app/agent/read_agent.py besides B2's two. Same fields as b2_tool_cases.json, plus optional `photo`: true means the request carries a photo, so the test adds the same PHOTO_ATTACHED system message the Agent adds. Optional `shopping_list` (complete_purchase cases): the rows a first `list_shopping` call gets back; the test checks that the model looks up the list first, answers it with these rows, and applies `expect_calls`, `must_not_call` and `args_contain` to the model's next turn. Per v8 the tool owners are B1 (list_inventory), C1 (list_shopping) and A2 (analyze_photo, search_purchase_options); they may edit or add cases. complete_purchase is A1's card tool (v8 flow C), offered when Cosmos is configured; the live test offers it as the Agent does then. C1 owns the Golden Prompts set and may merge these in. Optional `stock_increase`: true (add_stock cases, Issue #206) means adding to an item the household has is on, which is the default: the test offers `add_stock` with the description and adds the system note the Agent uses then. Cases without it are checked as with the switch off (`NESTOCK_STOCK_INCREASE=0`).",
   "cases": [
     {
       "id": "inventory-01",
@@ -526,7 +526,7 @@
       "must_not_call": [
         "add_stock"
       ],
-      "note": "The household already has 衛生紙: no card, the model says so (家裡多了東西 rule 2)."
+      "note": "Switch off (`NESTOCK_STOCK_INCREASE=0`): the household already has 衛生紙, so no card, the model says so (家裡多了東西 rule 2). On, the default: stock-inc-01."
     },
     {
       "id": "purchase-neg-03",
@@ -550,6 +550,214 @@
         "complete_purchase"
       ],
       "note": "Prompt 買回來了 rule 3 (Issue #175): an entry without item_id is checked against the inventory first, so a household item under another name gets candidate_item_id (an item-match card); the card is not made before looking."
+    },
+    {
+      "id": "stock-inc-01",
+      "tool": "add_stock",
+      "kind": "positive",
+      "stock_increase": true,
+      "utterance": "同事送我兩包衛生紙",
+      "inventory": [
+        {
+          "item_id": "tissue",
+          "name": "衛生紙",
+          "aliases": [],
+          "quantity": 3,
+          "unit": "包",
+          "location": "浴室櫃子"
+        },
+        {
+          "item_id": "detergent",
+          "name": "洗衣精",
+          "aliases": [],
+          "quantity": 1,
+          "unit": "瓶",
+          "location": "陽台"
+        },
+        {
+          "item_id": "milk",
+          "name": "牛奶",
+          "aliases": [
+            "鮮奶"
+          ],
+          "quantity": 0,
+          "unit": "瓶",
+          "location": "冰箱"
+        }
+      ],
+      "expect_calls": [
+        "add_stock"
+      ],
+      "must_not_call": [
+        "complete_purchase"
+      ],
+      "args_contain": {
+        "items": "衛生紙"
+      },
+      "note": "Issue #206, switch on: the household has 衛生紙, so the card adds to it. stock-neg-02 is the same kind of sentence with the switch off."
+    },
+    {
+      "id": "stock-inc-02",
+      "tool": "add_stock",
+      "kind": "positive",
+      "stock_increase": true,
+      "utterance": "我又收到兩瓶洗衣精",
+      "inventory": [
+        {
+          "item_id": "tissue",
+          "name": "衛生紙",
+          "aliases": [],
+          "quantity": 3,
+          "unit": "包",
+          "location": "浴室櫃子"
+        },
+        {
+          "item_id": "detergent",
+          "name": "洗衣精",
+          "aliases": [],
+          "quantity": 1,
+          "unit": "瓶",
+          "location": "陽台"
+        },
+        {
+          "item_id": "milk",
+          "name": "牛奶",
+          "aliases": [
+            "鮮奶"
+          ],
+          "quantity": 0,
+          "unit": "瓶",
+          "location": "冰箱"
+        }
+      ],
+      "expect_calls": [
+        "add_stock"
+      ],
+      "must_not_call": [
+        "complete_purchase"
+      ],
+      "args_contain": {
+        "items": "洗衣精"
+      }
+    },
+    {
+      "id": "stock-inc-03",
+      "tool": "add_stock",
+      "kind": "positive",
+      "stock_increase": true,
+      "utterance": "鄰居送了一瓶鮮奶",
+      "inventory": [
+        {
+          "item_id": "tissue",
+          "name": "衛生紙",
+          "aliases": [],
+          "quantity": 3,
+          "unit": "包",
+          "location": "浴室櫃子"
+        },
+        {
+          "item_id": "detergent",
+          "name": "洗衣精",
+          "aliases": [],
+          "quantity": 1,
+          "unit": "瓶",
+          "location": "陽台"
+        },
+        {
+          "item_id": "milk",
+          "name": "牛奶",
+          "aliases": [
+            "鮮奶"
+          ],
+          "quantity": 0,
+          "unit": "瓶",
+          "location": "冰箱"
+        }
+      ],
+      "expect_calls": [
+        "add_stock"
+      ],
+      "must_not_call": [
+        "complete_purchase"
+      ],
+      "args_contain": {
+        "items": "牛奶"
+      },
+      "note": "鮮奶 is an alias of the household's 牛奶: `name` is the household item's name (the note the Agent adds when the switch is on)."
+    },
+    {
+      "id": "stock-inc-04",
+      "tool": "add_stock",
+      "kind": "positive",
+      "stock_increase": true,
+      "utterance": "朋友送我一罐沐浴乳，放在浴室",
+      "inventory": [
+        {
+          "item_id": "tissue",
+          "name": "衛生紙",
+          "aliases": [],
+          "quantity": 3,
+          "unit": "包",
+          "location": "浴室櫃子"
+        },
+        {
+          "item_id": "detergent",
+          "name": "洗衣精",
+          "aliases": [],
+          "quantity": 1,
+          "unit": "瓶",
+          "location": "陽台"
+        },
+        {
+          "item_id": "milk",
+          "name": "牛奶",
+          "aliases": [
+            "鮮奶"
+          ],
+          "quantity": 0,
+          "unit": "瓶",
+          "location": "冰箱"
+        }
+      ],
+      "expect_calls": [
+        "add_stock"
+      ],
+      "must_not_call": [
+        "complete_purchase"
+      ],
+      "args_contain": {
+        "items": "沐浴乳"
+      },
+      "note": "Switch on, a new item still gets its card, as in stock-01."
+    },
+    {
+      "id": "stock-inc-neg-01",
+      "tool": "add_stock",
+      "kind": "negative",
+      "stock_increase": true,
+      "utterance": "牛奶買回來了，買了 2 瓶",
+      "expect_calls": [
+        "list_shopping"
+      ],
+      "must_not_call": [
+        "add_stock"
+      ],
+      "note": "Switch on, bought still looks at the Shopping List first (買回來了 rule 1), as stock-neg-01."
+    },
+    {
+      "id": "stock-inc-neg-02",
+      "tool": "add_stock",
+      "kind": "negative",
+      "stock_increase": true,
+      "utterance": "家裡還有幾包衛生紙？",
+      "expect_calls": [
+        "list_inventory"
+      ],
+      "must_not_call": [
+        "add_stock",
+        "complete_purchase"
+      ],
+      "note": "Switch on, asking how many there are is a question, not something added."
     }
   ]
 }

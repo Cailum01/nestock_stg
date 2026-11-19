@@ -296,6 +296,30 @@ def test_without_its_writer_no_such_card_is_stored():
     assert container.of_type("pending_approval") == []
 
 
+def test_the_apps_own_composition_writes_the_increase_once_the_user_confirms():
+    """PR #211 B2 review: on by default, card to confirm to write with the app's own parts."""
+    container = FakeCosmosContainer()
+    for record in (MOUSE, shopping()):
+        container.put(record)
+    reads, approvals = _app_approvals(container)
+    response, _, _ = said(reads, approvals, one_more(quantity=2))
+    card = response.pending_approval
+    (line,) = card.operations
+
+    reply = _confirm(approvals, card)
+
+    assert reply["results"][0]["data"]["outcome"] == "completed"
+    assert container.get("inventory_item:mouse")["quantity"] == MOUSE.quantity + 2
+    (transaction,) = container.of_type("transaction")
+    assert (transaction["reason"], transaction["quantity_delta"]) == ("adjustment", 2)
+    assert transaction["item_id"] == "mouse"
+    (event,) = container.of_type("change_event")
+    assert event["event_id"] == line.operation_id
+    assert event.get("shopping_item_id") is None
+    assert container.get(f"pending_approval:{card.approval_id}")["status"] == "completed"
+    assert len(container.of_type("inventory_item")) == 1
+
+
 def test_the_apps_own_composition_stores_card_without_writing_inventory():
     """The app stores the approval; domain writes wait for the user's confirmation."""
     container = FakeCosmosContainer()
@@ -547,10 +571,58 @@ def test_off_a_photo_of_a_household_item_is_only_reported_as_before():
 @pytest.mark.parametrize(
     ("environment", "on"),
     [
-        ({}, False),
+        ({}, True),
+        ({"NESTOCK_STOCK_INCREASE": ""}, True),
         ({"NESTOCK_STOCK_INCREASE": "1"}, True),
-        ({"NESTOCK_STOCK_INCREASE": "true"}, False),
+        ({"NESTOCK_STOCK_INCREASE": "true"}, True),
+        ({"NESTOCK_STOCK_INCREASE": "yes"}, True),
+        ({"NESTOCK_STOCK_INCREASE": "0"}, False),
+        ({"NESTOCK_STOCK_INCREASE": " 0 "}, False),
+        ({"NESTOCK_STOCK_INCREASE": "false"}, False),
+        ({"NESTOCK_STOCK_INCREASE": "FALSE"}, False),
+        ({"NESTOCK_STOCK_INCREASE": "off"}, False),
+        ({"NESTOCK_STOCK_INCREASE": "Off"}, False),
+        ({"NESTOCK_STOCK_INCREASE": "no"}, False),
+        ({"NESTOCK_STOCK_INCREASE": "NO"}, False),
+    ],
+    ids=[
+        "unset",
+        "empty",
+        "1",
+        "true",
+        "yes",
+        "0",
+        "0 with spaces",
+        "false",
+        "FALSE",
+        "off",
+        "Off",
+        "no",
+        "NO",
     ],
 )
-def test_the_switch_is_off_unless_set_to_1(environment, on):
+def test_the_switch_is_on_unless_switched_off(environment, on):
     assert stock_increase_on(environment) is on
+
+
+@pytest.mark.parametrize(("value", "on"), [(None, True), ("0", False)], ids=["unset", "0"])
+def test_the_running_app_adds_to_household_items_unless_switched_off(monkeypatch, value, on):
+    from app.agent import read_agent
+
+    _, reads, _, _ = home()
+    monkeypatch.setattr(read_agent, "get_cosmos_read_repository", lambda: reads)
+    if value is None:
+        monkeypatch.delenv("NESTOCK_STOCK_INCREASE", raising=False)
+    else:
+        monkeypatch.setenv("NESTOCK_STOCK_INCREASE", value)
+
+    assert isinstance(read_agent._stock_increases(), StockIncreases) is on
+
+
+def test_without_cosmos_the_running_app_never_adds_to_household_items(monkeypatch):
+    from app.agent import read_agent
+
+    monkeypatch.setattr(read_agent, "get_cosmos_read_repository", lambda: None)
+    monkeypatch.delenv("NESTOCK_STOCK_INCREASE", raising=False)
+
+    assert read_agent._stock_increases() is None

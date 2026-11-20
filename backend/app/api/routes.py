@@ -105,6 +105,7 @@ async def shopping(
         401: {"description": "An authenticated install is required"},
         403: {"description": "The install is not a member of this household"},
         200: {"description": "This request_id and payload were already applied"},
+        422: {"description": "The Shopping request is invalid"},
         409: {"description": "request_id was previously used with different values"},
         503: {"description": "Shopping writes require Cosmos; nothing was saved"},
     },
@@ -115,7 +116,7 @@ async def add_shopping_intent(
     context: Annotated[AuthorizedHousehold, Depends(get_authorized_household)],
     service: Annotated[ShoppingIntentService | None, Depends(get_shopping_intent_service)],
 ) -> ShoppingItem:
-    """Add one pending item to the explicitly selected authorized household."""
+    """Persist one pending item after explicit Add within the authorized household."""
     if service is None:
         raise HTTPException(503, "Shopping writes need Cosmos; no changes were saved.")
     try:
@@ -193,8 +194,8 @@ async def commerce_options(
     response_model=AgentResponse,
     tags=["provisional"],
     responses={
-        501: {"description": "Azure OpenAI not configured (backend/.env)"},
-        502: {"description": "Azure OpenAI call failed"},
+        501: {"description": "Vertex AI is not configured"},
+        502: {"description": "Vertex AI call failed"},
     },
 )
 async def agent_message(
@@ -207,7 +208,11 @@ async def agent_message(
     the user confirms it in `/agent/resume`."""
     identity.require_matching_household(request.household_id, context.household_id)
     if agent is None:
-        raise HTTPException(501, "Agent is not configured: set AZURE_OPENAI_* in backend/.env.")
+        raise HTTPException(
+            501,
+            "Agent is not configured: set NESTOCK_VERTEX_PROJECT_ID or "
+            "GOOGLE_CLOUD_PROJECT and configure ADC.",
+        )
     try:
         scoped_request = request.model_copy(update={"household_id": context.household_id})
         return await agent.respond(scoped_request)
@@ -220,7 +225,7 @@ async def agent_message(
     response_model=AgentResponse,
     tags=["provisional"],
     responses={
-        501: {"description": "Azure OpenAI not configured (backend/.env)"},
+        501: {"description": "Vertex AI is not configured"},
         503: {"description": "Open cards could not be listed right now; try again later"},
     },
 )
@@ -233,7 +238,11 @@ async def agent_open_card(
     """Return the newest unanswered card to an authorized household without a model call."""
     identity.require_matching_household(household_id, context.household_id)
     if agent is None:
-        raise HTTPException(501, "Agent is not configured: set AZURE_OPENAI_* in backend/.env.")
+        raise HTTPException(
+            501,
+            "Agent is not configured: set NESTOCK_VERTEX_PROJECT_ID or "
+            "GOOGLE_CLOUD_PROJECT and configure ADC.",
+        )
     reply = await agent.open_card(context.household_id)
     if reply is None:
         raise HTTPException(503, "Open cards could not be listed; try again later.")
@@ -402,7 +411,9 @@ async def transcribe_speech(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
-                "Speech service is not configured. Set AZURE_SPEECH_KEY or NESTOCK_SPEECH_MOCK=1."
+                "Speech service is not configured. Set NESTOCK_VERTEX_PROJECT_ID or "
+                "GOOGLE_CLOUD_PROJECT and configure ADC, or explicitly enable "
+                "NESTOCK_SPEECH_MOCK=1."
             ),
         )
 

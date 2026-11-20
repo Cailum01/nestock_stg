@@ -71,7 +71,7 @@ def test_add_creates_a_pending_intent_without_inventing_quantity_or_unit():
     result = asyncio.run(service.add(make_command()))
 
     assert result.status is WriteStatus.APPLIED
-    assert result.item.name == "洗衣精"
+    assert result.item.name == "  洗衣精  "
     assert result.item.quantity is None
     assert result.item.unit is None
     assert result.item.status == "pending"
@@ -81,7 +81,7 @@ def test_add_creates_a_pending_intent_without_inventing_quantity_or_unit():
     )
     document = client.documents[("demo-household", f"shopping_item:{shopping_item_id}")]
     assert document["record_type"] == "shopping_item"
-    assert document["name"] == "洗衣精"
+    assert document["name"] == "  洗衣精  "
     assert document["quantity"] is None
     assert document["unit"] is None
     assert document["status"] == "pending"
@@ -93,7 +93,7 @@ def test_add_creates_a_pending_intent_without_inventing_quantity_or_unit():
     assert len(client.documents) == 2  # Shopping row plus the repository operation receipt.
 
 
-def test_add_normalizes_optional_values_and_retries_the_same_operation_id():
+def test_add_preserves_optional_values_and_retries_the_same_operation_id():
     client = FakeTransactionalBatchClient()
     service = ShoppingIntentService(
         CosmosWriteRepository(client),
@@ -108,7 +108,10 @@ def test_add_normalizes_optional_values_and_retries_the_same_operation_id():
     assert first.status is WriteStatus.APPLIED
     assert retry.status is WriteStatus.ALREADY_APPLIED
     assert retry.item.quantity == 2
-    assert retry.item.unit == "瓶"
+    assert retry.item.unit == "  瓶 "
+    assert client.documents[
+        ("demo-household", f"shopping_item:{retry.item.shopping_item_id}")
+    ]["unit"] == "  瓶 "
     assert len(client.batch_calls) == 2
     assert len(client.documents) == 2  # Shopping row and operation receipt.
 

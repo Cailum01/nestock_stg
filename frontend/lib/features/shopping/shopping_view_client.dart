@@ -67,11 +67,19 @@ class ShoppingAddException implements Exception {
 
 abstract interface class ShoppingViewClient {
   Future<List<ShoppingViewItem>> load();
-
-  Future<ShoppingViewItem> add(AddShoppingItemRequest request);
 }
 
-class DemoShoppingViewClient implements ShoppingViewClient {
+abstract interface class ShoppingManualAddClient {
+  Future<ShoppingViewItem> add({
+    required String requestId,
+    required String name,
+    int? quantity,
+    String? unit,
+  });
+}
+
+class DemoShoppingViewClient
+    implements ShoppingViewClient, ShoppingManualAddClient {
   const DemoShoppingViewClient();
   @override
   Future<List<ShoppingViewItem>> load() async => const [
@@ -81,11 +89,17 @@ class DemoShoppingViewClient implements ShoppingViewClient {
   ];
 
   @override
-  Future<ShoppingViewItem> add(AddShoppingItemRequest request) async =>
+  Future<ShoppingViewItem> add({
+    required String requestId,
+    required String name,
+    int? quantity,
+    String? unit,
+  }) async =>
       throw const ShoppingAddException(ShoppingAddFailure.unavailable);
 }
 
-class HttpShoppingViewClient implements ShoppingViewClient {
+class HttpShoppingViewClient
+    implements ShoppingViewClient, ShoppingManualAddClient {
   HttpShoppingViewClient({
     required this.baseUrl,
     required this.householdContext,
@@ -120,15 +134,28 @@ class HttpShoppingViewClient implements ShoppingViewClient {
   }
 
   @override
-  Future<ShoppingViewItem> add(AddShoppingItemRequest request) async {
+  Future<ShoppingViewItem> add({
+    required String requestId,
+    required String name,
+    int? quantity,
+    String? unit,
+  }) async {
     final scope = householdContext.snapshot();
     late final http.Response response;
     try {
       response = await client
           .post(
             baseUrl.resolve('/shopping'),
-            headers: {...scope.headers, 'content-type': 'application/json'},
-            body: jsonEncode(request.toJson()),
+            headers: {
+              ...scope.headers,
+              'content-type': 'application/json; charset=utf-8',
+            },
+            body: jsonEncode({
+              'request_id': requestId,
+              'name': name,
+              'quantity': ?quantity,
+              'unit': ?unit,
+            }),
           )
           .timeout(timeout);
     } on TimeoutException {
@@ -217,13 +244,18 @@ class HttpShoppingViewClient implements ShoppingViewClient {
 final Random _shoppingRequestRandom = Random.secure();
 
 String newShoppingRequestId() {
-  final randomPart = List.generate(
-    16,
-    (_) =>
-        _shoppingRequestRandom.nextInt(256).toRadixString(16).padLeft(2, '0'),
-  ).join();
-  return 'shopping-${DateTime.now().microsecondsSinceEpoch}-$randomPart';
+  final bytes = List<int>.generate(16, (_) => _shoppingRequestRandom.nextInt(256));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  final hex = bytes
+      .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+      .join();
+  return 'shopping-${DateTime.now().microsecondsSinceEpoch}-'
+      '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
+      '${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
 }
+
+String createShoppingRequestId() => newShoppingRequestId();
 
 ShoppingViewClient shoppingViewClientForTransport({
   required String transport,

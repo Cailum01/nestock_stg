@@ -462,17 +462,44 @@ def test_dependency_dual_mode_selection():
         "EndpointSuffix=core.windows.net"
     )
     storage_blob = _create_media_storage_service(
-        environment={"AZURE_STORAGE_CONNECTION_STRING": dummy_conn}
+        environment={
+            "NESTOCK_MEDIA_PROVIDER": "azure",
+            "AZURE_STORAGE_CONNECTION_STRING": dummy_conn,
+        }
     )
     assert isinstance(storage_blob, AzureBlobMediaStorage)
 
     # 3. 依據 azure-database-user-guide.md:L168，支援 NESTOCK_STORAGE_ACCOUNT_URL
     storage_endpoint = _create_media_storage_service(
         environment={
-            "NESTOCK_STORAGE_ACCOUNT_URL": "https://stnestockdev20261101.blob.core.windows.net/"
+            "NESTOCK_MEDIA_PROVIDER": "azure",
+            "NESTOCK_STORAGE_ACCOUNT_URL": "https://stnestockdev20261101.blob.core.windows.net/",
         }
     )
     assert isinstance(storage_endpoint, AzureBlobMediaStorage)
+
+
+@pytest.mark.parametrize(
+    "azure_settings",
+    [
+        {"AZURE_STORAGE_CONNECTION_STRING": "connection-string"},
+        {"AZURE_STORAGE_BLOB_ENDPOINT": "https://storage.example.test/"},
+        {"NESTOCK_STORAGE_ACCOUNT_URL": "https://storage.example.test/"},
+    ],
+)
+def test_azure_blob_requires_explicit_media_provider(azure_settings):
+    with pytest.raises(RuntimeError, match="require explicit NESTOCK_MEDIA_PROVIDER=azure"):
+        _create_media_storage_service(environment=azure_settings)
+
+
+@pytest.mark.parametrize("media_provider", [None, "local", "azure"])
+def test_firestore_media_requires_explicit_gcs_provider(media_provider):
+    environment = {"NESTOCK_DATA_PROVIDER": "firestore"}
+    if media_provider is not None:
+        environment["NESTOCK_MEDIA_PROVIDER"] = media_provider
+
+    with pytest.raises(RuntimeError, match="Firestore provider requires explicit"):
+        _create_media_storage_service(environment=environment)
 
 
 @pytest.mark.anyio
@@ -852,7 +879,10 @@ def test_create_media_storage_service_fails_fast_on_bad_cloud_config():
     """驗證當環境配置了 Blob 連線資訊但初始化失敗時，嚴格拋出例外，絕不靜默降級至本機記憶體。"""
     from unittest.mock import patch
 
-    bad_env = {"AZURE_STORAGE_CONNECTION_STRING": "InvalidConnectionString"}
+    bad_env = {
+        "NESTOCK_MEDIA_PROVIDER": "azure",
+        "AZURE_STORAGE_CONNECTION_STRING": "InvalidConnectionString",
+    }
     with patch(
         "azure.storage.blob.BlobServiceClient.from_connection_string",
         side_effect=ValueError("Invalid connection string format"),
@@ -860,7 +890,10 @@ def test_create_media_storage_service_fails_fast_on_bad_cloud_config():
         with pytest.raises(RuntimeError, match="Azure Blob Storage configuration failed"):
             _create_media_storage_service(environment=bad_env)
 
-    bad_endpoint_env = {"AZURE_STORAGE_BLOB_ENDPOINT": "https://invalid.blob.core.windows.net/"}
+    bad_endpoint_env = {
+        "NESTOCK_MEDIA_PROVIDER": "azure",
+        "AZURE_STORAGE_BLOB_ENDPOINT": "https://invalid.blob.core.windows.net/",
+    }
     with patch(
         "azure.storage.blob.BlobServiceClient.__init__",
         side_effect=ValueError("Invalid endpoint URL"),

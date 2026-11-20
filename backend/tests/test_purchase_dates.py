@@ -33,7 +33,7 @@ from app.agent.cards import (
     UNREADABLE_DAY,
     PurchaseCards,
 )
-from app.agent.llm import build_chat_model, load_azure_settings
+from app.agent.llm import build_chat_model, load_vertex_settings
 from app.agent.read_agent import (
     DATED_PURCHASES_VAR,
     TOOL_SCHEMAS,
@@ -267,9 +267,9 @@ def test_live_day_cases_are_past_days_on_listed_lines():
 
 @pytest.fixture(scope="module")
 def live_dated_model():
-    settings = load_azure_settings()
+    settings = load_vertex_settings()
     if settings is None:
-        pytest.skip("Azure OpenAI is not configured; live check not run")
+        pytest.skip("Vertex AI is not configured; live check not run")
     return build_chat_model(settings).bind_tools([*TOOL_SCHEMAS, DATED_PURCHASE_TOOL_SCHEMA])
 
 

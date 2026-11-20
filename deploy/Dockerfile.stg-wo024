@@ -1,0 +1,9 @@
+FROM us-central1-docker.pkg.dev/nestocke-stg/nestock-stg/api@sha256:0cdcc8c9fabd0715835b8722e55a283497bd2810e039b4c7c4d681919d08c978
+
+WORKDIR /app
+COPY backend/app/models/shopping.py /app/app/models/shopping.py
+COPY backend/app/services/shopping/intents.py /app/app/services/shopping/intents.py
+COPY patch_wo024_route.py /tmp/patch_wo024_route.py
+RUN python /tmp/patch_wo024_route.py \
+    && rm /tmp/patch_wo024_route.py \
+    && python -m compileall -q /app/app/api/routes.py /app/app/models/shopping.py /app/app/services/shopping/intents.py

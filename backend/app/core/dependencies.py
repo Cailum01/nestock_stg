@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.agent.llm import load_vertex_settings
 from app.models.identity import (
     HTTP_ID_MAX_LENGTH,
     DeviceRecord,
@@ -55,9 +56,8 @@ from app.services.speech import (
     create_speech_service,
 )
 from app.services.vision import (
-    AzureOpenAIVisionService,
+    VertexVisionService,
     VisionService,
-    load_vision_azure_settings,
 )
 
 if TYPE_CHECKING:
@@ -410,9 +410,9 @@ def _create_vision_service(
     media: MediaStorageService,
     environment: Mapping[str, str] | None = None,
 ) -> VisionService | None:
-    settings = load_vision_azure_settings(environment=environment)
+    settings = load_vertex_settings(environment=environment)
     if settings is not None:
-        return AzureOpenAIVisionService(
+        return VertexVisionService(
             settings=settings,
             inventory_service=inventory,
             media_storage=media,
@@ -462,6 +462,9 @@ def _create_media_storage_service(
         selected_provider = selected_provider.strip().lower()
         if selected_provider not in {"azure", "gcs", "local"}:
             raise RuntimeError("NESTOCK_MEDIA_PROVIDER must be azure, gcs, or local.")
+    data_provider = env.get("NESTOCK_DATA_PROVIDER", "").strip().lower()
+    if data_provider == "firestore" and selected_provider != "gcs":
+        raise RuntimeError("Firestore provider requires explicit NESTOCK_MEDIA_PROVIDER=gcs.")
     if selected_provider == "gcs":
         if any(
             env.get(name)
@@ -527,6 +530,7 @@ def _create_media_storage_service(
                 "AZURE_STORAGE_CONNECTION_STRING",
                 "AZURE_STORAGE_BLOB_ENDPOINT",
                 "NESTOCK_STORAGE_ACCOUNT_URL",
+                "NESTOCK_GCS_PROJECT_ID",
                 "NESTOCK_GCS_BUCKET",
             )
         ):
@@ -543,11 +547,13 @@ def _create_media_storage_service(
     conn_str = env.get("AZURE_STORAGE_CONNECTION_STRING")
     blob_endpoint = env.get("AZURE_STORAGE_BLOB_ENDPOINT") or env.get("NESTOCK_STORAGE_ACCOUNT_URL")
     container_name = env.get("AZURE_STORAGE_CONTAINER_NAME") or "media"
+    if selected_provider is None and (conn_str or blob_endpoint):
+        raise RuntimeError("Azure Blob settings require explicit NESTOCK_MEDIA_PROVIDER=azure.")
     if selected_provider == "azure":
         if (
             env.get("NESTOCK_GCS_PROJECT_ID")
             or env.get("NESTOCK_GCS_BUCKET")
-            or env.get("NESTOCK_DATA_PROVIDER") == "firestore"
+            or data_provider == "firestore"
         ):
             raise RuntimeError(
                 "Azure media provider cannot be combined with Firestore/GCS settings."
@@ -557,7 +563,7 @@ def _create_media_storage_service(
                 "Azure media provider requires AZURE_STORAGE_CONNECTION_STRING or "
                 "AZURE_STORAGE_BLOB_ENDPOINT."
             )
-    elif env.get("NESTOCK_GCS_BUCKET"):
+    elif env.get("NESTOCK_GCS_PROJECT_ID") or env.get("NESTOCK_GCS_BUCKET"):
         raise RuntimeError("GCS settings require explicit NESTOCK_MEDIA_PROVIDER=gcs.")
 
     kwargs: dict[str, Any] = {
@@ -654,7 +660,7 @@ def get_speech_service() -> SpeechToTextService | None:
     if not _speech_service_resolved:
         with _speech_lock:
             if not _speech_service_resolved:
-                _speech_service = create_speech_service()
+                _speech_service = create_speech_service(environment=os.environ)
                 _speech_service_resolved = True
     return _speech_service
 
@@ -672,7 +678,7 @@ def get_vision_service(environment: Mapping[str, str] | None = None) -> VisionSe
 
     Lazily instantiates the vision provider on first invocation rather than
     module import time. This ensures runtime environment variables from .env
-    are fully available when resolving Azure OpenAI credentials.
+    are available when resolving Vertex references for ADC.
     Returns None if real Vision provider is not configured.
     """
     global _vision_service, _vision_service_resolved

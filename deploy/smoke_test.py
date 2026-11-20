@@ -1,38 +1,38 @@
-"""B2 smoke test: does the deployed API work? Checks contracts, not a data snapshot.
+"""STG smoke test: check API contracts without writing data by default.
 
 Why it is built this way (2026-11-19): the old six-step test compared the live data with a
 fixed Demo baseline and stopped at the first failure, so leftover rehearsal data failed
 it, and nothing covered adding stock from a photo (Issue #206).
 
 Layers (each check is reported on its own; one failure does not hide the rest):
-  L0 version    the running image is the latest origin/main        (read-only)
-  L1 services   /health, real speech, the Agent answers,
-                /agent/open-card route                              (read-only)
+  L0 version    deployed image includes the expected STG commit     (read-only)
+  L1 services   /health, speech/auth, Agent, /agent/open-card       (read-only or gated)
   L2 data       invariants of /inventory, /shopping, /forecast     (read-only)
-  L3 photo      photo -> vision -> approval card is well formed; no quantity changes
-                until someone confirms. The card is left alone      (stores one pending card)
-  L4 write      photo -> increase_stock card -> confirm -> quantity +N,
-                same approval again writes nothing
-                                                                   (WRITES; needs --write --yes)
+  L3 photo      photo -> vision -> approval card                    (needs --write --yes)
+  L4 write      photo -> increase_stock card -> confirm -> quantity +N
+                (needs --write --yes)
 
 Rules:
-- Standard library only, so it runs on a laptop with no venv. It holds no credential and
-  prints none; the base URL is the only required input.
+- Standard library only, so it runs on a laptop with no venv. The base URL is the only
+  input for unauthenticated checks; an optional bearer token is neither printed nor stored.
 - No mock stands in for a real service: a mock Speech answer is a failure.
-- `/agent/messages` writes no domain data (AGENTS.md HITL rule 8), but it stores a pending
-  approval card (30 minutes, one open card per household). Success is: the photo gives a
-  card, and confirming it adds the stock. An unconfirmed card is left to expire; the test
-  never cancels a card and never asks the Agent which cards are open.
-- L4 changes the real data of `demo-household`: it adds to one household item and leaves the
-  new quantity and one `adjustment` transaction behind. It does not undo them.
+- Protected routes require an explicit install bearer token; household-scoped routes also
+  require an explicit household ID. Without them, the test expects HTTP 401 and does not
+  read domain data. No household is assumed.
+- Agent and photo flows can create pending approval cards. They are skipped unless both
+  `--write` and `--yes` are supplied. Do not run these checks unless you accept their
+  external effects; an unconfirmed card is not automatically cancelled.
+- L4 changes the explicitly selected household: it adds to one item and leaves the new
+  quantity and one `adjustment` transaction behind. It does not undo them.
 - Targets the cloud HTTPS endpoint. localhost / 10.0.2.2 are refused unless
   `--allow-local` is given (dev rehearsal only).
 
 Usage:
   python3 deploy/smoke_test.py --base-url https://<host>
-  python3 deploy/smoke_test.py --base-url https://<host> --only L1,L3
+  python3 deploy/smoke_test.py --base-url https://<host> --bearer-token <TOKEN> --household-id <ID>
   python3 deploy/smoke_test.py --base-url https://<host> --skip L2
-  python3 deploy/smoke_test.py --base-url https://<host> --write --yes   # adds L4
+  python3 deploy/smoke_test.py --base-url https://<host> --bearer-token <TOKEN> \
+      --household-id <ID> --write --yes
 Exit code: 0 no FAIL, 1 at least one FAIL, 2 bad usage.
 """
 
@@ -55,8 +55,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_AUDIO = Path(__file__).resolve().parent / "smoke-audio-detergent.wav"
 DEFAULT_IMAGE = REPO_ROOT / "backend" / "tests" / "fixtures" / "vision" / "img_single.jpg"
 
-HOUSEHOLD_ID = "demo-household"
 APP_NAME = "nestock-api"
+DEFAULT_EXPECTED_COMMIT = "origin/stg"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "10.0.2.2", "::1"}
 
 # What MockSpeechToTextService returns for any clip over 64 bytes. Seeing it means the
@@ -95,9 +95,17 @@ class SmokeWarn(Exception):
 
 
 class Client:
-    def __init__(self, base_url: str, timeout: float) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float,
+        bearer_token: str | None = None,
+        household_id: str | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.bearer_token = bearer_token
+        self.household_id = household_id
 
     def request(
         self,
@@ -111,8 +119,15 @@ class Client:
         merged = {"Accept": "application/json"}
         if content_type:
             merged["Content-Type"] = content_type
-        merged.update(headers or {})
         url = path if path.startswith("http") else self.base_url + path
+        base = urllib.parse.urlsplit(self.base_url)
+        target = urllib.parse.urlsplit(url)
+        if (target.scheme, target.netloc) == (base.scheme, base.netloc):
+            if self.bearer_token:
+                merged["Authorization"] = f"Bearer {self.bearer_token}"
+            if self.household_id:
+                merged["X-Household-Id"] = self.household_id
+        merged.update(headers or {})
         req = urllib.request.Request(url, data=body, method=method, headers=merged)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as response:
@@ -189,24 +204,29 @@ def image_tag_commit(tag: str) -> tuple[str | None, bool]:
     return parts[-1], dirty
 
 
-def judge_version(tag: str | None, behind: int | None, dirty_known: bool = True) -> str:
-    """The verdict for a deployed image tag. `behind` is the number of commits origin/main
-    has that the deployed commit does not; None means git could not tell."""
+def judge_version(
+    tag: str | None,
+    behind: int | None,
+    expected_commit: str = DEFAULT_EXPECTED_COMMIT,
+) -> str:
+    """Judge whether a deployed image includes the expected STG commit."""
     if not tag:
         raise SmokeSkip("deployed image tag unknown (az not signed in? pass --deployed-tag)")
     commit, dirty = image_tag_commit(tag)
     if commit is None:
         raise SmokeWarn(f"image tag {tag!r} carries no git commit")
     if behind is None:
-        raise SmokeWarn(f"commit {commit} not found in this checkout (git fetch?)")
+        raise SmokeWarn(
+            f"commit {commit} cannot be compared with {expected_commit!r} (fetch refs?)"
+        )
     if behind > 0:
         raise SmokeFailure(
-            f"deployed {commit} is {behind} commits behind origin/main; "
-            "run deploy/deploy-aca.sh from a clean main"
+            f"deployed {commit} is missing {behind} commits from expected {expected_commit}; "
+            "verify the intended STG source revision"
         )
     if dirty:
         raise SmokeWarn(f"deployed {commit} is up to date but was built from a dirty tree")
-    return f"deployed {commit} is origin/main"
+    return f"deployed {commit} includes expected commit {expected_commit}"
 
 
 def default_az_image(app: str) -> str | None:
@@ -228,11 +248,21 @@ def default_az_image(app: str) -> str | None:
     return lines[-1] if lines else None
 
 
-def default_commits_behind(commit: str) -> int | None:
-    """How many commits origin/main has that `commit` does not, or None."""
+def default_commits_behind(
+    commit: str,
+    expected_commit: str = DEFAULT_EXPECTED_COMMIT,
+) -> int | None:
+    """How many expected commits are absent from `commit`, or None."""
     try:
         out = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "rev-list", "--count", f"{commit}..origin/main"],
+            [
+                "git",
+                "-C",
+                str(REPO_ROOT),
+                "rev-list",
+                "--count",
+                f"{commit}..{expected_commit}",
+            ],
             capture_output=True,
             text=True,
             timeout=30,
@@ -257,8 +287,8 @@ def check_version(client: Client, ctx: dict) -> str:
     if tag:
         commit, _ = image_tag_commit(tag)
         if commit:
-            behind = ctx["commits_behind"](commit)
-    return judge_version(tag, behind)
+            behind = ctx["commits_behind"](commit, ctx["expected_commit"])
+    return judge_version(tag, behind, ctx["expected_commit"])
 
 
 # -- L1 services --------------------------------------------------------------------------
@@ -269,6 +299,25 @@ def check_health(client: Client, ctx: dict) -> str:
     if body != {"status": "ok"}:
         raise SmokeFailure(f"/health returned {body!r}, expected {{'status': 'ok'}}")
     return "status ok"
+
+
+def unauthenticated_probe(
+    client: Client,
+    path: str,
+    *,
+    method: str = "GET",
+    body: bytes | None = None,
+    content_type: str | None = None,
+) -> str | None:
+    """Return a pass detail after verifying 401, or None when credentials are supplied."""
+    if client.bearer_token:
+        return None
+    status, payload = client.request(method, path, body=body, content_type=content_type)
+    if status != 401:
+        raise SmokeFailure(
+            f"{method} {path}: expected HTTP 401 without a bearer token, got HTTP {status}"
+        )
+    return "unauthenticated request correctly returned HTTP 401; scoped check skipped"
 
 
 def multipart(
@@ -292,6 +341,19 @@ def multipart(
 
 
 def check_speech(client: Client, ctx: dict) -> str:
+    if not client.bearer_token:
+        body, content_type = multipart(
+            {"language": "zh-TW"}, "file", "auth-check.wav", b"", "audio/wav"
+        )
+        unauthenticated = unauthenticated_probe(
+            client,
+            "/api/speech/transcribe",
+            method="POST",
+            body=body,
+            content_type=content_type,
+        )
+        if unauthenticated:
+            return unauthenticated
     audio_path: Path = ctx["audio"]
     try:
         audio = audio_path.read_bytes()
@@ -318,10 +380,15 @@ def check_speech(client: Client, ctx: dict) -> str:
 
 
 def check_agent(client: Client, ctx: dict) -> str:
+    if not ctx.get("write"):
+        raise SmokeSkip("Agent messages may create approval cards; add --write --yes to run")
+    if not client.bearer_token or not client.household_id:
+        raise SmokeFailure("Agent check requires --bearer-token and --household-id")
     result = require_dict(
         "/agent/messages",
         client.post_json(
-            "/agent/messages", {"household_id": HOUSEHOLD_ID, "message": AGENT_QUESTION}
+            "/agent/messages",
+            {"household_id": client.household_id, "message": AGENT_QUESTION},
         ),
     )
     message = str(result.get("message", "")).strip()
@@ -333,9 +400,15 @@ def check_agent(client: Client, ctx: dict) -> str:
 def open_card_route(client: Client) -> dict:
     """GET /agent/open-card (PR #215): the household's newest unconfirmed card. Read-only,
     does not call the model."""
+    household_id = client.household_id or "smoke-auth-check"
+    unauthenticated = unauthenticated_probe(
+        client, f"/agent/open-card?household_id={urllib.parse.quote(household_id)}"
+    )
+    if unauthenticated:
+        return {"message": "", "results": [], "pending_approval": None}
     result = require_dict(
         "/agent/open-card",
-        client.get_json(f"/agent/open-card?household_id={HOUSEHOLD_ID}"),
+        client.get_json(f"/agent/open-card?household_id={urllib.parse.quote(household_id)}"),
     )
     missing = [key for key in ("message", "results", "pending_approval") if key not in result]
     if missing:
@@ -347,6 +420,9 @@ def open_card_route(client: Client) -> dict:
 
 
 def check_open_card(client: Client, ctx: dict) -> str:
+    if not client.bearer_token:
+        open_card_route(client)
+        return "unauthenticated request correctly returned HTTP 401; card check skipped"
     card = open_card_route(client)["pending_approval"]
     return f"card {card['approval_id']} is open" if card else "no card is open"
 
@@ -354,7 +430,7 @@ def check_open_card(client: Client, ctx: dict) -> str:
 # -- L2 data invariants -------------------------------------------------------------------
 
 
-def inventory_problems(rows: list) -> list[str]:
+def inventory_problems(rows: list, household_id: str) -> list[str]:
     problems: list[str] = []
     seen: set[object] = set()
     for row in rows:
@@ -365,8 +441,8 @@ def inventory_problems(rows: list) -> list[str]:
         if item_id in seen:
             problems.append(f"duplicate item_id {item_id}")
         seen.add(item_id)
-        if row.get("household_id") != HOUSEHOLD_ID:
-            problems.append(f"{item_id} is not in {HOUSEHOLD_ID}")
+        if row.get("household_id") != household_id:
+            problems.append(f"{item_id} is not in {household_id}")
         for field in ("item_id", "name", "unit"):
             if not isinstance(row.get(field), str) or not row.get(field):
                 problems.append(f"{item_id}.{field} missing")
@@ -385,7 +461,7 @@ def inventory_problems(rows: list) -> list[str]:
     return problems
 
 
-def shopping_problems(rows: list) -> list[str]:
+def shopping_problems(rows: list, household_id: str) -> list[str]:
     problems: list[str] = []
     seen: set[object] = set()
     for row in rows:
@@ -396,8 +472,8 @@ def shopping_problems(rows: list) -> list[str]:
         if key in seen:
             problems.append(f"duplicate shopping_item_id {key}")
         seen.add(key)
-        if row.get("household_id") != HOUSEHOLD_ID:
-            problems.append(f"{key} is not in {HOUSEHOLD_ID}")
+        if row.get("household_id") != household_id:
+            problems.append(f"{key} is not in {household_id}")
         if row.get("status") not in SHOPPING_STATUSES:
             problems.append(f"{key}.status is {row.get('status')!r}")
         for field in ("price", "unit_price", "total_price"):
@@ -424,22 +500,31 @@ def forecast_problems(rows: list, inventory: list) -> list[str]:
 
 
 def check_inventory(client: Client, ctx: dict) -> str:
+    unauthenticated = unauthenticated_probe(client, "/inventory")
+    if unauthenticated:
+        return unauthenticated
     rows = require_list("/inventory", client.get_json("/inventory"))
-    problems = inventory_problems(rows)
+    problems = inventory_problems(rows, client.household_id or "")
     if problems:
         raise SmokeFailure("inventory: " + "; ".join(problems))
     return f"{len(rows)} items satisfy the invariants"
 
 
 def check_shopping(client: Client, ctx: dict) -> str:
+    unauthenticated = unauthenticated_probe(client, "/shopping")
+    if unauthenticated:
+        return unauthenticated
     rows = require_list("/shopping", client.get_json("/shopping"))
-    problems = shopping_problems(rows)
+    problems = shopping_problems(rows, client.household_id or "")
     if problems:
         raise SmokeFailure("shopping: " + "; ".join(problems))
     return f"{len(rows)} rows satisfy the invariants"
 
 
 def check_forecast(client: Client, ctx: dict) -> str:
+    unauthenticated = unauthenticated_probe(client, "/forecast")
+    if unauthenticated:
+        return unauthenticated
     rows = require_list("/forecast", client.get_json("/forecast"))
     inventory = require_list("/inventory", client.get_json("/inventory"))
     problems = forecast_problems(rows, inventory)
@@ -476,7 +561,7 @@ def photo_message(client: Client, ctx: dict) -> dict:
         client.post_json(
             "/api/media/upload-authorization",
             {
-                "household_id": HOUSEHOLD_ID,
+                "household_id": client.household_id,
                 "filename": image_path.name,
                 "content_type": "image/jpeg",
                 "file_size_bytes": len(image),
@@ -497,7 +582,11 @@ def photo_message(client: Client, ctx: dict) -> dict:
         "/agent/messages",
         client.post_json(
             "/agent/messages",
-            {"household_id": HOUSEHOLD_ID, "message": PHOTO_MESSAGE, "image_ref": image_ref},
+            {
+                "household_id": client.household_id,
+                "message": PHOTO_MESSAGE,
+                "image_ref": image_ref,
+            },
         ),
     )
 
@@ -507,7 +596,11 @@ def resume(client: Client, approval_id: str, approved: bool) -> dict:
         "/agent/resume",
         client.post_json(
             "/agent/resume",
-            {"household_id": HOUSEHOLD_ID, "approval_id": approval_id, "approved": approved},
+            {
+                "household_id": client.household_id,
+                "approval_id": approval_id,
+                "approved": approved,
+            },
         ),
     )
 
@@ -565,6 +658,10 @@ def no_card_failure(client: Client, response: dict) -> SmokeFailure:
 
 
 def check_photo(client: Client, ctx: dict) -> str:
+    if not ctx.get("write"):
+        raise SmokeSkip("photo upload can create an approval card; add --write --yes to run")
+    if not client.bearer_token or not client.household_id:
+        raise SmokeFailure("photo check requires --bearer-token and --household-id")
     # The snapshot is taken BEFORE the photo: a backend that writes while it builds the card
     # must not be able to hide behind a baseline read afterwards.
     snapshot = inventory_snapshot(client)
@@ -586,6 +683,8 @@ def check_photo(client: Client, ctx: dict) -> str:
 def check_write(client: Client, ctx: dict) -> str:
     if not ctx.get("write"):
         raise SmokeSkip("writes real data; add --write --yes to run it")
+    if not client.bearer_token or not client.household_id:
+        raise SmokeFailure("write check requires --bearer-token and --household-id")
     # A card left open (by L3 or an earlier run) is returned again for the same photo, so
     # this works with or without one. Its shape is checked before anything is confirmed.
     snapshot = inventory_snapshot(client)
@@ -739,9 +838,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-local", action="store_true", help="dev rehearsal only")
     parser.add_argument("--only", default="", help="comma list of layers to run, e.g. L1,L3")
     parser.add_argument("--skip", default="", help="comma list of layers to skip, e.g. L2")
-    parser.add_argument("--write", action="store_true", help="enable L4 (writes real data)")
-    parser.add_argument("--yes", action="store_true", help="confirm --write")
+    parser.add_argument(
+        "--bearer-token",
+        default="",
+        help="install bearer token for protected checks (not printed)",
+    )
+    parser.add_argument(
+        "--household-id",
+        default="",
+        help="authorized household for scoped checks; required with --bearer-token",
+    )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="enable Agent/photo approval-card flows and L4 data writes",
+    )
+    parser.add_argument("--yes", action="store_true", help="confirm --write side effects")
     parser.add_argument("--deployed-tag", default="", help="image tag; otherwise read with az")
+    parser.add_argument(
+        "--expected-commit",
+        default=DEFAULT_EXPECTED_COMMIT,
+        help="STG commit/ref the deployed image must include (default: origin/stg)",
+    )
     parser.add_argument("--app", default=APP_NAME, help="Container App name for L0")
     args = parser.parse_args(argv)
 
@@ -749,7 +867,16 @@ def main(argv: list[str] | None = None) -> int:
         print("error: give --base-url or set NESTOCK_BASE_URL", file=sys.stderr)
         return 2
     if args.write and not args.yes:
-        print("error: --write changes real data; add --yes to confirm", file=sys.stderr)
+        print("error: --write enables approval-card/data side effects; add --yes", file=sys.stderr)
+        return 2
+    if args.yes and not args.write:
+        print("error: --yes requires --write", file=sys.stderr)
+        return 2
+    if bool(args.bearer_token) != bool(args.household_id):
+        print("error: --bearer-token and --household-id must be supplied together", file=sys.stderr)
+        return 2
+    if args.write and not args.bearer_token:
+        print("error: --write --yes requires --bearer-token and --household-id", file=sys.stderr)
         return 2
     try:
         require_endpoint_is_cloud(args.base_url, args.allow_local)
@@ -758,20 +885,29 @@ def main(argv: list[str] | None = None) -> int:
     except SmokeFailure as failure:
         print(f"error: {failure}", file=sys.stderr)
         return 2
-    if args.write:
-        layers = (layers or {"L0", "L1", "L2", "L3"}) | {"L4"}
-    elif layers is None:
-        layers = {"L0", "L1", "L2", "L3"}
+    if layers is None:
+        layers = set(LAYERS) if args.write else {"L0", "L1", "L2", "L3"}
     ctx = {
         "audio": args.audio,
         "image": args.image,
         "write": args.write and args.yes,
+        "expected_commit": args.expected_commit,
         "deployed_tag": args.deployed_tag or None,
         "app": args.app,
         "az_image": default_az_image,
         "commits_behind": default_commits_behind,
     }
-    return run(Client(args.base_url, args.timeout), ctx, layers, skipped)
+    return run(
+        Client(
+            args.base_url,
+            args.timeout,
+            bearer_token=args.bearer_token or None,
+            household_id=args.household_id or None,
+        ),
+        ctx,
+        layers,
+        skipped,
+    )
 
 
 if __name__ == "__main__":

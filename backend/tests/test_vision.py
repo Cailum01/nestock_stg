@@ -1,8 +1,12 @@
+import json
 from datetime import date
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
 
+from app.agent.llm import VertexAISettings, load_vertex_settings
 from app.core.dependencies import (
     _create_vision_service,
     _reset_vision_service_for_test,
@@ -21,6 +25,7 @@ from app.services.provisional_storage.local_staging_adapter import LocalStagingM
 from app.services.vision import (
     AzureOpenAIVisionService,
     MockVisionService,
+    VertexVisionService,
     VisionOpenAISettings,
     VisionService,
     load_vision_azure_settings,
@@ -205,42 +210,129 @@ def test_create_vision_service_returns_none_when_unconfigured():
     assert service is None
 
 
-def test_create_vision_service_creates_azure_adapter_when_configured():
+def test_create_vision_service_creates_vertex_adapter_when_project_configured(monkeypatch):
     inventory = DummyInventoryService([])
     media = LocalStagingMediaStorage()
-    env = {
-        "AZURE_OPENAI_ENDPOINT": "https://test.openai.azure.com/",
-        "AZURE_OPENAI_API_KEY": "secret",
-    }
+    sentinel_client = object()
+    monkeypatch.setattr("app.services.vision.build_vertex_client", lambda settings: sentinel_client)
+    env = {"NESTOCK_VERTEX_PROJECT_ID": "test-project"}
     service = _create_vision_service(inventory, media, environment=env)
-    assert isinstance(service, AzureOpenAIVisionService)
+    assert isinstance(service, VertexVisionService)
+    assert service._vertex_client is sentinel_client
+    assert service.settings == VertexAISettings(project="test-project")
 
 
 def test_dependencies_get_vision_service():
     _reset_vision_service_for_test()
-    env = {
-        "AZURE_OPENAI_VISION_ENDPOINT": "https://test-vision.openai.azure.com/",
-        "AZURE_OPENAI_VISION_API_KEY": "vision-secret",
-    }
-    service = get_vision_service(environment=env)
-    assert isinstance(service, VisionService)
-    _reset_vision_service_for_test()
+    env = {"NESTOCK_VERTEX_PROJECT_ID": "test-project"}
+    from app.services import vision
+
+    vision_service_client = object()
+    original = vision.build_vertex_client
+    vision.build_vertex_client = lambda settings: vision_service_client
+    try:
+        service = get_vision_service(environment=env)
+        assert isinstance(service, VisionService)
+        assert isinstance(service, VertexVisionService)
+    finally:
+        vision.build_vertex_client = original
+        _reset_vision_service_for_test()
 
 
 def test_dependencies_get_vision_service_lazy_resolution_with_env():
     _reset_vision_service_for_test()
-    env = {
-        "AZURE_OPENAI_VISION_ENDPOINT": "https://test-vision.openai.azure.com/",
-        "AZURE_OPENAI_VISION_API_KEY": "vision-secret",
-    }
-    custom_service = get_vision_service(environment=env)
-    assert isinstance(custom_service, AzureOpenAIVisionService)
+    from app.services import vision
 
-    # Calling with empty environment after reset should return None (no silent fallback to Mock)
-    _reset_vision_service_for_test()
-    fallback_service = get_vision_service(environment={})
-    assert fallback_service is None
-    _reset_vision_service_for_test()
+    sentinel_client = object()
+    original = vision.build_vertex_client
+    vision.build_vertex_client = lambda settings: sentinel_client
+    env = {"NESTOCK_VERTEX_PROJECT_ID": "test-project"}
+    try:
+        custom_service = get_vision_service(environment=env)
+        assert isinstance(custom_service, VertexVisionService)
+
+        # Empty injected configuration stays disabled rather than faking recognition.
+        _reset_vision_service_for_test()
+        fallback_service = get_vision_service(environment={})
+        assert fallback_service is None
+    finally:
+        vision.build_vertex_client = original
+        _reset_vision_service_for_test()
+
+
+@pytest.mark.anyio
+async def test_vertex_vision_uses_mocked_model_and_preserves_media_result():
+    media = LocalStagingMediaStorage()
+    household_id = "household-vertex-test"
+    image_ref = f"blob://households/{household_id}/media/photo.jpg"
+    await media.simulate_client_upload(household_id, image_ref, b"\xff\xd8\xff" + b"x" * 30)
+
+    response_text = json.dumps(
+        {
+            "scene_type": "single_item",
+            "raw_text": "豆漿",
+            "items": [{"raw_name": "豆漿 450ml", "quantity": 1, "unit": "瓶", "confidence": 0.9}],
+        }
+    )
+    generate_content = AsyncMock(return_value=SimpleNamespace(text=response_text))
+    client = SimpleNamespace(
+        aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    )
+    settings = load_vertex_settings(
+        environment={
+            "NESTOCK_VERTEX_PROJECT_ID": "test-project",
+            "NESTOCK_VERTEX_MODEL": "gemini-3.8-flash",
+        }
+    )
+    assert settings is not None
+    service = VertexVisionService(
+        settings=settings,
+        media_storage=media,
+        client=client,
+    )
+
+    result = await service.analyze_image(household_id, image_ref)
+
+    assert result.image_ref == image_ref
+    assert result.detected_items[0].canonical_name
+    assert generate_content.await_count == 1
+    assert generate_content.await_args.kwargs["model"] == "gemini-3.8-flash"
+    assert await media.verify_media_exists(household_id, image_ref)
+    assert await media.get_derived_artifact(household_id, image_ref) is not None
+
+
+@pytest.mark.anyio
+async def test_vertex_vision_comparison_uses_mocked_model_and_preserves_result_contract():
+    media = LocalStagingMediaStorage()
+    household_id = "household-compare-test"
+    image_ref_a = f"blob://households/{household_id}/media/a.jpg"
+    image_ref_b = f"blob://households/{household_id}/media/b.jpg"
+    await media.simulate_client_upload(household_id, image_ref_a, b"\xff\xd8\xff" + b"a" * 24)
+    await media.simulate_client_upload(household_id, image_ref_b, b"\xff\xd8\xff" + b"b" * 24)
+    generate_content = AsyncMock(
+        return_value=SimpleNamespace(
+            text=(
+                '{"is_same_item": "yes", "similarity_score": 0.92, "confidence": 0.88, '
+                '"reasoning": "same product", "visual_differences": []}'
+            )
+        )
+    )
+    client = SimpleNamespace(
+        aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    )
+    service = VertexVisionService(
+        settings=VertexAISettings(project="test-project"),
+        media_storage=media,
+        client=client,
+    )
+
+    result = await service.compare_images(household_id, image_ref_a, image_ref_b)
+
+    assert result.is_same_item is True
+    assert result.similarity_score == 0.92
+    assert result.confidence == 0.88
+    assert result.visual_differences == []
+    assert generate_content.await_count == 1
 
 
 @pytest.mark.anyio

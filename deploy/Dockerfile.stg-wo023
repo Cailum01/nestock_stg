@@ -1,0 +1,5 @@
+# Minimal WO-023 layer over the exact active WO-022 image.
+FROM us-central1-docker.pkg.dev/nestocke-stg/nestock-stg/api@sha256:8d19be59bb9eee6a14ff516e9cf0029edaa47f420253b199d8f9f4493b510f7e
+
+WORKDIR /app
+COPY speech.py /app/app/services/speech.py

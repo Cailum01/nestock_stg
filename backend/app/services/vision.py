@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import logging
@@ -7,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
+from app.agent.llm import VertexAISettings, build_vertex_client
 from app.models.domain import MediaFailureReason
 from app.models.vision import (
     DetectedItem,
@@ -149,7 +151,7 @@ class AzureOpenAIVisionService:
 
     def __init__(
         self,
-        settings: VisionOpenAISettings,
+        settings: VisionOpenAISettings | VertexAISettings,
         inventory_service: object | None = None,
         media_storage: MediaStorageService | None = None,
         mock_fallback: bool = False,
@@ -164,6 +166,11 @@ class AzureOpenAIVisionService:
         self._fallback_service = MockVisionService()
         self._normalizer = ItemNormalizer()
         self._results_cache: dict[tuple[str, str], VisionAnalysisResult] = {}
+
+    def _has_credentials(self) -> bool:
+        if isinstance(self.settings, VertexAISettings):
+            return bool(self.settings.project)
+        return bool(self.settings.api_key and self.settings.endpoint)
 
     async def _request_openai_vision(
         self,
@@ -290,7 +297,7 @@ class AzureOpenAIVisionService:
             self._results_cache[cache_key] = persisted
             return persisted
 
-        has_creds = bool(self.settings.api_key and self.settings.endpoint)
+        has_creds = self._has_credentials()
         media_bytes = (
             await self.media_storage.get_media_bytes(household_id, clean_ref) if has_creds else None
         )
@@ -333,3 +340,126 @@ class AzureOpenAIVisionService:
             mock_fallback=self.mock_fallback,
             fallback_service=self._fallback_service,
         )
+
+
+class VertexVisionService(AzureOpenAIVisionService):
+    """Vertex AI Gemini vision adapter with the existing media lifecycle and DTOs."""
+
+    def __init__(
+        self,
+        settings: VertexAISettings,
+        inventory_service: object | None = None,
+        media_storage: MediaStorageService | None = None,
+        mock_fallback: bool = False,
+        client: Any | None = None,
+    ) -> None:
+        super().__init__(
+            settings=settings,
+            inventory_service=inventory_service,
+            media_storage=media_storage,
+            mock_fallback=mock_fallback,
+        )
+        self._vertex_client = client if client is not None else build_vertex_client(settings)
+
+    async def _request_openai_vision(
+        self,
+        media_bytes: bytes,
+        scene_type: SceneType | None,
+        content_type: str | None = None,
+    ) -> dict[str, Any]:
+        from google.genai import types
+
+        mime = content_type or detect_image_mime(media_bytes)
+        prompt = f"{VISION_PROMPT}\nScene hint: {scene_type.value if scene_type else 'auto'}"
+        response = await self._vertex_client.aio.models.generate_content(
+            model=self.settings.model,
+            contents=[types.Part.from_bytes(data=media_bytes, mime_type=mime), prompt],
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        text = getattr(response, "text", None)
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Vertex vision returned an empty response.")
+        return json.loads(text)
+
+    async def compare_images(
+        self, household_id: str, image_ref_a: str, image_ref_b: str
+    ) -> ImageComparisonResult:
+        if not image_ref_a or not image_ref_a.strip():
+            raise ValueError("image_ref_a must be a non-empty string reference.")
+        if not image_ref_b or not image_ref_b.strip():
+            raise ValueError("image_ref_b must be a non-empty string reference.")
+        clean_a, clean_b = image_ref_a.strip(), image_ref_b.strip()
+        if clean_a == clean_b:
+            exists = await self.media_storage.verify_media_exists(household_id, clean_a)
+            if not exists and not self.mock_fallback:
+                raise ValueError(f"Media not found for image_ref: {clean_a}")
+            return ImageComparisonResult(
+                image_ref_a=clean_a,
+                image_ref_b=clean_b,
+                is_same_item=True,
+                similarity_score=1.0,
+                confidence=1.0,
+                reasoning="Identical image reference provided (short-circuit).",
+                visual_differences=[],
+            )
+
+        bytes_a, bytes_b = await asyncio.gather(
+            self.media_storage.get_media_bytes(household_id, clean_a),
+            self.media_storage.get_media_bytes(household_id, clean_b),
+        )
+        if not bytes_a or not bytes_b:
+            if self.mock_fallback:
+                return await self._fallback_service.compare_images(household_id, clean_a, clean_b)
+            raise ValueError("Media bytes not found for one or both image references.")
+
+        from google.genai import types
+
+        from app.services.vision_comparison import (
+            COMPARE_VISION_PROMPT,
+            _safe_bounded_float,
+        )
+
+        try:
+            response = await self._vertex_client.aio.models.generate_content(
+                model=self.settings.model,
+                contents=[
+                    COMPARE_VISION_PROMPT,
+                    types.Part.from_bytes(data=bytes_a, mime_type=detect_image_mime(bytes_a)),
+                    types.Part.from_bytes(data=bytes_b, mime_type=detect_image_mime(bytes_b)),
+                ],
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            text = getattr(response, "text", None)
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("Vertex vision comparison returned an empty response.")
+            parsed = json.loads(text)
+            raw_same = parsed.get("is_same_item")
+            if isinstance(raw_same, bool):
+                same = raw_same
+            elif isinstance(raw_same, str):
+                same = raw_same.strip().lower() in ("true", "1", "yes")
+            else:
+                same = False
+            score = _safe_bounded_float(parsed.get("similarity_score"), 0.9 if same else 0.1)
+            confidence = _safe_bounded_float(parsed.get("confidence"), 0.8 if same else 0.5)
+            differences = parsed.get("visual_differences")
+            return ImageComparisonResult(
+                image_ref_a=clean_a,
+                image_ref_b=clean_b,
+                is_same_item=same,
+                similarity_score=score,
+                confidence=confidence,
+                reasoning=parsed.get("reasoning"),
+                visual_differences=[
+                    str(value).strip()
+                    for value in differences
+                    if isinstance(value, (str, int, float)) and str(value).strip()
+                ]
+                if isinstance(differences, list)
+                else [],
+            )
+        except Exception as exc:
+            logger.warning("Vertex vision comparison failed (%s)", exc)
+            if self.mock_fallback:
+                return await self._fallback_service.compare_images(household_id, clean_a, clean_b)
+            raise RuntimeError(f"Vertex vision comparison failed: {exc}") from exc

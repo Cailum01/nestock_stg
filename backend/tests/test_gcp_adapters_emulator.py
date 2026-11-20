@@ -61,7 +61,6 @@ from app.services.identity import (
     HouseholdCreationRateLimited,
     InviteRateLimited,
     InviteRedemptionRejected,
-    MembershipConflict,
     hash_secret,
 )
 from app.services.media_mapping import MediaMappingSnapshot
@@ -780,7 +779,7 @@ def test_firestore_concurrent_household_creation_respects_per_install_limit():
         created_at=NOW,
     )
 
-    async def create(household_id: str) -> str:
+    async def create(household_id: str, now: datetime = NOW) -> str:
         await repository.create_household(
             device_id=owner_id,
             creation=HouseholdCreation(
@@ -796,7 +795,7 @@ def test_firestore_concurrent_household_creation_respects_per_install_limit():
                     created_at=NOW,
                 ),
             ),
-            now=NOW,
+            now=now,
             max_per_hour=3,
             window=timedelta(hours=1),
         )
@@ -830,10 +829,20 @@ def test_firestore_concurrent_household_creation_respects_per_install_limit():
             )
             == 3
         )
+        installation_ref = client.document(f"installations/{owner_id}")
+        default_household_id = installation_ref.get().to_dict()["default_household_id"]
+        assert default_household_id in created
+        after_window_id = f"home-{uuid.uuid4().hex}"
+        assert (
+            await create(after_window_id, NOW + timedelta(hours=1, microseconds=1))
+            == after_window_id
+        )
+        assert installation_ref.get().to_dict()["default_household_id"] == default_household_id
+        assert len((await repository.list_device_memberships(owner_id)).memberships) == 4
         limit = (
             client.document(f"identity_attempt_limits/household-create-{owner_id}").get().to_dict()
         )
-        assert len(limit["created_at"]) == 3
+        assert len(limit["created_at"]) == 1
 
     try:
         asyncio.run(execute())
@@ -842,7 +851,7 @@ def test_firestore_concurrent_household_creation_respects_per_install_limit():
 
 
 @pytest.mark.skipif(not FIRESTORE_EMULATOR, reason="requires FIRESTORE_EMULATOR_HOST")
-def test_google_identity_reinstall_restores_same_default_household():
+def test_google_identity_exchange_creates_install_without_household_membership():
     client = _client()
     repository = FirestoreIdentityRepository(client)
     subject = f"google-subject-{uuid.uuid4().hex}"
@@ -859,60 +868,31 @@ def test_google_identity_reinstall_restores_same_default_household():
     service = GoogleIdentityService(repository, audience=audience, verifier=verify)
 
     async def execute() -> None:
-        first_device, first_bearer, first_household = await service.authenticate("google-id-token")
-        second_device, second_bearer, second_household = await service.authenticate(
-            "google-id-token"
-        )
-        third_device, third_bearer, third_household = await service.authenticate(
-            "google-id-token"
-        )
+        first_device, first_bearer = await service.authenticate("google-id-token")
+        second_device, second_bearer = await service.authenticate("google-id-token")
+        third_device, third_bearer = await service.authenticate("google-id-token")
 
         assert first_device != second_device
         assert second_device != third_device
         assert first_bearer != second_bearer
         assert second_bearer != third_bearer
-        assert first_household == second_household
-        assert second_household == third_household
         with pytest.raises(GoogleIdentityRateLimited):
             await service.authenticate("google-id-token")
         first_memberships = await repository.list_device_memberships(first_device)
         second_memberships = await repository.list_device_memberships(second_device)
         third_memberships = await repository.list_device_memberships(third_device)
-        assert first_memberships.memberships[0].role is HouseholdRole.OWNER
-        assert second_memberships.memberships[0].role is HouseholdRole.MEMBER
-        assert third_memberships.memberships[0].role is HouseholdRole.MEMBER
-        mapping = client.document(f"google_identities/{hash_secret(subject)}").get().to_dict()
-        assert mapping["default_household_id"] == first_household
-        assert "sub" not in mapping
-        limit = client.document(
-            f"identity_attempt_limits/google-install-{hash_secret(subject)}"
-        ).get().to_dict()
+        assert not first_memberships.memberships
+        assert not second_memberships.memberships
+        assert not third_memberships.memberships
+        assert not client.collection("households").stream()
+        assert not client.collection("household_memberships").stream()
+        assert not client.document(f"google_identities/{hash_secret(subject)}").get().exists
+        limit = (
+            client.document(f"identity_attempt_limits/google-install-{hash_secret(subject)}")
+            .get()
+            .to_dict()
+        )
         assert len(limit["created_at"]) == 3
-
-        for device_id in (first_device, second_device, third_device):
-            extra_household_id = f"extra-{uuid.uuid4().hex}"
-            created_at = datetime.now(UTC)
-            with pytest.raises(MembershipConflict):
-                await repository.create_household(
-                    device_id=device_id,
-                    creation=HouseholdCreation(
-                        household=HouseholdRecord(
-                            household_id=extra_household_id,
-                            created_by_device_id=device_id,
-                            created_at=created_at,
-                        ),
-                        owner_membership=HouseholdMembership(
-                            household_id=extra_household_id,
-                            device_id=device_id,
-                            role=HouseholdRole.OWNER,
-                            created_at=created_at,
-                        ),
-                    ),
-                    now=created_at,
-                    max_per_hour=3,
-                    window=timedelta(hours=1),
-                )
-            assert not client.document(f"households/{extra_household_id}").get().exists
 
     try:
         asyncio.run(execute())

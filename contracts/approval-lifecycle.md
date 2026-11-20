@@ -411,7 +411,7 @@ and rejects a query household that does not match the authorized membership.
   the fixed reminder above.
 - Without an open card (or when cards are off without Cosmos): empty `message`, no
   `results`, and `pending_approval` null.
-- 503 when open cards cannot be listed; 501 when Azure OpenAI is not configured.
+- 503 when open cards cannot be listed; 501 when Vertex AI is not configured.
 
 Built (A1): `PurchaseCards.open_cards`, `ReadAgent.respond`, `ReadAgent.open_card` and
 `GET /agent/open-card`. The App calling it when it opens or returns to the foreground

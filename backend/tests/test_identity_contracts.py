@@ -14,6 +14,8 @@ from app.models.identity import (
     DeviceMemberships,
     DeviceRecord,
     DeviceRecoveryRecord,
+    GoogleIdentityRequest,
+    GoogleIdentityResponse,
     HouseholdContextHeader,
     HouseholdCreation,
     HouseholdInviteRecord,
@@ -240,6 +242,17 @@ def test_identity_http_request_and_response_envelopes_round_trip():
     assert context.requested_household_id == "household-a"
     assert context.model_dump(by_alias=True) == {"X-Household-Id": "household-a"}
 
+    google_request = GoogleIdentityRequest(
+        google_id_token="eyJhbGciOiJub25lIn0.eyJzdWIiOiJzdWJqZWN0In0.c2ln"
+    )
+    google_response = GoogleIdentityResponse(
+        device_id="install-1",
+        bearer_credential="b" * 32,
+    )
+    assert GoogleIdentityRequest.model_validate(google_request.model_dump())
+    assert GoogleIdentityResponse.model_validate(google_response.model_dump())
+    assert set(GoogleIdentityResponse.model_fields) == {"device_id", "bearer_credential"}
+
     bootstrap_request = BootstrapInstallRequest(bootstrap_challenge="c" * 24)
     bootstrap_response = BootstrapInstallResponse(
         device_id="install-1",
@@ -406,6 +419,25 @@ def test_http_identity_envelopes_reject_invalid_or_untrusted_authorization_field
         BootstrapInstallRequest(bootstrap_challenge="short")
     with pytest.raises(ValidationError):
         BootstrapInstallResponse(device_id="install-1", bearer_credential="short")
+    for token in ("", "not-a-jwt", "a.b.c", "...", "eyJ9.eyJ9.c2ln", "a.b.c\n"):
+        with pytest.raises(ValidationError):
+            GoogleIdentityRequest(google_id_token=token)
+    with pytest.raises(ValidationError):
+        GoogleIdentityRequest(
+            google_id_token="eyJhbGciOiJub25lIn0.eyJzdWIiOiJzdWJqZWN0In0.c2ln",
+            household_id="household-a",
+        )
+    for side_effect in (
+        {"household_id": "household-a"},
+        {"membership": {"household_id": "household-a", "role": "owner"}},
+        {"invite_code": "i" * 24},
+    ):
+        with pytest.raises(ValidationError):
+            GoogleIdentityResponse(
+                device_id="install-1",
+                bearer_credential="b" * 32,
+                **side_effect,
+            )
     with pytest.raises(ValidationError):
         RedeemInviteRequest(invite_code="short")
     with pytest.raises(ValidationError):

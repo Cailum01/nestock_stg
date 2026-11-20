@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.llm import build_chat_model, load_azure_settings
+from app.agent.llm import build_chat_model, load_vertex_settings
 from app.agent.read_agent import TOOL_SCHEMAS, load_system_prompt
 
 CASES_PATH = Path(__file__).resolve().parents[2] / "evals" / "b2_tool_cases.json"
@@ -66,9 +66,9 @@ def test_b2_tool_descriptions_say_when_to_call_and_that_they_do_not_write():
 
 @pytest.fixture(scope="module")
 def live_model():
-    settings = load_azure_settings()
+    settings = load_vertex_settings()
     if settings is None:
-        pytest.skip("Azure OpenAI is not configured; live tool selection not run")
+        pytest.skip("Vertex AI is not configured; live tool selection not run")
     return build_chat_model(settings).bind_tools(TOOL_SCHEMAS)
 
 

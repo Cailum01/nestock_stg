@@ -4,11 +4,13 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 import httpx
+from opencc import OpenCC
 
+from app.agent.llm import VertexAISettings, build_vertex_client, load_vertex_settings
 from app.models.speech import SpeechTranscribeResponse
 
 logger = logging.getLogger(__name__)
@@ -27,13 +29,82 @@ MIME_TO_EXT: dict[str, str] = {
     "audio/webm": "webm",
 }
 
+_ZH_TW_CONVERTER = OpenCC("s2tw")
+_ZH_TW_TO_SIMPLIFIED_CONVERTER = OpenCC("tw2s")
+
+
+def _normalize_zh_tw_transcript(transcript: str) -> str:
+    """Convert Simplified Chinese to Taiwan-variant Traditional without changing other text."""
+    if _ZH_TW_TO_SIMPLIFIED_CONVERTER.convert(transcript) != transcript:
+        return transcript
+    return _ZH_TW_CONVERTER.convert(transcript)
+
 
 class SpeechServiceError(Exception):
     """Base exception for speech-to-text service domain errors."""
 
 
 class SpeechUpstreamError(SpeechServiceError):
-    """Raised when upstream STT provider (e.g. Azure AI Speech) returns non-200 or network fails."""
+    """Raised when an upstream speech model fails or returns an invalid response."""
+
+
+class VertexSpeechService:
+    """Gemini audio transcription over Vertex AI using ADC."""
+
+    def __init__(
+        self,
+        settings: VertexAISettings,
+        client: Any | None = None,
+    ) -> None:
+        self.settings = settings
+        self._client = client if client is not None else build_vertex_client(settings)
+
+    async def transcribe(
+        self,
+        audio_bytes: bytes,
+        content_type: str,
+        language: str | None = None,
+    ) -> SpeechTranscribeResponse:
+        from google.genai import types
+
+        clean_language = (language or "").strip()
+        if clean_language.lower() in ("string", "null", "undefined"):
+            clean_language = ""
+        language_hint = clean_language or "detect the spoken language"
+        prompt = (
+            f"Transcribe this audio faithfully. Language guidance: {language_hint}. "
+            'Return JSON only with keys "transcript" and "detected_language". '
+            "Use a BCP-47 language code for detected_language."
+        )
+        mime = (content_type or "audio/wav").split(";")[0].strip().lower()
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self.settings.model,
+                contents=[
+                    prompt,
+                    types.Part.from_bytes(data=audio_bytes, mime_type=mime),
+                ],
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            text = getattr(response, "text", None)
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("Vertex speech returned an invalid response.")
+            result = json.loads(text)
+            transcript = result.get("transcript")
+            detected_language = result.get("detected_language")
+            if not isinstance(transcript, str):
+                raise ValueError("Vertex speech omitted the transcript.")
+            if not isinstance(detected_language, str) or not detected_language.strip():
+                detected_language = clean_language or "zh-TW"
+        except Exception as exc:
+            logger.error("Vertex speech transcription failed: %s", exc)
+            raise SpeechUpstreamError("Vertex speech transcription failed.") from exc
+
+        return SpeechTranscribeResponse(
+            transcript=_normalize_zh_tw_transcript(transcript.strip()),
+            detected_language=detected_language.strip(),
+            duration_seconds=None,
+        )
 
 
 @dataclass(frozen=True)
@@ -290,11 +361,12 @@ class AzureSpeechService:
 
 def create_speech_service(
     environment: Mapping[str, str] | None = None,
+    client: Any | None = None,
 ) -> SpeechToTextService | None:
-    """Factory creating AzureSpeechService when configured, Mock if enabled, or None."""
-    settings = load_speech_azure_settings(environment=environment)
-    if settings is not None:
-        return AzureSpeechService(settings=settings)
+    """Create Vertex speech, an explicitly enabled mock, or None."""
+    vertex_settings = load_vertex_settings(environment=environment)
+    if vertex_settings is not None:
+        return VertexSpeechService(settings=vertex_settings, client=client)
 
     env = os.environ if environment is None else environment
     mock_flag = env.get("NESTOCK_SPEECH_MOCK", "").strip().lower()

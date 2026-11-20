@@ -74,6 +74,8 @@ class Backend:
             "cancel_writes": False,  # a bug: cancelling still adds
         }
         self.requests = []
+        self.responses = []
+        self.request_headers = []
         self.counter = 0
         backend = self
 
@@ -82,6 +84,7 @@ class Backend:
                 pass
 
             def reply(self, document, status=200):
+                backend.responses.append((self.path, status))
                 payload = json.dumps(document, ensure_ascii=False).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -98,6 +101,15 @@ class Backend:
 
             def do_GET(self):
                 backend.requests.append(self.path)
+                backend.request_headers.append(
+                    (
+                        self.path,
+                        self.headers.get("Authorization"),
+                        self.headers.get("X-Household-Id"),
+                    )
+                )
+                if self.path != "/health" and not self.headers.get("Authorization"):
+                    return self.reply({"detail": "bearer required"}, 401)
                 s = backend.state
                 forecast = [
                     {
@@ -123,12 +135,30 @@ class Backend:
 
             def do_PUT(self):
                 backend.requests.append(self.path)
+                backend.request_headers.append(
+                    (
+                        self.path,
+                        self.headers.get("Authorization"),
+                        self.headers.get("X-Household-Id"),
+                    )
+                )
+                if not self.headers.get("Authorization"):
+                    return self.reply({"detail": "bearer required"}, 401)
                 self.body()
                 self.reply({}, 201)
 
             def do_POST(self):
                 backend.requests.append(self.path)
+                backend.request_headers.append(
+                    (
+                        self.path,
+                        self.headers.get("Authorization"),
+                        self.headers.get("X-Household-Id"),
+                    )
+                )
                 document = self.body()
+                if not self.headers.get("Authorization"):
+                    return self.reply({"detail": "bearer required"}, 401)
                 if self.path == "/api/speech/transcribe":
                     self.reply({"transcript": backend.state["transcript"]})
                 elif self.path == "/api/media/upload-authorization":
@@ -248,19 +278,26 @@ def make_ctx(tmp_path, **extra):
         "audio": audio,
         "image": image,
         "write": False,
+        "expected_commit": "origin/stg",
         "deployed_tag": None,
         "app": "nestock-api",
         "az_image": lambda app: None,
-        "commits_behind": lambda commit: 0,
+        "commits_behind": lambda commit, expected_commit: 0,
     }
     ctx.update(extra)
     return ctx
 
 
 def run_smoke(backend, tmp_path, layers=None, skipped=None, **extra):
+    authenticated = extra.pop("authenticated", True)
     lines = []
     code = smoke.run(
-        smoke.Client(backend.url, 5),
+        smoke.Client(
+            backend.url,
+            5,
+            bearer_token="test-token" if authenticated else None,
+            household_id=HOUSE if authenticated else None,
+        ),
         make_ctx(tmp_path, **extra),
         layers,
         skipped,
@@ -274,10 +311,75 @@ def test_smoke_passes_every_read_only_layer_on_a_healthy_backend(backend, tmp_pa
 
     assert code == 0, output
     assert "FAIL" not in output
-    assert "PASS  L0" in output and "PASS  L3" in output
+    assert "PASS  L0" in output and "SKIP  L3" in output
     assert "SKIP  L4" in output  # the writing check never runs by accident
     assert backend.quantity(MOUSE)["quantity"] == 4
-    assert backend.state["card"] is not None  # L3 leaves its card to expire
+    assert backend.state["card"] is None
+    assert "/agent/messages" not in backend.requests
+
+
+def test_default_unauthenticated_run_expects_401_and_leaves_no_cards_or_data(backend, tmp_path):
+    code, output = run_smoke(backend, tmp_path, authenticated=False)
+
+    assert code == 0, output
+    assert "HTTP 401" in output
+    assert backend.state["card"] is None
+    assert backend.quantity(MOUSE)["quantity"] == 4
+    assert "/agent/messages" not in backend.requests
+    assert "/api/media/upload-authorization" not in backend.requests
+    assert "/upload" not in backend.requests
+    assert "/agent/resume" not in backend.requests
+    protected = {"/inventory", "/shopping", "/forecast", "/api/speech/transcribe"}
+    assert all(
+        status == 401
+        for path, status in backend.responses
+        if path.split("?", 1)[0] in protected or path.startswith("/agent/open-card")
+    )
+
+
+def test_explicit_credentials_are_sent_to_protected_routes(backend, tmp_path):
+    code, output = run_smoke(backend, tmp_path, layers={"L2"})
+
+    assert code == 0, output
+    assert backend.request_headers
+    assert all(token == "Bearer test-token" for _, token, _ in backend.request_headers)
+    assert all(household == HOUSE for _, _, household in backend.request_headers)
+
+
+def test_client_does_not_send_api_credentials_to_external_upload_urls(monkeypatch):
+    observed = {}
+
+    class Response:
+        status = 201
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b""
+
+    def fake_urlopen(request, timeout):
+        observed.update(request.header_items())
+        observed["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(smoke.urllib.request, "urlopen", fake_urlopen)
+    client = smoke.Client(
+        "https://api.example.test",
+        5,
+        bearer_token="sensitive-test-token",
+        household_id=HOUSE,
+    )
+
+    status, payload = client.request("PUT", "https://storage.example.test/signed-upload")
+
+    assert status == 201 and payload == b""
+    header_names = {name.lower() for name in observed}
+    assert "authorization" not in header_names
+    assert "x-household-id" not in header_names
 
 
 def test_smoke_reports_every_check_and_does_not_stop_at_the_first_failure(backend, tmp_path):
@@ -287,7 +389,7 @@ def test_smoke_reports_every_check_and_does_not_stop_at_the_first_failure(backen
 
     assert code == 1
     assert "FAIL  L2 /inventory" in output and "category" in output
-    assert "PASS  L2 /shopping" in output and "PASS  L3" in output
+    assert "PASS  L2 /shopping" in output and "SKIP  L3" in output
 
 
 def test_open_card_route_is_checked_and_reports_the_open_card(backend, tmp_path):
@@ -322,7 +424,7 @@ def test_smoke_rejects_the_mock_speech_transcript(backend, tmp_path):
 def test_smoke_fails_when_the_agent_answers_with_nothing(backend, tmp_path):
     backend.state["agent_message"] = "  "
 
-    code, output = run_smoke(backend, tmp_path, layers={"L1"})
+    code, output = run_smoke(backend, tmp_path, layers={"L1"}, write=True)
 
     assert code == 1
     assert "FAIL  L1 agent" in output
@@ -413,12 +515,12 @@ def test_image_tag_commit_reads_the_sha_and_the_dirty_marker():
 
 
 def test_version_verdicts():
-    assert "is origin/main" in smoke.judge_version("20261119-39358d7", 0)
-    with pytest.raises(smoke.SmokeFailure, match="43 commits behind"):
-        smoke.judge_version("20261118-718ad2d", 43)
+    assert "includes expected commit origin/stg" in smoke.judge_version("20261119-39358d7", 0)
+    with pytest.raises(smoke.SmokeFailure, match="missing 43 commits"):
+        smoke.judge_version("20261118-718ad2d", 43, "expected-stg-sha")
     with pytest.raises(smoke.SmokeWarn, match="dirty"):
         smoke.judge_version("20261119-39358d7-dirty", 0)
-    with pytest.raises(smoke.SmokeWarn, match="not found"):
+    with pytest.raises(smoke.SmokeWarn, match="cannot be compared"):
         smoke.judge_version("20261119-39358d7", None)
     with pytest.raises(smoke.SmokeSkip, match="unknown"):
         smoke.judge_version(None, None)
@@ -430,18 +532,32 @@ def test_the_version_check_uses_the_az_image_when_no_tag_is_given(backend, tmp_p
         tmp_path,
         layers={"L0"},
         az_image=lambda app: "reg.azurecr.io/nestock-api:20261118-718ad2d",
-        commits_behind=lambda commit: 43 if commit == "718ad2d" else 0,
+        commits_behind=lambda commit, expected: 43 if commit == "718ad2d" else 0,
     )
 
     assert code == 1
-    assert "FAIL  L0" in output and "718ad2d is 43 commits behind" in output
+    assert "FAIL  L0" in output and "718ad2d is missing 43 commits" in output
+
+
+def test_version_comparison_uses_the_expected_stg_commit(monkeypatch):
+    observed = {}
+
+    def fake_run(command, **_kwargs):
+        observed["command"] = command
+        return type("Result", (), {"returncode": 0, "stdout": "2"})()
+
+    monkeypatch.setattr(smoke.subprocess, "run", fake_run)
+
+    assert smoke.default_commits_behind("deployed-sha", "expected-stg-sha") == 2
+    assert observed["command"][-1] == "deployed-sha..expected-stg-sha"
+    assert "origin/main" not in observed["command"][-1]
 
 
 # -- L3 photo -> card -----------------------------------------------------------------------
 
 
 def test_photo_check_passes_and_leaves_the_card_open(backend, tmp_path):
-    code, output = run_smoke(backend, tmp_path, layers={"L3"})
+    code, output = run_smoke(backend, tmp_path, layers={"L3"}, write=True)
 
     assert code == 0, output
     assert "PASS  L3" in output and "left to expire" in output
@@ -453,7 +569,7 @@ def test_photo_check_passes_and_leaves_the_card_open(backend, tmp_path):
 def test_photo_check_fails_when_the_card_lies_about_the_quantity(backend, tmp_path):
     backend.state["before_override"] = 99
 
-    code, output = run_smoke(backend, tmp_path, layers={"L3"})
+    code, output = run_smoke(backend, tmp_path, layers={"L3"}, write=True)
 
     assert code == 1
     assert "FAIL  L3" in output and "says the quantity is 99" in output
@@ -462,7 +578,7 @@ def test_photo_check_fails_when_the_card_lies_about_the_quantity(backend, tmp_pa
 def test_photo_check_fails_when_the_photo_alone_changes_a_quantity(backend, tmp_path):
     backend.state["write_on_photo"] = True
 
-    code, output = run_smoke(backend, tmp_path, layers={"L3"})
+    code, output = run_smoke(backend, tmp_path, layers={"L3"}, write=True)
 
     assert code == 1
     assert "without a confirmation" in output
@@ -472,7 +588,7 @@ def test_photo_check_fails_when_the_response_shows_no_card(backend, tmp_path):
     """The 2026-11-19 cloud finding: the Agent said it gave up although a card was stored."""
     backend.state["photo"] = "stray"
 
-    code, output = run_smoke(backend, tmp_path, layers={"L3"})
+    code, output = run_smoke(backend, tmp_path, layers={"L3"}, write=True)
 
     assert code == 1
     assert "produced no approval card" in output
@@ -483,7 +599,7 @@ def test_photo_check_fails_when_the_response_shows_no_card(backend, tmp_path):
 def test_photo_check_fails_when_a_photo_gives_no_card(backend, tmp_path):
     backend.state["photo"] = "none"
 
-    code, output = run_smoke(backend, tmp_path, layers={"L3"})
+    code, output = run_smoke(backend, tmp_path, layers={"L3"}, write=True)
 
     assert code == 1
     assert "produced no approval card" in output
@@ -612,6 +728,41 @@ def test_write_without_yes_is_a_usage_error():
     assert smoke.main(["--base-url", "https://demo.example.com", "--write"]) == 2
 
 
+def test_write_with_yes_requires_explicit_authentication():
+    assert smoke.main(["--base-url", "https://demo.example.com", "--write", "--yes"]) == 2
+
+
+def test_bearer_and_household_must_be_supplied_together():
+    assert (
+        smoke.main(["--base-url", "https://demo.example.com", "--bearer-token", "test-token"]) == 2
+    )
+
+
+def test_write_opt_in_does_not_override_an_explicit_layer_selection(backend, capsys):
+    code = smoke.main(
+        [
+            "--base-url",
+            backend.url,
+            "--allow-local",
+            "--only",
+            "L2",
+            "--write",
+            "--yes",
+            "--bearer-token",
+            "test-token",
+            "--household-id",
+            HOUSE,
+        ]
+    )
+
+    assert code == 0
+    assert "L4" not in capsys.readouterr().out
+    assert backend.state["card"] is None
+    assert backend.quantity(MOUSE)["quantity"] == 4
+    assert "/agent/messages" not in backend.requests
+    assert "/agent/resume" not in backend.requests
+
+
 def test_an_unknown_layer_is_a_usage_error():
     assert smoke.main(["--base-url", "https://demo.example.com", "--only", "L9"]) == 2
 
@@ -640,9 +791,26 @@ def test_smoke_reports_an_unreachable_server_as_a_failure(tmp_path):
 
 import os  # noqa: E402
 import re  # noqa: E402
+import shutil  # noqa: E402
 import subprocess  # noqa: E402
 
+
+def _find_bash():
+    configured = os.environ.get("NESTOCK_TEST_BASH")
+    if configured:
+        return configured
+    git_executable = shutil.which("git")
+    if git_executable:
+        git_bash = Path(git_executable).resolve().parents[1] / "bin" / "bash.exe"
+        if git_bash.is_file():
+            return str(git_bash)
+    return shutil.which("bash") or "bash"
+
+
+BASH_EXE = _find_bash()
+
 PULL_SECRET = "pull-secret-xyz"
+
 
 AZ_STUB = r"""#!/usr/bin/env bash
 echo "az $*" >> "$AZ_LOG"
@@ -682,18 +850,37 @@ def run_deploy(tmp_path, role_out="", role_rc=0, list_rc=0):
         path.chmod(0o755)
     log = tmp_path / "az.log"
     log.write_text("")
+    commit = subprocess.run(
+        ["git", "-C", str(DEPLOY.parent), "rev-parse", "--short=7", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    bash_env = tmp_path / "bash_env.sh"
+    bash_env.write_text(
+        'git() { case "$*" in *"rev-parse --short=7 HEAD"*) '
+        'echo "$GIT_COMMIT" ;; *"status --porcelain -- backend prompts deploy"*) '
+        "return 0 ;; *) return 1 ;; esac; }\n"
+        "sleep() { :; }\n"
+        "rsync() { :; }\n"
+        'curl() { printf \'{"status":"ok"}\\n\'; }\n',
+        encoding="utf-8",
+    )
     env = {
         **os.environ,
         "PATH": os.pathsep.join((str(bin_dir), os.environ["PATH"])),
+        "BASH_ENV": str(bash_env),
         "AZ_LOG": str(log),
+        "GIT_COMMIT": commit,
         "ROLE_OUT": role_out,
         "ROLE_RC": str(role_rc),
         "LIST_RC": str(list_rc),
         "PULL_SECRET": PULL_SECRET,
     }
     result = subprocess.run(
-        ["bash", str(DEPLOY / "deploy-aca.sh")],
+        [BASH_EXE, "deploy-aca.sh"],
         env=env,
+        cwd=DEPLOY,
         capture_output=True,
         text=True,
         timeout=60,

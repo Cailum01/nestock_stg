@@ -231,7 +231,12 @@ class IdentityRepository(Protocol):
 
 
 class IdentityService:
-    """Business rules for install credentials, household membership and recovery."""
+    """Business rules for install credentials, household membership and recovery.
+
+    Google token exchange is a separate authentication boundary: it may establish
+    only the per-install bearer and must not create households, memberships, or
+    redeem invites. Provider verification and exchange wiring are owned elsewhere.
+    """
 
     def __init__(
         self,

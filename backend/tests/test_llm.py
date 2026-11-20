@@ -1,128 +1,95 @@
-"""A1 Azure OpenAI settings (`app/agent/llm.py`) and Agent route failures.
+"""Vertex Agent configuration and route failures; no credentials or provider calls."""
 
-No network and no real `backend/.env`: the module's `.env` location is pointed at a
-temporary folder, and the three settings are cleared for each test.
-"""
+import sys
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from identity_test_support import install_scope_override
 
 from app.agent import llm
-from app.agent.llm import ENV_VARS, AzureOpenAISettings, load_azure_settings
 from app.agent.read_agent import get_read_agent
 from app.main import create_app
 
 HOUSEHOLD = "demo-household"
-BASE_URL = "https://nestock-demo.services.ai.azure.com/openai/v1/"
 
 
-@pytest.fixture
-def env_dir(tmp_path, monkeypatch):
-    """Empty `.env` folder and no Azure settings in the environment."""
-    monkeypatch.setattr(llm, "BACKEND_DIR", tmp_path)
-    for name in ENV_VARS:
-        # setenv first so the original state is restored even if load_dotenv sets it.
-        monkeypatch.setenv(name, "placeholder")
-        monkeypatch.delenv(name)
-    return tmp_path
-
-
-def write_env(folder, **values):
-    lines = [f"{name}={value}" for name, value in values.items()]
-    (folder / ".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-# ----- endpoint copied from Foundry ----------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "endpoint",
-    [
-        "https://nestock-demo.services.ai.azure.com/",
-        "https://nestock-demo.services.ai.azure.com",
-        "nestock-demo.services.ai.azure.com",
-        "https://nestock-demo.services.ai.azure.com/openai/v1/",
-        "https://nestock-demo.services.ai.azure.com/openai/deployments/terra/chat/completions"
-        "?api-version=2025-01-01-preview",
-        "https://nestock-demo.services.ai.azure.com/api/projects/nestock",
-    ],
-)
-def test_any_endpoint_copied_from_foundry_becomes_the_v1_base_url(endpoint):
-    settings = AzureOpenAISettings(endpoint=endpoint, api_key="key", deployment="terra")
-
-    assert settings.base_url == BASE_URL
-
-
-# ----- reading the three settings -------------------------------------------------------------
-
-
-def test_settings_are_read_from_backend_env(env_dir):
-    write_env(
-        env_dir,
-        AZURE_OPENAI_ENDPOINT="https://nestock-demo.services.ai.azure.com/",
-        AZURE_OPENAI_API_KEY="key-from-file",
-        AZURE_OPENAI_DEPLOYMENT="terra",
+def test_vertex_settings_use_project_references_and_fixed_model():
+    settings = llm.load_vertex_settings(
+        environment={
+            "NESTOCK_VERTEX_PROJECT_ID": "unit-test-project",
+            "NESTOCK_VERTEX_LOCATION": "asia-east1",
+        }
     )
-
-    settings = load_azure_settings()
-
-    assert settings == AzureOpenAISettings(
-        endpoint="https://nestock-demo.services.ai.azure.com/",
-        api_key="key-from-file",
-        deployment="terra",
-    )
-
-
-def test_spaces_around_a_setting_are_trimmed(env_dir, monkeypatch):
-    """For example a value pasted with spaces into PowerShell `$env:`."""
-    write_env(env_dir, AZURE_OPENAI_API_KEY="key", AZURE_OPENAI_DEPLOYMENT="terra")
-    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "  https://nestock-demo.services.ai.azure.com/  ")
-
-    settings = load_azure_settings()
-
     assert settings is not None
-    assert settings.endpoint == "https://nestock-demo.services.ai.azure.com/"
+    assert settings.project == "unit-test-project"
+    assert settings.location == "asia-east1"
+    assert settings.model == "gemini-3.8-flash"
+    assert llm.load_vertex_settings(environment={}) is None
 
 
-@pytest.mark.parametrize("missing", ENV_VARS)
-@pytest.mark.parametrize("blank", [False, True])
-def test_any_missing_or_blank_setting_keeps_the_agent_off(env_dir, monkeypatch, missing, blank):
-    values = {
-        "AZURE_OPENAI_ENDPOINT": "https://nestock-demo.services.ai.azure.com/",
-        "AZURE_OPENAI_API_KEY": "key",
-        "AZURE_OPENAI_DEPLOYMENT": "terra",
+def test_vertex_model_builder_uses_adc_and_fixed_model(monkeypatch):
+    observed = {}
+
+    def fake_chat_model(**kwargs):
+        observed.update(kwargs)
+        return "mock-chat-model"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "langchain_google_genai",
+        SimpleNamespace(ChatGoogleGenerativeAI=fake_chat_model),
+    )
+    settings = llm.VertexAISettings(project="unit-test-project")
+    assert llm.build_chat_model(settings) == "mock-chat-model"
+    assert observed["vertexai"] is True
+    assert observed["model"] == "gemini-3.8-flash"
+    assert observed["project"] == "unit-test-project"
+
+
+def test_vertex_client_uses_project_location_and_adc_mode(monkeypatch):
+    import google.genai
+
+    observed = {}
+
+    def fake_client(**kwargs):
+        observed.update(kwargs)
+        return "mock-genai-client"
+
+    monkeypatch.setattr(google.genai, "Client", fake_client)
+    assert (
+        llm.build_vertex_client(llm.VertexAISettings(project="unit-test-project"))
+        == "mock-genai-client"
+    )
+    assert observed == {
+        "vertexai": True,
+        "project": "unit-test-project",
+        "location": "us-central1",
     }
-    del values[missing]
-    write_env(env_dir, **values)
-    if blank:
-        monkeypatch.setenv(missing, "   ")
-
-    assert load_azure_settings() is None
 
 
-def test_environment_variables_win_over_backend_env(env_dir, monkeypatch):
-    write_env(
-        env_dir,
-        AZURE_OPENAI_ENDPOINT="https://from-file.services.ai.azure.com/",
-        AZURE_OPENAI_API_KEY="key-from-file",
-        AZURE_OPENAI_DEPLOYMENT="from-file",
-    )
-    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "key-from-environment")
-
-    settings = load_azure_settings()
-
-    assert settings is not None
-    assert settings.api_key == "key-from-environment"
-    assert settings.deployment == "from-file"
-
-
-def test_agent_is_not_built_without_settings(env_dir):
+def test_agent_is_not_built_without_project(monkeypatch):
+    monkeypatch.delenv("NESTOCK_VERTEX_PROJECT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
     get_read_agent.cache_clear()
     try:
         assert get_read_agent() is None
     finally:
         get_read_agent.cache_clear()
+
+
+def test_agent_route_keeps_501_when_vertex_is_unconfigured():
+    app = create_app()
+    app.dependency_overrides[get_read_agent] = lambda: None
+    install_scope_override(app, HOUSEHOLD)
+    with TestClient(app) as client:
+        before = [client.get(path).json() for path in ["/inventory", "/shopping"]]
+        response = client.post(
+            "/agent/messages", json={"household_id": HOUSEHOLD, "message": "還有白米嗎"}
+        )
+
+        assert response.status_code == 501
+        assert before == [client.get(path).json() for path in ["/inventory", "/shopping"]]
 
 
 # ----- route failures --------------------------------------------------------------------------

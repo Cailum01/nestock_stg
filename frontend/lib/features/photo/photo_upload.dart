@@ -91,11 +91,7 @@ class HttpPhotoUpload implements PhotoUpload {
       putHeaders.addAll(scope.headers);
     }
     final result = await client
-        .put(
-          uploadUri,
-          headers: putHeaders,
-          body: bytes,
-        )
+        .put(uploadUri, headers: putHeaders, body: bytes)
         .timeout(timeout);
     if (result.statusCode != 200 && result.statusCode != 201) {
       throw StateError('Upload failed');

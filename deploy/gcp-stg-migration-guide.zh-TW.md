@@ -20,9 +20,9 @@
 - **Cloud Run：** request-based 模式在 min instances 設為 `0` 時可縮至零；官方月免費額度列出 180,000 vCPU 秒、360,000 GiB 秒及 200 萬次 request。免費額度會按 billing account 彙總，且區域/層級影響價格。`asia-east1`（台灣）列於 Tier 1。縮零會有冷啟動，免費額度不是費用保證。
 - **Firestore Standard：** 每個 project 只有一個符合免費額度的 database；列出的額度為 1 GiB 儲存、每日 50,000 次讀取、20,000 次寫入、20,000 次刪除及每月 10 GiB 對外傳輸。超額、資料位置、備份/PITR、索引與其他功能可能收費。Firestore 位置清單包含台灣 `asia-east1`；建立前仍須在 Console 確認當時方案、位置與費率。
 - **Cloud Storage：** Standard Always Free 的 5 GiB-month 及操作額度只適用 `us-west1`、`us-central1`、`us-east1`；台灣 bucket 不適用該免費儲存額度，須預算列入儲存、操作及傳輸費。地區費率會變動。
-- **本 STG 僅授權使用有效促銷抵免額：**不授權升級付費帳戶，也不授權支出超出有效抵免額。連結專案前，必須在 Cloud Billing 確認使用者提供的帳務帳戶本身確為符合資格且有效的 Free Trial 帳戶，並核對剩餘抵免額及到期日；未確認前不得連結或建立資源。文件及程式庫不得記錄該帳戶 ID。將現有抵免額視為一次性，除非 Google 確認另有資格。本指南不提供建立帳戶或以帳戶輪替續領抵免額的操作指引，也不支援規避資格條件。若區域或服務費用無法由有效抵免額涵蓋，停止操作。
-- Google 說明：抵免額用完或註冊滿 90 天而未升級付費帳戶時，Free Trial 帳戶會關閉且相關專案/資源會停止。此處不授權付費升級；須在抵免額耗盡與試用到期兩者較早之前完成必要資料匯出、驗證與資源停用/清理，不可依賴寬限期或服務持續可用。
-- 不要把免費額度、抵免額估算或 Budget alert 當成支出硬上限。Budget alert 只通知、不會封頂或停止支出，且用量/帳單資料可能延遲；保留充足抵免額緩衝並頻繁人工檢查。若無法確保只使用有效抵免額，勿啟用資源。
+- Google Cloud Free Trial 的資格、抵免額及期限依 Google 現行條件而定；相關資訊供費用與服務持續性評估，不是本指南的部署前置檢查。部署仍須使用既有核准的 project 和帳務設定，並維持在目前支出授權範圍內。本指南不授權升級付費帳戶、更換帳務帳戶或超出目前支出授權。文件及程式庫不得記錄 billing account ID；本指南不提供建立帳戶、輪替帳戶續領抵免額或規避資格條件的操作指引。
+- Google 說明：Free Trial 抵免額用完或註冊滿 90 天而未升級付費帳戶時，Free Trial 帳戶會關閉且相關專案/資源會停止；不可依賴寬限期或服務持續可用。此資訊應納入服務持續性與資料匯出規劃，但不要求在部署前核實抵免額資格、餘額或到期日；此處不授權付費升級。
+- 不要把免費額度、抵免額估算或 Budget alert 當成支出硬上限。Budget alert 只通知、不會封頂或停止支出，且用量/帳單資料可能延遲。以目前支出授權範圍規劃與監控費用；抵免額資訊可供估算，但不是部署前置條件。
 
 官方資料：
 [Cloud Run 定價](https://cloud.google.com/run/pricing)、
@@ -35,13 +35,13 @@
 
 ## 3. 90 天內的帳務策略
 
-Google Cloud Free Trial 僅供符合資格的新客戶使用，提供 $300 Welcome credit，期限為註冊起 90 天。本 STG 限定只使用尚有效的促銷抵免額；不授權升級付費帳戶或超出抵免額支出。
+Google Cloud Free Trial 僅供符合資格的新客戶使用，提供 $300 Welcome credit，期限為註冊起 90 天；實際資格、可用額度與期限依 Google 現行條件而定。這些是費用及服務持續性資訊，不是部署前必須核驗的條件。部署僅可在既有核准的 project、帳務設定及支出授權範圍內進行；本指南不授權變更帳務帳戶或超出目前支出授權。
 
-**連結前的必要檢查：**先在 Cloud Console 確認使用者提供的 Billing account 狀態確實為符合資格的 Free Trial，而非一般付費帳戶；核對剩餘 Welcome credit、註冊/到期日，以及此帳戶能否依官方規則用於目標 project。不要只憑帳戶名稱、口頭說明或帳號 ID 推定資格。文件不記錄帳戶 ID。將現有抵免額視為一次性，除非 Google 確認另有資格。若帳戶不是有效且合格的 Free Trial、抵免額不足，或 linking 不符合政策，停止；不得升級付費帳戶。若因核准的遷移而更換 billing account/project，目的帳戶及 project 必須依 Google 現行規則獨立符合資格並獲授權；本指南不提供建立帳戶、續領抵免額或規避資格的操作指引，也不應假設新帳戶會取得抵免額。
+使用既有核准的 project 與帳務設定；不必為部署核實 Free Trial 資格、Welcome credit 餘額或到期日。若工作需要更換、重新連結或升級 billing account，或可能超出目前支出授權，先停止並取得明確授權；本指南不提供建立/輪替帳戶或規避促銷抵免資格的操作指引，也不應假設任何帳戶會取得抵免額。不要將帳戶 ID 寫入文件。
 
-Google 說明：若 $300 抵免額耗盡或註冊滿 90 天且未升級付費帳戶，Free Trial billing account 會關閉，相關 project/resources 會停止；其後可能有資料保留/寬限流程，但不可依賴。此處不授權付費升級。**立即規劃並在抵免額耗盡與 90 天到期兩者較早前，完成一致性檢查、必要資料匯出、服務停止及資源清理。**不要等到最後一天，預留處理延遲帳務資料與匯出驗證的時間。
+Google 說明：若 $300 抵免額耗盡或註冊滿 90 天且未升級付費帳戶，Free Trial billing account 會關閉，相關 project/resources 會停止；其後可能有資料保留/寬限流程，但不可依賴。此處不授權付費升級。將此生命週期風險納入服務持續性、資料匯出及資源清理規劃；不必將抵免額耗盡或 90 天期限核驗列為部署門檻。
 
-Budget alert 只是通知，不是支出硬上限或自動停機機制，且成本資料可能延遲。操作期間保留保守的抵免額緩衝並頻繁檢查 Billing report；不可把預算通知視為確保不超支的唯一控制。
+Budget alert 只是通知，不是支出硬上限或自動停機機制，且成本資料可能延遲。操作期間定期檢查 Billing report；抵免額可作估算參考，但不得把預算通知視為確保不超出目前支出授權的唯一控制。
 
 官方步驟及說明：[啟用、停用或更改專案帳務](https://docs.cloud.google.com/billing/docs/how-to/modify-project)；[Free Trial FAQ](https://cloud.google.com/signup-faqs)；[Free Trial 與資源生命週期](https://docs.cloud.google.com/free/docs/free-cloud-features)；[Budget alerts](https://cloud.google.com/billing/docs/how-to/budgets)。
 
@@ -49,7 +49,7 @@ Budget alert 只是通知，不是支出硬上限或自動停機機制，且成�
 
 ## 4. 前置條件
 
-1. 已核准的 Google Cloud organization/folder、來源/目標 project、管理者與帳務聯絡人；須先確認待連結帳戶確為合格、有效且抵免額足夠的 Free Trial billing account。此 STG 不授權 paid upgrade 或抵免額外支出；不要在文件、命令歷史或聊天中貼入密碼、金鑰、連線字串、個人資料或 billing account ID。
+1. 已核准的 Google Cloud organization/folder、來源/目標 project、管理者與帳務聯絡人；使用既有核准的帳務設定並遵守目前支出授權。部署不以核實促銷抵免額資格、餘額或到期日為前提；本指南不授權升級或更換帳務帳戶，也不授權超出目前支出範圍。不要在文件、命令歷史或聊天中貼入密碼、金鑰、連線字串、個人資料或 billing account ID。
 2. `gcloud` CLI 已安裝並以個人帳戶登入；確認目前帳戶、project 與權限。正式操作前請核對所有畫面及命令使用的 project，避免誤操作。
 3. 已批准 STG 區域（預設候選 `asia-east1`）、服務名稱、資料保留/備份政策、預算門檻、維護窗口及回復負責人。
 4. 已確認資料來源、資料擁有者與是否可複製到新 project；PII / 家庭資料不可為測試而擅自跨環境複製。
@@ -59,7 +59,7 @@ Budget alert 只是通知，不是支出硬上限或自動停機機制，且成�
 
 本節僅適用於已核准且應用 adapter 已通過驗收的情況。建議透過 Console 操作；用 CLI 前先閱讀官方說明，逐項替換 placeholder。
 
-1. **帳務及 API：**連結前再次核對 billing account 確實是符合資格且仍有效的 Free Trial 帳戶、抵免額足以涵蓋預估用量且未到期；若無法確認，停止，不得改連付費帳戶或升級。只在此條件成立時啟用 Cloud Run、Artifact Registry、Firestore、Cloud Storage、Secret Manager 所需 API。
+1. **帳務及 API：**沿用既有核准的 project 與帳務設定，不須以 Free Trial 資格、抵免額餘額或到期日核驗作為啟用 API 的條件。只在核准 project 及目前支出授權範圍內啟用 Cloud Run、Artifact Registry、Firestore、Cloud Storage、Secret Manager 所需 API；本指南不授權更換/升級帳務帳戶或超出目前支出授權。
 2. **區域：**選擇並記錄 Cloud Run 與資料位置。優先 `asia-east1`；確認各產品當下可用性、資料所在地要求及費率。資料庫/儲存位置建立後通常不應假設可原地更改。
 3. **Firestore：**建立一個符合需求的 Firestore Native / Standard database。預設只用核准的資料庫；核對索引、TTL、備份/PITR 與資料刪除政策。
 4. **Cloud Storage：**建立區域性 Standard bucket；開啟 Uniform bucket-level access 及 Public access prevention，不授予 `allUsers`/`allAuthenticatedUsers`。限制可上傳類型/大小和生命週期。需直接上傳時只使用 adapter 核准的短效簽署網址，並按最小來源設定 CORS。
@@ -73,13 +73,13 @@ Budget alert 只是通知，不是支出硬上限或自動停機機制，且成�
    **Operator / deployer 是不同 principal：**部署既有 Artifact Registry 映像時，Google 文件列出的 deployer 權限包括 Cloud Run Developer (`roles/run.developer`，限 Cloud Run service)、Service Account User (`roles/iam.serviceAccountUser`，限上述 runtime service account) 及 Artifact Registry Reader (`roles/artifactregistry.reader`，限映像所在 repository)。這些角色只授予執行部署的使用者/CI，不授予 runtime identity。建立資源、設定 IAM bindings 或管理 secrets 的 operator 權限也須獨立核准並限縮；不以 Owner/Editor 取代。
 
    官方依據：[Cloud Run service identity](https://docs.cloud.google.com/run/docs/securing/service-identity)、[Cloud Run IAM roles](https://docs.cloud.google.com/run/docs/reference/iam/roles)、[部署 container image 的必要角色](https://docs.cloud.google.com/run/docs/deploying)、[Firestore IAM roles and permissions](https://firebase.google.com/docs/firestore/security/iam)、[Firestore database-level IAM Conditions](https://firebase.google.com/docs/firestore/manage-databases#configure_database_access_conditions)、[Cloud Storage IAM roles](https://docs.cloud.google.com/storage/docs/access-control/iam-roles)、[Cloud Storage permissions](https://docs.cloud.google.com/storage/docs/access-control/iam-permissions)。
-7. 建立 Cloud Billing budget 與多個通知門檻，通知收件人由資源擁有者確認。另開啟用量、錯誤率、Cloud Run instance、Firestore 讀寫/儲存、bucket 佔用/傳輸告警。Budget alert 不是硬性支出上限，也不保證即時；每日人工確認剩餘抵免額及成本，預留緩衝，並在接近預設安全門檻時立即匯出及清理，不等待 alert 才行動。
+7. 建立 Cloud Billing budget 與多個通知門檻，通知收件人由資源擁有者確認。另開啟用量、錯誤率、Cloud Run instance、Firestore 讀寫/儲存、bucket 佔用/傳輸告警。Budget alert 不是硬性支出上限，也不保證即時；定期人工檢查實際及預估成本，並依目前支出授權範圍保留緩衝、及早處理，不等待 alert 才行動。抵免額資訊可供費用估算參考，不是部署前置檢查或支出上限。
 
 避免未核准的常駐執行個體、VPC/NAT、負載平衡器、跨區複寫、PITR、額外備份及大量外傳；這些功能可能造成持續或非預期成本。勿為省錢關閉必要權限隔離或資料保護。
 
 ## 6. 新 project：受控資料匯出/匯入與切換
 
-僅在資料擁有者明確批准，且目的帳戶/project 依 Google 現行規則獨立、合法符合資格並獲授權時執行；若要使用促銷抵免額，須先確認目的帳戶的抵免額資格與有效期，不可假設遷移會延長或重新取得抵免額。沒有符合資格/授權的目的地時，停止服務並依計畫匯出及清理，不得以付費帳戶接手或超出抵免額繼續服務。本指南不提供建立/輪替帳戶或規避促銷抵免資格的指引。Firestore 與 Cosmos schema/transaction 語義不同，**不可直接假定 Cosmos backup 可匯入 Firestore**；須採用 adapter 支援並測試的 mapping 工具。
+僅在資料擁有者明確批准，且目的 project/帳務設定及遷移工作均已獲授權時執行；不必為遷移核實促銷抵免額資格、餘額或有效期。不可假設遷移會延長或重新取得抵免額。若需要更換/重新連結 billing account 或超出目前支出授權，先停止並取得明確授權；本指南本身不授權這些變更或支出，也不提供建立/輪替帳戶或規避促銷抵免資格的指引。Firestore 與 Cosmos schema/transaction 語義不同，**不可直接假定 Cosmos backup 可匯入 Firestore**；須採用 adapter 支援並測試的 mapping 工具。
 
 1. **準備：**記錄來源和目標 project/region、資料範圍、文件數/bytes 基準、bucket objects 清單與 checksum、索引/TTL、IAM、secrets、流量路由、停機窗口及 rollback 負責人。先用非敏感樣本演練 restore。
 2. **建目標：**依第 5 節建立隔離的 project、Firestore、私有 bucket、Cloud Run service identity、Secrets、索引/保留政策與預算警示。確認沒有公開讀取或寫入權限。
@@ -118,8 +118,8 @@ Firestore 匯入/匯出的權限、限制及操作依官方文件為準：[匯�
 
 ## 9. 預算監控與資源清理
 
-- 至少每日查看初期 Billing report；核對按 project、service、region 分組的 Cloud Run、Firestore、Cloud Storage、Artifact Registry、Secret Manager、網路費用及剩餘有效抵免額。用量資料可能延遲，勿只依賴報表或預算通知。
-- 依剩餘抵免額設定保守預算和多段通知，但須知 Budget alert 不是硬上限。接近預設安全緩衝門檻，或無法確認未來用量仍由抵免額涵蓋時，凍結寫入、完成資料匯出驗證並停用/清理資源；不可升級付費帳戶來延長服務。
+- 至少每日查看初期 Billing report；核對按 project、service、region 分組的 Cloud Run、Firestore、Cloud Storage、Artifact Registry、Secret Manager 及網路費用。抵免額資訊如可取得，可供費用估算參考；無須作為部署前核驗條件。用量資料可能延遲，勿只依賴報表或預算通知。
+- 依目前支出授權範圍設定預算和多段通知，但須知 Budget alert 不是硬上限。當預估費用可能超出目前授權時，暫停新增支出並取得必要核准，或按核准計畫匯出、停用/清理資源；本指南不授權升級/更換帳務帳戶或超出支出授權。
 - 清理前確認目前 project、資源 owner、資料備份/保留義務、日誌與 rollback 狀態。撤除未用舊 revisions/images、測試 bucket/object、臨時匯出檔、未用 secrets 及不再需要的 IAM 綁定；刪除資料庫或 bucket 前需資料擁有者書面核准及獨立備份驗證。
 - 不使用時降低或移除可計費資源，但注意刪除或停用服務可能影響資料存取、DNS及已安裝 App。記錄刪除項目與日期，保留必要稽核證據。
 
@@ -135,7 +135,7 @@ Firestore 匯入/匯出的權限、限制及操作依官方文件為準：[匯�
 
 ### 匯出前與驗證
 
-先由資料擁有者書面核准資料範圍、保存目的地及保留期；確認有效 Welcome credit 足以涵蓋匯出與複製成本，並安排寫入凍結窗口。Budget 通知不是硬上限。不要把帳務帳戶 ID 或任何資料/憑證寫進命令歷史或日誌。
+先由資料擁有者書面核准資料範圍、保存目的地及保留期，並安排寫入凍結窗口。匯出與複製須符合目前支出授權；若預估可能超出該授權，先停止並取得明確核准。無須為此核實 Welcome credit 資格、餘額或期限。Budget 通知不是硬上限。不要把帳務帳戶 ID 或任何資料/憑證寫進命令歷史或日誌。
 
 以下 PowerShell 命令建立唯一、可辨識的匯出 prefix，並同步等待 Firestore export 完成：
 
@@ -169,4 +169,4 @@ gcloud storage rm --recursive "gs://nestocke-stg-media-217316337914"
 gcloud artifacts repositories delete nestock-stg --location=us-central1 --project=nestocke-stg
 ```
 
-刪除 Firestore database 或整個 GCS bucket 會永久移除資料；必須逐項由資料擁有者再次核准。Registry repository 可能包含多個 revisions/images，刪除前先盤點並保留稽核需要的 digest。Cloud Build staging bucket 可能供其他 builds 共用，只能在保留期結束後按精確 object 清理，禁止直接刪除共用 bucket。不要升級付費帳戶、解除/更換 billing link，或把 budget alert 當成自動停支上限。
+刪除 Firestore database 或整個 GCS bucket 會永久移除資料；必須逐項由資料擁有者再次核准。Registry repository 可能包含多個 revisions/images，刪除前先盤點並保留稽核需要的 digest。Cloud Build staging bucket 可能供其他 builds 共用，只能在保留期結束後按精確 object 清理，禁止直接刪除共用 bucket。本指南不授權升級付費帳戶、解除/更換 billing link 或超出目前支出授權；Budget alert 也不是自動停支上限。

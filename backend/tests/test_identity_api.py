@@ -16,6 +16,7 @@ from app.core.dependencies import (
     get_identity_service,
     get_inventory_service,
     get_media_storage_service,
+    get_required_google_identity_service,
 )
 from app.main import create_app
 from app.models.identity import (
@@ -49,6 +50,27 @@ NOW = datetime(2026, 11, 19, 5, 0, tzinfo=UTC)
 BOOTSTRAP_1 = "install-challenge-0001"
 BOOTSTRAP_2 = "install-challenge-0002"
 BOOTSTRAP_3 = "install-challenge-0003"
+
+
+def test_google_identity_exchange_returns_install_only_response():
+    class GoogleService:
+        async def authenticate(self, token: str) -> tuple[str, str]:
+            assert token == "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.c2ln"
+            return "install-1", "secure-bearer-credential-value"
+
+    app = create_app()
+    app.dependency_overrides[get_required_google_identity_service] = GoogleService
+    with TestClient(app) as client:
+        response = client.post(
+            "/identity/google",
+            json={"google_id_token": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.c2ln"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "device_id": "install-1",
+        "bearer_credential": "secure-bearer-credential-value",
+    }
 
 
 def test_invite_rate_limit_source_ignores_client_forwarding_headers():

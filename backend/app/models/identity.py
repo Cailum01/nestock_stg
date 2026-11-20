@@ -3,11 +3,15 @@
 These records do not authorize requests or implement membership lifecycle flows.
 """
 
+import base64
+import binascii
+import json
+import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from app.models.base import ContractModel
 
@@ -178,20 +182,53 @@ class BootstrapInstallResponse(ContractModel):
 
 
 class GoogleIdentityRequest(ContractModel):
-    """Untrusted Google ID token; the backend verifies it before using its subject."""
+    """Untrusted compact Google ID token; verification is a server-side concern."""
 
     google_id_token: str = Field(min_length=1, max_length=8192, repr=False)
 
+    @field_validator("google_id_token")
+    @classmethod
+    def validate_compact_token(cls, value: str) -> str:
+        """Check JWT envelope syntax only; this does not authenticate the token."""
+        segments = value.split(".")
+        if len(segments) != 3 or any(
+            not re.fullmatch(r"[A-Za-z0-9_-]+", segment) for segment in segments
+        ):
+            raise ValueError("Google ID token must be a compact JWT.")
+
+        decoded: list[bytes] = []
+        for segment in segments:
+            padded = segment + "=" * (-len(segment) % 4)
+            try:
+                decoded.append(
+                    base64.b64decode(
+                        padded,
+                        altchars=b"-_",
+                        validate=True,
+                    )
+                )
+            except (binascii.Error, ValueError) as error:
+                raise ValueError("Google ID token must be a compact JWT.") from error
+
+        try:
+            header = json.loads(decoded[0])
+            claims = json.loads(decoded[1])
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("Google ID token must contain JSON header and claims.") from error
+        if not isinstance(header, dict) or not isinstance(claims, dict) or not decoded[2]:
+            raise ValueError("Google ID token must contain a header, claims, and signature.")
+        return value
+
 
 class GoogleIdentityResponse(ContractModel):
-    """A distinct Nestock bearer and the server-resolved default household."""
+    """Per-install bearer issuance only; household onboarding is a separate action."""
 
+    device_id: str = Field(min_length=1, max_length=HTTP_ID_MAX_LENGTH)
     bearer_credential: str = Field(
         min_length=ONE_TIME_SECRET_MIN_LENGTH,
         max_length=ONE_TIME_SECRET_MAX_LENGTH,
         repr=False,
     )
-    household_id: str = Field(min_length=1, max_length=HTTP_ID_MAX_LENGTH)
 
 
 class IdentitySessionResponse(ContractModel):

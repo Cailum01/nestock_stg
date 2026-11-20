@@ -1,0 +1,9 @@
+# Derived from the exact deployed baseline; only the approved speech patch and
+# dependency lock are overlaid. Keep the immutable digest pinned.
+FROM us-central1-docker.pkg.dev/nestocke-stg/nestock-stg/api@sha256:492ae46da2d6c590a491044c4fa56e6252406e03ad6598b526f9b289c154473b
+
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY speech.py /app/app/services/speech.py

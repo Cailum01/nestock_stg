@@ -6,34 +6,51 @@ import 'package:nestock/features/shopping/shopping_overlay.dart';
 import 'package:nestock/features/shopping/shopping_view_client.dart';
 import 'package:nestock/shared/data/demo_catalog.dart';
 
-class Fixture implements ShoppingViewClient {
-  Fixture(this.count, {this.namePrefix = '物品'});
+class Fixture implements ShoppingViewClient, ShoppingManualAddClient {
+  Fixture(this.count, {this.namePrefix = '物品'})
+    : items = List.generate(
+        count,
+        (i) => ShoppingViewItem(
+          name: '$namePrefix$i',
+          quantity: 1,
+          unit: '包',
+          status: 'pending',
+        ),
+      );
   final int count;
   final String namePrefix;
-  final addedItems = <ShoppingViewItem>[];
+  final List<ShoppingViewItem> items;
   final addRequests = <AddShoppingItemRequest>[];
   bool failNextAdd = false;
 
   @override
-  Future<List<ShoppingViewItem>> load() async => List.generate(
-    count,
-    (i) => ShoppingViewItem(
-      name: '$namePrefix$i',
-      quantity: 1,
-      unit: '包',
-      status: 'pending',
-    ),
-  )..addAll(addedItems);
+  Future<List<ShoppingViewItem>> load() async => List.unmodifiable(items);
 
   @override
-  Future<ShoppingViewItem> add(AddShoppingItemRequest request) async {
+  Future<ShoppingViewItem> add({
+    required String requestId,
+    required String name,
+    int? quantity,
+    String? unit,
+  }) async {
+    final request = AddShoppingItemRequest(
+      requestId: requestId,
+      name: name,
+      quantity: quantity,
+      unit: unit,
+    );
     addRequests.add(request);
     if (failNextAdd) {
       failNextAdd = false;
       throw const ShoppingAddException(ShoppingAddFailure.timeout);
     }
-    final item = ShoppingViewItem(name: request.name, status: 'pending');
-    addedItems.add(item);
+    final item = ShoppingViewItem(
+      name: name,
+      quantity: quantity,
+      unit: unit,
+      status: 'pending',
+    );
+    items.add(item);
     return item;
   }
 }
@@ -46,9 +63,6 @@ class NameOnlyFixture implements ShoppingViewClient {
     ShoppingViewItem(name: '豆漿', status: 'pending'),
   ];
 
-  @override
-  Future<ShoppingViewItem> add(AddShoppingItemRequest request) =>
-      throw const ShoppingAddException(ShoppingAddFailure.unavailable);
 }
 
 Widget panel({
@@ -122,7 +136,7 @@ void main() {
     expect(find.text('個'), findsNothing);
   });
 
-  testWidgets('add form contains only item name and cancel closes it', (
+  testWidgets('add form exposes optional quantity and unit and can cancel', (
     tester,
   ) async {
     await tester.pumpWidget(panel());
@@ -130,8 +144,9 @@ void main() {
     await openAdd(tester);
 
     expect(find.byKey(const Key('shopping-add-name')), findsOneWidget);
-    expect(find.byKey(const Key('shopping-add-quantity')), findsNothing);
-    expect(find.text('數量'), findsNothing);
+    expect(find.byKey(const Key('shopping-add-quantity')), findsOneWidget);
+    expect(find.byKey(const Key('shopping-add-unit')), findsOneWidget);
+    expect(find.text('數量（選填）'), findsOneWidget);
     await tester.enterText(find.byKey(const Key('shopping-add-name')), '豆漿');
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
@@ -163,7 +178,7 @@ void main() {
     await tester.tap(find.text('加入'));
     await tester.pumpAndSettle();
 
-    expect(find.text('豆漿'), findsOneWidget);
+    expect(find.text('  豆漿  '), findsOneWidget);
     expect(find.text('1'), findsNothing);
     expect(find.text('瓶'), findsNothing);
     expect(find.byKey(const Key('shopping-add-name')), findsNothing);

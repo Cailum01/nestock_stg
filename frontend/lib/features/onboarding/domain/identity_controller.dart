@@ -68,8 +68,6 @@ class IdentityController extends ChangeNotifier
       _bearer = await credentialStore.readBearerCredential();
       if (_bearer != null) {
         await _refreshHouseholds();
-      } else {
-        await _restoreGoogleSession();
       }
     } catch (error) {
       _reportFailure('initialize', error);
@@ -88,8 +86,6 @@ class IdentityController extends ChangeNotifier
       _bearer ??= await credentialStore.readBearerCredential();
       if (_bearer != null) {
         await _refreshHouseholds();
-      } else {
-        await _restoreGoogleSession();
       }
     } catch (error) {
       _reportFailure('retry', error);
@@ -239,18 +235,11 @@ class IdentityController extends ChangeNotifier
     return bearer;
   }
 
-  Future<void> _restoreGoogleSession() async {
-    final provider = googleIdentityProvider;
-    if (provider == null || !provider.isConfigured) return;
-    final token = await provider.attemptSilentSignIn();
-    if (token != null) await _exchangeGoogleToken(token);
-  }
-
   Future<void> _exchangeGoogleToken(String token) async {
     final session = await api.authenticateGoogle(token);
     await credentialStore.writeBearerCredential(session.bearerCredential);
     _bearer = session.bearerCredential;
-    await _refreshHouseholds(selectHouseholdId: session.householdId);
+    await _refreshHouseholds();
   }
 
   Future<void> _refreshHouseholds({String? selectHouseholdId}) async {

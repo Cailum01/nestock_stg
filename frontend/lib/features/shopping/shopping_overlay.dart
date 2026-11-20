@@ -25,10 +25,12 @@ class ShoppingOverlay extends StatefulWidget {
 class _ShoppingOverlayState extends State<ShoppingOverlay> {
   late Future<List<ShoppingViewItem>> _items;
   final _nameController = TextEditingController();
-  AddShoppingItemRequest? _pendingAdd;
+  final _quantityController = TextEditingController();
+  final _unitController = TextEditingController();
   bool _adding = false;
-  bool _submitting = false;
+  bool _saving = false;
   String? _addError;
+  ({String requestId, String name, int? quantity, String? unit})? _pendingAdd;
   final _commerceRequests = <String>{};
 
   @override
@@ -53,42 +55,69 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
     _pendingAdd = null;
     _addError = null;
     _nameController.clear();
+    _quantityController.clear();
+    _unitController.clear();
   });
 
   Future<void> _addItem() async {
-    final name = _nameController.text.trim();
-    if (name.isEmpty) {
-      setState(() => _addError = '請輸入商品名稱。');
+    if (_saving) return;
+    final addClient = widget.client;
+    if (addClient is! ShoppingManualAddClient) {
+      setState(() => _addError = '目前無法儲存購物項目，請稍後再試。');
       return;
     }
+
     final pending = _pendingAdd;
-    final request = pending != null && pending.name == name
-        ? pending
-        : AddShoppingItemRequest(
-            requestId: widget.createRequestId(),
-            name: name,
-          );
+    if (pending == null) {
+      final name = _nameController.text;
+      if (name.trim().isEmpty) {
+        setState(() => _addError = '請輸入商品名稱。');
+        return;
+      }
+      final rawQuantity = _quantityController.text.trim();
+      final quantity = rawQuantity.isEmpty ? null : int.tryParse(rawQuantity);
+      if (rawQuantity.isNotEmpty && (quantity == null || quantity < 1)) {
+        setState(() => _addError = '數量必須是大於 0 的整數。');
+        return;
+      }
+      final rawUnit = _unitController.text;
+      final unit = rawUnit.trim().isEmpty ? null : rawUnit;
+      _pendingAdd = (
+        requestId: widget.createRequestId(),
+        name: name,
+        quantity: quantity,
+        unit: unit,
+      );
+    }
+
+    final request = _pendingAdd!;
     setState(() {
-      _pendingAdd = request;
-      _submitting = true;
+      _saving = true;
       _addError = null;
     });
     try {
-      await widget.client.add(request);
+      await addClient.add(
+        requestId: request.requestId,
+        name: request.name,
+        quantity: request.quantity,
+        unit: request.unit,
+      );
+      final refreshedItems = await widget.client.load();
       if (!mounted) return;
-      final refreshedItems = widget.client.load();
       setState(() {
-        _items = refreshedItems;
+        _items = Future.value(refreshedItems);
         _adding = false;
-        _submitting = false;
-        _pendingAdd = null;
+        _saving = false;
         _addError = null;
+        _pendingAdd = null;
         _nameController.clear();
+        _quantityController.clear();
+        _unitController.clear();
       });
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _submitting = false;
+        _saving = false;
         _addError = _messageForAddFailure(error);
       });
     }
@@ -100,7 +129,7 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
         ShoppingAddFailure.validation => '商品資料無效，請確認後重試。',
         ShoppingAddFailure.unauthenticated => '登入狀態已失效，請重新登入後再試。',
         ShoppingAddFailure.forbidden => '目前無權限存取此家庭，請切換家庭後重試。',
-        ShoppingAddFailure.requestConflict => '這次新增資料發生衝突，請取消後重新新增。',
+        ShoppingAddFailure.requestConflict => '這次新增資料發生衝突，請稍後確認購物清單。',
         ShoppingAddFailure.unavailable => '目前無法儲存購物項目，請稍後再試。',
         ShoppingAddFailure.timeout => '連線逾時，請重試。',
         ShoppingAddFailure.network => '連線失敗，請重試。',
@@ -155,6 +184,8 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
   @override
   void dispose() {
     _nameController.dispose();
+    _quantityController.dispose();
+    _unitController.dispose();
     super.dispose();
   }
 
@@ -173,7 +204,9 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
             children: [
               const Expanded(child: Text('購物清單')),
               IconButton(
-                onPressed: widget.onClose,
+                onPressed: _saving || _pendingAdd != null
+                    ? null
+                    : widget.onClose,
                 icon: const Icon(Icons.close),
                 tooltip: '關閉購物清單',
               ),
@@ -192,7 +225,7 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
                     Text(
                       '待購 ${data.where((item) => item.status == 'pending').length} 件',
                     ),
-                    if (data.isEmpty)
+                    if (data.isEmpty && !_adding)
                       const Padding(
                         padding: EdgeInsets.all(16),
                         child: Text('購物清單目前是空的。'),
@@ -231,9 +264,22 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
                       TextField(
                         key: const Key('shopping-add-name'),
                         controller: _nameController,
-                        enabled: !_submitting,
+                        readOnly: _pendingAdd != null,
                         textInputAction: TextInputAction.done,
                         decoration: const InputDecoration(labelText: '商品名稱'),
+                      ),
+                      TextField(
+                        key: const Key('shopping-add-quantity'),
+                        controller: _quantityController,
+                        readOnly: _pendingAdd != null,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(labelText: '數量（選填）'),
+                      ),
+                      TextField(
+                        key: const Key('shopping-add-unit'),
+                        controller: _unitController,
+                        readOnly: _pendingAdd != null,
+                        decoration: const InputDecoration(labelText: '單位（選填）'),
                       ),
                       if (_addError != null)
                         Padding(
@@ -251,12 +297,14 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
                           spacing: 8,
                           children: [
                             TextButton(
-                              onPressed: _submitting ? null : _cancelAdd,
+                              onPressed: _saving || _pendingAdd != null
+                                  ? null
+                                  : _cancelAdd,
                               child: const Text('取消'),
                             ),
                             FilledButton(
-                              onPressed: _submitting ? null : _addItem,
-                              child: Text(_submitting ? '加入中…' : '加入'),
+                              onPressed: _saving ? null : _addItem,
+                              child: const Text('加入'),
                             ),
                           ],
                         ),

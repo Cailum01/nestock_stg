@@ -65,8 +65,11 @@ class _IdentityGateState extends State<IdentityGate> {
         onReset: controller.clearLocalCredential,
       );
     }
-    if (!controller.hasCredential || controller.households.isEmpty) {
+    if (!controller.hasCredential) {
       return GoogleIdentityPrompt(controller: controller);
+    }
+    if (controller.households.isEmpty) {
+      return HouseholdOnboarding(controller: controller);
     }
     return widget.authenticatedHomeBuilder(context, controller);
   }
@@ -96,7 +99,7 @@ class GoogleIdentityPrompt extends StatelessWidget {
               const SizedBox(height: 8),
               Text(
                 controller.canSignInWithGoogle
-                    ? 'Sign in with the same Google account to restore your household.'
+                    ? 'Sign in with Google to connect this install to your household.'
                     : 'Google sign-in is not configured for this build.',
                 textAlign: TextAlign.center,
               ),
@@ -188,6 +191,7 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
   final _oneTimeCode = TextEditingController();
   _OnboardingMode _mode = _OnboardingMode.create;
   bool _busy = false;
+  bool _householdChoiceMade = false;
   String? _error;
 
   @override
@@ -313,8 +317,8 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    _modeChip(_OnboardingMode.create, 'Create'),
-                    _modeChip(_OnboardingMode.join, 'Join'),
+                    _modeChip(_OnboardingMode.create, 'Create household'),
+                    _modeChip(_OnboardingMode.join, 'Join household'),
                     _modeChip(
                       _OnboardingMode.householdRecovery,
                       'Household recovery',
@@ -376,7 +380,11 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
                 ],
                 const SizedBox(height: 20),
                 FilledButton(
-                  onPressed: _busy || !widget.controller.apiHostConfigured
+                  onPressed:
+                      _busy ||
+                          !widget.controller.apiHostConfigured ||
+                          widget.controller.hasCredential &&
+                              !_householdChoiceMade
                       ? null
                       : _submit,
                   child: _busy
@@ -395,9 +403,15 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
   }
 
   Widget _modeChip(_OnboardingMode mode, String label) => ChoiceChip(
+    key: Key('onboarding-mode-${mode.name}'),
     label: Text(label),
     selected: _mode == mode,
-    onSelected: _busy ? null : (_) => setState(() => _mode = mode),
+    onSelected: _busy
+        ? null
+        : (_) => setState(() {
+            _mode = mode;
+            _householdChoiceMade = true;
+          }),
   );
 }
 

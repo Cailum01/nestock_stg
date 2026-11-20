@@ -34,7 +34,7 @@ from app.agent.cards import (
     PURCHASE_TOOL_SCHEMA,
     PurchaseCards,
 )
-from app.agent.llm import build_chat_model, load_azure_settings
+from app.agent.llm import build_chat_model, load_vertex_settings
 from app.agent.read_agent import (
     OPEN_CARD,
     OPEN_CARD_PENDING,
@@ -450,9 +450,9 @@ LIVE_ROWS = {
 
 @pytest.fixture(scope="module")
 def live_model():
-    settings = load_azure_settings()
+    settings = load_vertex_settings()
     if settings is None:
-        pytest.skip("Azure OpenAI is not configured; live check not run")
+        pytest.skip("Vertex AI is not configured; live check not run")
     return build_chat_model(settings).bind_tools([*TOOL_SCHEMAS, PURCHASE_TOOL_SCHEMA])
 
 

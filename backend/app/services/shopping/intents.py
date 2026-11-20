@@ -80,7 +80,7 @@ class ShoppingIntentService:
         self._clock = clock or (lambda: datetime.now(UTC))
 
     async def add(self, command: AddShoppingIntent) -> ShoppingIntentWriteResult:
-        name = command.name.strip()
+        name = command.name
         if not command.household_id or not command.household_id.strip():
             raise ShoppingIntentError("household_id must not be empty.")
         # The identity resolver trims the scope. Use that same canonical scope
@@ -88,7 +88,7 @@ class ShoppingIntentService:
         household_id = command.household_id.strip()
         if not command.request_id or not command.request_id.strip():
             raise ShoppingIntentError("request_id must not be empty.")
-        if not name:
+        if not name.strip():
             raise ShoppingIntentError("name must not be empty.")
         if command.quantity is not None and (
             isinstance(command.quantity, bool)
@@ -168,7 +168,7 @@ class ShoppingIntentService:
             and item.household_id == household_id
             and item.name == name
             and item.quantity == command.quantity
-            and item.unit == (command.unit.strip() if command.unit is not None else None)
+            and item.unit == command.unit
         )
 
     @staticmethod
@@ -185,7 +185,7 @@ class ShoppingIntentService:
             household_id=household_id,
             name=name,
             quantity=command.quantity,
-            unit=command.unit.strip() if command.unit is not None else None,
+            unit=command.unit,
             status=ShoppingStatus.PENDING,
             created_at=created_at,
             updated_at=created_at,

@@ -65,12 +65,14 @@ Android 實機 ──HTTPS──▶ Azure Container Apps（nestock-api，單一�
 
 ## 6. Demo 當天 smoke test（不改任何共用檔）
 
-`python3 deploy/smoke_test.py --base-url <BASE_URL>`，分層檢查，每一項各自回報、不因第一個失敗而停止：
-L0 雲端版本是否為最新 `origin/main`；L1 `/health`、真實語音逐字稿、Agent 有回答、`/agent/open-card` 路由格式正確（#215）；
-L2 `/inventory`、`/shopping`、`/forecast` 的不變量（不比對固定 baseline）；
-L3 拍照 → 辨識 → 確認卡格式正確、拍照本身不改庫存；卡留著不處理，30 分鐘後自己過期。
-L4（`--write --yes`）會真的寫入：拍照 → `increase_stock` 卡 → 確認 → 數量 +N，同卡再確認不重複寫入。若同一家庭已有未確認的卡，拍照會回同一張舊卡，L4 就確認那張（先檢查它是單一 `increase_stock`）。
-只用標準函式庫，不需憑證、不印金鑰；L0～L3 不寫 domain data（L3 會暫存一張待確認卡，不取消）。不以 mock 補位。
+`python3 deploy/smoke_test.py --base-url <BASE_URL>` reports each check independently.
+L0 compares the image with `origin/stg` or `--expected-commit`; L1 checks health
+and protected-route authentication; L2 checks data invariants when authorized.
+Without credentials, protected checks expect HTTP 401 and do not read household
+data. Agent and photo flows are skipped by default because they can create approval
+cards. Pass both `--bearer-token <TOKEN>` and `--household-id <ID>` for protected
+checks. Any Agent/photo flow or data write also requires `--write --yes`; an
+unconfirmed card is not cancelled automatically.
 
 ## 7. 風險
 

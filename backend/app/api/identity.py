@@ -95,10 +95,10 @@ async def authenticate_google(
         Depends(get_required_google_identity_service),
     ],
 ) -> GoogleIdentityResponse:
-    _device_id, bearer, household_id = await service.authenticate(request.google_id_token)
+    device_id, bearer = await service.authenticate(request.google_id_token)
     return GoogleIdentityResponse(
+        device_id=device_id,
         bearer_credential=bearer,
-        household_id=household_id,
     )
 
 

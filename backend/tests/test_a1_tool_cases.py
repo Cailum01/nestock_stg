@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from app.agent.cards import PURCHASE_TOOL_SCHEMA
-from app.agent.llm import build_chat_model, load_azure_settings
+from app.agent.llm import build_chat_model, load_vertex_settings
 from app.agent.read_agent import PHOTO_ATTACHED, TOOL_SCHEMAS, load_system_prompt
 from app.agent.stock_cards import INCREASE_PROMPT_NOTE, INCREASE_TOOL_SCHEMA, STOCK_TOOL_SCHEMA
 from app.services.item_matching import normalize_term
@@ -175,9 +175,9 @@ def _looked_up(case, call):
 
 @pytest.fixture(scope="module")
 def live_models():
-    settings = load_azure_settings()
+    settings = load_vertex_settings()
     if settings is None:
-        pytest.skip("Azure OpenAI is not configured; live tool selection not run")
+        pytest.skip("Vertex AI is not configured; live tool selection not run")
     model = build_chat_model(settings)
     return {False: model.bind_tools(OFFERED), True: model.bind_tools(OFFERED_INCREASING)}
 

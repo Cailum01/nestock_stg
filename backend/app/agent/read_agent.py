@@ -68,6 +68,7 @@ from app.agent.stock_cards import (
 )
 from app.core.dependencies import (
     get_approval_service,
+    get_commerce_service,
     get_cosmos_read_repository,
     get_inventory_service,
     get_media_storage_service,
@@ -84,7 +85,6 @@ from app.services.approvals import (
     CardNotChangeable,
     NewOperation,
 )
-from app.services.commerce.biggo import BigGoCommerceProvider
 from app.services.item_matching import ItemMatch, ItemMatcher, MatchMethod, match_term
 from app.services.provisional_storage.interfaces import MediaStorageService
 from app.services.vision import VisionService
@@ -1133,10 +1133,10 @@ class ReadAgent:
 
 @lru_cache(maxsize=1)
 def get_read_agent() -> ReadAgent | None:
-    """FastAPI dependency. None when Azure OpenAI is not configured (route answers 501)."""
-    from app.agent.llm import build_chat_model, load_azure_settings
+    """FastAPI dependency. None when Vertex is unconfigured (route answers 501)."""
+    from app.agent.llm import build_chat_model, load_vertex_settings
 
-    settings = load_azure_settings()
+    settings = load_vertex_settings()
     if settings is None:
         return None
 
@@ -1154,8 +1154,7 @@ def get_read_agent() -> ReadAgent | None:
         forecast=ForecastService(inventory, get_transaction_history()),
         vision=get_vision_service(),
         media=get_media_storage_service(),
-        # Built after load_azure_settings() read backend/.env, so BigGo keys there apply.
-        commerce=BigGoCommerceProvider(),
+        commerce=get_commerce_service(),
         purchases=_purchase_cards(),
         # Issue #124: photo new-item cards, written on confirm by B1's no-Shopping
         # writer through A1's `CardWriteRouter` (`get_approval_service`, PR #171).

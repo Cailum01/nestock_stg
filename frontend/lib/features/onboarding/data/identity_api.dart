@@ -14,12 +14,12 @@ class IssuedOneTimeCode {
 
 class GoogleIdentitySession {
   const GoogleIdentitySession({
+    required this.deviceId,
     required this.bearerCredential,
-    required this.householdId,
   });
 
+  final String deviceId;
   final String bearerCredential;
-  final String householdId;
 }
 
 class IdentityApi {
@@ -36,8 +36,8 @@ class IdentityApi {
       jsonBody: {'google_id_token': idToken},
     );
     return GoogleIdentitySession(
+      deviceId: _requiredString(body, 'device_id'),
       bearerCredential: _requiredString(body, 'bearer_credential'),
-      householdId: _requiredString(body, 'household_id'),
     );
   }
 

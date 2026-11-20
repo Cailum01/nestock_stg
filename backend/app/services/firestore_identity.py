@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -19,7 +18,6 @@ from app.models.identity import (
     HouseholdCreation,
     HouseholdInviteRecord,
     HouseholdMembership,
-    HouseholdRecord,
     HouseholdRecoveryRecord,
     HouseholdRole,
 )
@@ -265,32 +263,18 @@ class FirestoreIdentityRepository(IdentityRepository):
         now: datetime,
         max_per_hour: int,
         window: timedelta,
-    ) -> str:
-        """Atomically bind a verified Google subject to one persistent household."""
+    ) -> None:
+        """Atomically persist a verified Google install without household access."""
         if len(subject_hash) != 64 or any(
             character not in "0123456789abcdef" for character in subject_hash
         ):
             raise ValueError("Google subject must be represented by a SHA-256 digest.")
 
-        identity_ref = self._client.document(f"google_identities/{subject_hash}")
-        limit_ref = self._client.document(
-            f"identity_attempt_limits/google-install-{subject_hash}"
-        )
+        limit_ref = self._client.document(f"identity_attempt_limits/google-install-{subject_hash}")
         installation_ref = self._client.document(f"installations/{device.device_id}")
         cutoff = _utc(now) - window
-        candidate_household_id = uuid.uuid4().hex
-        candidate_household = HouseholdRecord(
-            household_id=candidate_household_id,
-            created_by_device_id=device.device_id,
-            created_at=now,
-        )
-        candidate_household_mapped, candidate_household_document = _identity_write(
-            candidate_household
-        )
-        result: dict[str, str] = {"household_id": ""}
 
         def commit(transaction: Any) -> None:
-            identity_snapshot = _single_snapshot(transaction, identity_ref)
             limit_snapshot = _single_snapshot(transaction, limit_ref)
             limit_document = (
                 dict(limit_snapshot.to_dict() or {})
@@ -305,75 +289,12 @@ class FirestoreIdentityRepository(IdentityRepository):
             if len(timestamps) >= max_per_hour:
                 raise GoogleIdentityRateLimited()
             timestamps.append(_utc(now))
-            identity_document = (
-                dict(identity_snapshot.to_dict() or {})
-                if identity_snapshot is not None and identity_snapshot.exists
-                else None
-            )
-            if identity_document is None:
-                household_id = candidate_household_id
-                household_ref = self._client.document(candidate_household_mapped.path)
-                household_snapshot = _single_snapshot(transaction, household_ref)
-                new_household = True
-            else:
-                if (
-                    identity_document.get("record_type") != "google_identity"
-                    or identity_document.get("subject_hash") != subject_hash
-                    or identity_document.get("id") != subject_hash
-                ):
-                    raise ValueError("Stored Google identity mapping is inconsistent.")
-                household_id = identity_document.get("default_household_id")
-                if not isinstance(household_id, str) or not household_id:
-                    raise ValueError("Stored Google identity mapping has no household.")
-                household_ref = self._client.document(f"households/{household_id}")
-                household_snapshot = _single_snapshot(transaction, household_ref)
-                new_household = False
-
-            if new_household:
-                role = HouseholdRole.OWNER
-            else:
-                if (
-                    household_snapshot is None
-                    or not household_snapshot.exists
-                    or (household_snapshot.to_dict() or {}).get("record_type") != "household"
-                ):
-                    raise ValueError("Google identity's default household is missing.")
-                role = HouseholdRole.MEMBER
-
-            installed_device = device.model_copy(update={"default_household_id": household_id})
-            mapped_device, device_document = _identity_write(installed_device)
-            membership = HouseholdMembership(
-                household_id=household_id,
-                device_id=device.device_id,
-                role=role,
-                created_at=now,
-            )
-            mapped_membership, membership_document = _membership_write(membership)
-            membership_ref = self._client.document(mapped_membership.path)
-            membership_snapshot = _single_snapshot(transaction, membership_ref)
             installation_snapshot = _single_snapshot(transaction, installation_ref)
-            if (membership_snapshot is not None and membership_snapshot.exists) or (
-                installation_snapshot is not None and installation_snapshot.exists
-            ):
+            if installation_snapshot is not None and installation_snapshot.exists:
                 raise ValueError("Generated Google installation identifier already exists.")
 
-            if new_household:
-                transaction.create(
-                    household_ref,
-                    candidate_household_document,
-                )
-                transaction.create(
-                    identity_ref,
-                    {
-                        "id": subject_hash,
-                        "record_type": "google_identity",
-                        "subject_hash": subject_hash,
-                        "default_household_id": household_id,
-                        "created_at": now.isoformat(),
-                    },
-                )
-            transaction.create(self._client.document(mapped_device.path), device_document)
-            transaction.create(membership_ref, membership_document)
+            mapped_device, device_document = _identity_write(device)
+            transaction.create(installation_ref, device_document)
             transaction.set(
                 limit_ref,
                 {
@@ -382,7 +303,6 @@ class FirestoreIdentityRepository(IdentityRepository):
                     "expires_at": max(timestamps) + window,
                 },
             )
-            result["household_id"] = household_id
 
         await asyncio.to_thread(
             _run_transaction,
@@ -390,7 +310,6 @@ class FirestoreIdentityRepository(IdentityRepository):
             commit,
             max_attempts=20,
         )
-        return result["household_id"]
 
     async def bootstrap_install(
         self,
@@ -501,9 +420,6 @@ class FirestoreIdentityRepository(IdentityRepository):
         household_ref = self._client.document(household_mapped.path)
         membership_ref = self._client.document(membership_mapped.path)
         limit_ref = self._client.document(f"identity_attempt_limits/household-create-{device_id}")
-        membership_query = self._client.collection("household_memberships").where(
-            filter=FieldFilter("installation_id", "==", device_id)
-        )
         current_time = _utc(now)
         cutoff = current_time - window
         result = {"limited": False}
@@ -514,7 +430,6 @@ class FirestoreIdentityRepository(IdentityRepository):
             household_snapshot = _single_snapshot(transaction, household_ref)
             membership_snapshot = _single_snapshot(transaction, membership_ref)
             limit_snapshot = _single_snapshot(transaction, limit_ref)
-            existing_memberships = list(transaction.get(membership_query))
             device = (
                 _read_model(DeviceRecord, device_ref.path, device_snapshot)
                 if device_snapshot is not None and device_snapshot.exists
@@ -522,14 +437,6 @@ class FirestoreIdentityRepository(IdentityRepository):
             )
             if device is None or device.revoked_at is not None:
                 raise ForbiddenIdentityAction()
-            if device.default_household_id is not None:
-                raise MembershipConflict(
-                    "This identity already has a default household."
-                )
-            for snapshot in existing_memberships:
-                existing_membership = _membership_from_snapshot(snapshot)
-                if existing_membership is not None and existing_membership.is_active:
-                    raise MembershipConflict("This install already belongs to a household.")
             if household_snapshot.exists or membership_snapshot.exists:
                 raise MembershipConflict()
             limit_document = (
@@ -554,13 +461,14 @@ class FirestoreIdentityRepository(IdentityRepository):
                 result["limited"] = True
                 return
             timestamps.append(current_time)
-            default_device = device.model_copy(
-                update={"default_household_id": creation.household.household_id}
-            )
-            _, default_device_document = _identity_write(default_device)
             transaction.create(household_ref, household_document)
             transaction.create(membership_ref, membership_document)
-            transaction.set(device_ref, default_device_document)
+            if device.default_household_id is None:
+                default_device = device.model_copy(
+                    update={"default_household_id": creation.household.household_id}
+                )
+                _, default_device_document = _identity_write(default_device)
+                transaction.set(device_ref, default_device_document)
             transaction.set(
                 limit_ref,
                 {

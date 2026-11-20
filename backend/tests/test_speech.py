@@ -1,5 +1,8 @@
+import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -7,6 +10,7 @@ from fastapi import status
 from fastapi.testclient import TestClient
 from identity_test_support import authenticated_client
 
+from app.agent.llm import VertexAISettings
 from app.core.dependencies import (
     _reset_speech_service_for_test,
     get_speech_service,
@@ -19,6 +23,7 @@ from app.services.speech import (
     SpeechAzureSettings,
     SpeechToTextService,
     SpeechUpstreamError,
+    VertexSpeechService,
     create_speech_service,
     load_speech_azure_settings,
 )
@@ -160,21 +165,83 @@ def test_create_speech_service_factory():
     svc_mock = create_speech_service(environment={"NESTOCK_SPEECH_MOCK": "1"})
     assert isinstance(svc_mock, MockSpeechToTextService)
 
-    # With key -> AzureSpeechService
+    # Legacy Azure credentials alone do not enable speech; Vertex references or explicit mock do.
     svc_azure = create_speech_service(environment={"AZURE_SPEECH_KEY": "secret-key"})
-    assert isinstance(svc_azure, AzureSpeechService)
-    assert svc_azure.speech_key == "secret-key"
-    assert svc_azure.endpoint is None
+    assert svc_azure is None
 
-    # With key and custom endpoint
-    svc_custom = create_speech_service(
-        environment={
-            "AZURE_SPEECH_KEY": "secret-key",
-            "AZURE_SPEECH_ENDPOINT": "https://custom.endpoint.azure.com",
-        }
+
+@pytest.mark.anyio
+async def test_vertex_speech_factory_uses_injected_client_and_preserves_response_contract():
+    generate_content = AsyncMock(
+        return_value=SimpleNamespace(
+            text='{"transcript": "  幫我查衛生紙  ", "detected_language": "zh-TW"}'
+        )
     )
-    assert isinstance(svc_custom, AzureSpeechService)
-    assert svc_custom.endpoint == "https://custom.endpoint.azure.com"
+    client = SimpleNamespace(
+        aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    )
+    service = create_speech_service(
+        environment={
+            "NESTOCK_VERTEX_PROJECT_ID": "test-project",
+            "NESTOCK_VERTEX_MODEL": "gemini-3.8-flash",
+        },
+        client=client,
+    )
+
+    assert isinstance(service, VertexSpeechService)
+    assert service.settings == VertexAISettings(project="test-project", model="gemini-3.8-flash")
+    response = await service.transcribe(b"mocked audio", "audio/wav", language="zh-TW")
+
+    assert response.model_dump() == {
+        "transcript": "幫我查衛生紙",
+        "detected_language": "zh-TW",
+        "duration_seconds": None,
+    }
+    assert generate_content.await_count == 1
+    assert generate_content.await_args.kwargs["model"] == "gemini-3.8-flash"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("transcript", "detected_language", "expected_transcript"),
+    [
+        ("请帮我查询卫生纸", "zh-CN", "請幫我查詢衛生紙"),
+        ("繁體中文的頭髮和幹活", "zh-CN", "繁體中文的頭髮和幹活"),
+        ("Good morning, please help me", "en-US", "Good morning, please help me"),
+    ],
+)
+async def test_vertex_speech_normalizes_transcript_and_preserves_detected_language(
+    transcript: str,
+    detected_language: str,
+    expected_transcript: str,
+):
+    generate_content = AsyncMock(
+        return_value=SimpleNamespace(
+            text=json.dumps({"transcript": transcript, "detected_language": detected_language})
+        )
+    )
+    client = SimpleNamespace(
+        aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    )
+    service = VertexSpeechService(VertexAISettings(project="test-project"), client=client)
+
+    response = await service.transcribe(b"mocked audio", "audio/wav")
+
+    assert response.transcript == expected_transcript
+    assert response.detected_language == detected_language
+
+
+@pytest.mark.anyio
+async def test_vertex_speech_maps_model_errors_without_provider_fallback():
+    generate_content = AsyncMock(side_effect=RuntimeError("mock upstream error"))
+    client = SimpleNamespace(
+        aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    )
+    service = VertexSpeechService(VertexAISettings(project="test-project"), client=client)
+
+    with pytest.raises(SpeechUpstreamError):
+        await service.transcribe(b"mocked audio", "audio/wav")
+    assert generate_content.await_count == 1
 
 
 def test_dependencies_get_speech_service_lazy_singleton(monkeypatch, tmp_path):
@@ -187,6 +254,8 @@ def test_dependencies_get_speech_service_lazy_singleton(monkeypatch, tmp_path):
         # Default with no environment -> resolves None (unconfigured)
         monkeypatch.delenv("AZURE_SPEECH_KEY", raising=False)
         monkeypatch.delenv("NESTOCK_SPEECH_MOCK", raising=False)
+        monkeypatch.delenv("NESTOCK_VERTEX_PROJECT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
         s1 = get_speech_service()
         s2 = get_speech_service()
         assert s1 is None
@@ -198,16 +267,18 @@ def test_dependencies_get_speech_service_lazy_singleton(monkeypatch, tmp_path):
         s_mock = get_speech_service()
         assert isinstance(s_mock, MockSpeechToTextService)
 
-        # Reset and provide live key
+        # Reset and provide a project reference with a mocked Vertex client factory.
         _reset_speech_service_for_test()
         monkeypatch.delenv("NESTOCK_SPEECH_MOCK", raising=False)
-        monkeypatch.setenv("AZURE_SPEECH_KEY", "key-xyz")
-        s_live = get_speech_service()
-        assert isinstance(s_live, AzureSpeechService)
+        monkeypatch.setenv("NESTOCK_VERTEX_PROJECT_ID", "unit-test-project")
+        monkeypatch.setattr(speech, "build_vertex_client", lambda settings: object())
+        s_vertex = get_speech_service()
+        assert isinstance(s_vertex, VertexSpeechService)
     finally:
         _reset_speech_service_for_test()
         monkeypatch.delenv("AZURE_SPEECH_KEY", raising=False)
         monkeypatch.delenv("AZURE_SPEECH_REGION", raising=False)
+        monkeypatch.delenv("NESTOCK_VERTEX_PROJECT_ID", raising=False)
 
 
 # ==============================================================================
@@ -515,7 +586,10 @@ def test_api_route_transcribe_speech_returns_503_when_unconfigured():
             files={"file": ("recording.m4a", fake_audio, "audio/m4a")},
         )
         assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
-        assert "Speech service is not configured" in response.json()["detail"]
+        detail = response.json()["detail"]
+        assert "Speech service is not configured" in detail
+        assert "NESTOCK_VERTEX_PROJECT_ID" in detail
+        assert "AZURE_SPEECH_KEY" not in detail
     finally:
         app.dependency_overrides.clear()
 
@@ -534,33 +608,19 @@ def test_api_route_transcribe_speech_requires_install_authentication():
         app.dependency_overrides.clear()
 
 
-def test_speech_service_cold_start_loads_dotenv_when_only_in_env_file(monkeypatch, tmp_path):
-    """驗證冷啟動情境（必改 1）：
-    當環境變數清空，金鑰僅寫在 backend/.env 時，「先錄音」仍能自動載入並建立 AzureSpeechService。
-    """
-    from app.services import speech
-
-    # 確保當前環境變數無金鑰與 Mock 標記
+def test_speech_service_unconfigured_without_injected_provider_settings(monkeypatch):
+    """Unconfigured speech remains disabled without reading local files or credentials."""
     monkeypatch.delenv("AZURE_SPEECH_KEY", raising=False)
     monkeypatch.delenv("AZURE_SPEECH_REGION", raising=False)
     monkeypatch.delenv("NESTOCK_SPEECH_MOCK", raising=False)
-
-    fake_backend_dir = tmp_path / "backend"
-    fake_backend_dir.mkdir()
-    fake_env_file = fake_backend_dir / ".env"
-    fake_env_file.write_text("AZURE_SPEECH_KEY=key-from-env-file\nAZURE_SPEECH_REGION=japaneast\n")
-
-    monkeypatch.setattr(speech, "BACKEND_DIR", fake_backend_dir)
+    monkeypatch.delenv("NESTOCK_VERTEX_PROJECT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
     _reset_speech_service_for_test()
     try:
         service = get_speech_service()
-        assert isinstance(service, AzureSpeechService)
-        assert service.speech_key == "key-from-env-file"
-        assert service.service_region == "japaneast"
+        assert service is None
     finally:
         _reset_speech_service_for_test()
-        monkeypatch.delenv("AZURE_SPEECH_KEY", raising=False)
-        monkeypatch.delenv("AZURE_SPEECH_REGION", raising=False)
 
 
 @pytest.mark.anyio

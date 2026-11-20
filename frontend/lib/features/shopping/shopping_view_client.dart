@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:http/http.dart' as http;
 
@@ -20,8 +22,53 @@ class ShoppingViewItem {
   final String? unit;
 }
 
+class AddShoppingItemRequest {
+  const AddShoppingItemRequest({
+    required this.requestId,
+    required this.name,
+    this.quantity,
+    this.unit,
+  });
+
+  final String requestId;
+  final String name;
+  final int? quantity;
+  final String? unit;
+
+  Map<String, Object> toJson() => {
+    'request_id': requestId,
+    'name': name.trim(),
+    'quantity': ?quantity,
+    'unit': ?unit?.trim(),
+  };
+}
+
+enum ShoppingAddFailure {
+  validation,
+  unauthenticated,
+  forbidden,
+  requestConflict,
+  unavailable,
+  timeout,
+  network,
+  malformedResponse,
+  unexpectedResponse,
+}
+
+class ShoppingAddException implements Exception {
+  const ShoppingAddException(this.failure, {this.statusCode});
+
+  final ShoppingAddFailure failure;
+  final int? statusCode;
+
+  @override
+  String toString() => 'ShoppingAddException($failure, status: $statusCode)';
+}
+
 abstract interface class ShoppingViewClient {
   Future<List<ShoppingViewItem>> load();
+
+  Future<ShoppingViewItem> add(AddShoppingItemRequest request);
 }
 
 class DemoShoppingViewClient implements ShoppingViewClient {
@@ -32,6 +79,10 @@ class DemoShoppingViewClient implements ShoppingViewClient {
     ShoppingViewItem(name: '衛生紙', quantity: 1, unit: '包', status: 'pending'),
     ShoppingViewItem(name: '咖啡豆', quantity: 2, unit: '包', status: 'pending'),
   ];
+
+  @override
+  Future<ShoppingViewItem> add(AddShoppingItemRequest request) async =>
+      throw const ShoppingAddException(ShoppingAddFailure.unavailable);
 }
 
 class HttpShoppingViewClient implements ShoppingViewClient {
@@ -68,6 +119,82 @@ class HttpShoppingViewClient implements ShoppingViewClient {
         .toList(growable: false);
   }
 
+  @override
+  Future<ShoppingViewItem> add(AddShoppingItemRequest request) async {
+    final scope = householdContext.snapshot();
+    late final http.Response response;
+    try {
+      response = await client
+          .post(
+            baseUrl.resolve('/shopping'),
+            headers: {...scope.headers, 'content-type': 'application/json'},
+            body: jsonEncode(request.toJson()),
+          )
+          .timeout(timeout);
+    } on TimeoutException {
+      throw const ShoppingAddException(ShoppingAddFailure.timeout);
+    } on http.ClientException {
+      throw const ShoppingAddException(ShoppingAddFailure.network);
+    }
+
+    switch (response.statusCode) {
+      case 200:
+      case 201:
+        try {
+          final body = jsonDecode(response.body);
+          if (body is! Map) {
+            throw const ShoppingAddException(
+              ShoppingAddFailure.malformedResponse,
+            );
+          }
+          final item = _viewItemFromJson(Map<String, dynamic>.from(body));
+          if (item == null) {
+            throw const ShoppingAddException(
+              ShoppingAddFailure.malformedResponse,
+            );
+          }
+          return item;
+        } on ShoppingAddException {
+          rethrow;
+        } on FormatException {
+          throw const ShoppingAddException(
+            ShoppingAddFailure.malformedResponse,
+          );
+        }
+      case 400:
+      case 422:
+        throw ShoppingAddException(
+          ShoppingAddFailure.validation,
+          statusCode: response.statusCode,
+        );
+      case 401:
+        throw const ShoppingAddException(
+          ShoppingAddFailure.unauthenticated,
+          statusCode: 401,
+        );
+      case 403:
+        throw const ShoppingAddException(
+          ShoppingAddFailure.forbidden,
+          statusCode: 403,
+        );
+      case 409:
+        throw const ShoppingAddException(
+          ShoppingAddFailure.requestConflict,
+          statusCode: 409,
+        );
+      case 503:
+        throw const ShoppingAddException(
+          ShoppingAddFailure.unavailable,
+          statusCode: 503,
+        );
+      default:
+        throw ShoppingAddException(
+          ShoppingAddFailure.unexpectedResponse,
+          statusCode: response.statusCode,
+        );
+    }
+  }
+
   ShoppingViewItem? _viewItemFromJson(Map<String, dynamic> record) {
     final name = record['name'];
     final status = record['status'];
@@ -85,6 +212,17 @@ class HttpShoppingViewClient implements ShoppingViewClient {
       unit: unit is String && unit.trim().isNotEmpty ? unit.trim() : null,
     );
   }
+}
+
+final Random _shoppingRequestRandom = Random.secure();
+
+String newShoppingRequestId() {
+  final randomPart = List.generate(
+    16,
+    (_) =>
+        _shoppingRequestRandom.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+  return 'shopping-${DateTime.now().microsecondsSinceEpoch}-$randomPart';
 }
 
 ShoppingViewClient shoppingViewClientForTransport({

@@ -20,7 +20,6 @@ from app.agent.read_agent import ReadAgent, get_read_agent
 from app.api.bootstrap_issuer import router as bootstrap_issuer_router
 from app.api.identity import IdentityErrorRoute
 from app.api.identity import router as identity_router
-from app.core.config import settings
 from app.core.dependencies import (
     AuthorizedHousehold,
     get_approval_service,
@@ -102,6 +101,9 @@ async def shopping(
     status_code=status.HTTP_201_CREATED,
     tags=["shopping"],
     responses={
+        400: {"description": "X-Household-Id is required"},
+        401: {"description": "An authenticated install is required"},
+        403: {"description": "The install is not a member of this household"},
         200: {"description": "This request_id and payload were already applied"},
         409: {"description": "request_id was previously used with different values"},
         503: {"description": "Shopping writes require Cosmos; nothing was saved"},
@@ -110,15 +112,16 @@ async def shopping(
 async def add_shopping_intent(
     request: AddShoppingIntentRequest,
     response: Response,
+    context: Annotated[AuthorizedHousehold, Depends(get_authorized_household)],
     service: Annotated[ShoppingIntentService | None, Depends(get_shopping_intent_service)],
 ) -> ShoppingItem:
-    """Add one pending Shopping item using the App's explicit Add as confirmation."""
+    """Add one pending item to the explicitly selected authorized household."""
     if service is None:
         raise HTTPException(503, "Shopping writes need Cosmos; no changes were saved.")
     try:
         result = await service.add(
             AddShoppingIntent(
-                household_id=settings.demo_household_id,
+                household_id=context.household_id,
                 request_id=request.request_id,
                 name=request.name,
                 quantity=request.quantity,

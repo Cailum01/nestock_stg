@@ -13,6 +13,10 @@ class _ShoppingFixture implements ShoppingViewClient {
   Future<List<ShoppingViewItem>> load() async => [
     ShoppingViewItem(name: name, status: 'pending'),
   ];
+
+  @override
+  Future<ShoppingViewItem> add(AddShoppingItemRequest request) =>
+      throw const ShoppingAddException(ShoppingAddFailure.unavailable);
 }
 
 class _CommerceFixture implements CommerceOptionsClient {

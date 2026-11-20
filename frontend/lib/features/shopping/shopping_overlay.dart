@@ -11,22 +11,37 @@ class ShoppingOverlay extends StatefulWidget {
     required this.onClose,
     this.commerceClient = const UnavailableCommerceOptionsClient(),
     this.onOpenProductUrl,
+    this.createRequestId = newShoppingRequestId,
   });
   final ShoppingViewClient client;
   final VoidCallback onClose;
   final CommerceOptionsClient commerceClient;
   final Future<bool> Function(Uri url)? onOpenProductUrl;
+  final String Function() createRequestId;
   @override
   State<ShoppingOverlay> createState() => _ShoppingOverlayState();
 }
 
 class _ShoppingOverlayState extends State<ShoppingOverlay> {
-  late final Future<List<ShoppingViewItem>> items = widget.client.load();
+  late Future<List<ShoppingViewItem>> _items;
   final _nameController = TextEditingController();
-  final _localItems = <ShoppingViewItem>[];
+  AddShoppingItemRequest? _pendingAdd;
   bool _adding = false;
+  bool _submitting = false;
   String? _addError;
   final _commerceRequests = <String>{};
+
+  @override
+  void initState() {
+    super.initState();
+    _items = widget.client.load();
+  }
+
+  @override
+  void didUpdateWidget(covariant ShoppingOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.client != widget.client) _items = widget.client.load();
+  }
 
   void _openAdd() => setState(() {
     _adding = true;
@@ -35,22 +50,65 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
 
   void _cancelAdd() => setState(() {
     _adding = false;
+    _pendingAdd = null;
     _addError = null;
     _nameController.clear();
   });
 
-  void _addLocalItem() {
+  Future<void> _addItem() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
       setState(() => _addError = '請輸入商品名稱。');
       return;
     }
+    final pending = _pendingAdd;
+    final request = pending != null && pending.name == name
+        ? pending
+        : AddShoppingItemRequest(
+            requestId: widget.createRequestId(),
+            name: name,
+          );
     setState(() {
-      _localItems.add(ShoppingViewItem(name: name, status: 'pending'));
-      _adding = false;
+      _pendingAdd = request;
+      _submitting = true;
       _addError = null;
-      _nameController.clear();
     });
+    try {
+      await widget.client.add(request);
+      if (!mounted) return;
+      final refreshedItems = widget.client.load();
+      setState(() {
+        _items = refreshedItems;
+        _adding = false;
+        _submitting = false;
+        _pendingAdd = null;
+        _addError = null;
+        _nameController.clear();
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _addError = _messageForAddFailure(error);
+      });
+    }
+  }
+
+  String _messageForAddFailure(Object error) {
+    if (error is ShoppingAddException) {
+      return switch (error.failure) {
+        ShoppingAddFailure.validation => '商品資料無效，請確認後重試。',
+        ShoppingAddFailure.unauthenticated => '登入狀態已失效，請重新登入後再試。',
+        ShoppingAddFailure.forbidden => '目前無權限存取此家庭，請切換家庭後重試。',
+        ShoppingAddFailure.requestConflict => '這次新增資料發生衝突，請取消後重新新增。',
+        ShoppingAddFailure.unavailable => '目前無法儲存購物項目，請稍後再試。',
+        ShoppingAddFailure.timeout => '連線逾時，請重試。',
+        ShoppingAddFailure.network => '連線失敗，請重試。',
+        ShoppingAddFailure.malformedResponse ||
+        ShoppingAddFailure.unexpectedResponse => '伺服器回應異常，請稍後再試。',
+      };
+    }
+    return '目前無法儲存購物項目，請稍後再試。';
   }
 
   Future<void> _showRecommendations(ShoppingViewItem item) async {
@@ -123,11 +181,11 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
           ),
           Flexible(
             child: FutureBuilder<List<ShoppingViewItem>>(
-              future: items,
+              future: _items,
               builder: (context, snapshot) {
                 if (snapshot.hasError) return const Text('無法載入購物清單。');
                 if (!snapshot.hasData) return const CircularProgressIndicator();
-                final data = [...snapshot.data!, ..._localItems];
+                final data = snapshot.data!;
                 return Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -173,6 +231,7 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
                       TextField(
                         key: const Key('shopping-add-name'),
                         controller: _nameController,
+                        enabled: !_submitting,
                         textInputAction: TextInputAction.done,
                         decoration: const InputDecoration(labelText: '商品名稱'),
                       ),
@@ -192,12 +251,12 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
                           spacing: 8,
                           children: [
                             TextButton(
-                              onPressed: _cancelAdd,
+                              onPressed: _submitting ? null : _cancelAdd,
                               child: const Text('取消'),
                             ),
                             FilledButton(
-                              onPressed: _addLocalItem,
-                              child: const Text('加入'),
+                              onPressed: _submitting ? null : _addItem,
+                              child: Text(_submitting ? '加入中…' : '加入'),
                             ),
                           ],
                         ),

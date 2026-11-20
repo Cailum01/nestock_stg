@@ -10,6 +10,9 @@ class Fixture implements ShoppingViewClient {
   Fixture(this.count, {this.namePrefix = '物品'});
   final int count;
   final String namePrefix;
+  final addedItems = <ShoppingViewItem>[];
+  final addRequests = <AddShoppingItemRequest>[];
+  bool failNextAdd = false;
 
   @override
   Future<List<ShoppingViewItem>> load() async => List.generate(
@@ -20,7 +23,19 @@ class Fixture implements ShoppingViewClient {
       unit: '包',
       status: 'pending',
     ),
-  );
+  )..addAll(addedItems);
+
+  @override
+  Future<ShoppingViewItem> add(AddShoppingItemRequest request) async {
+    addRequests.add(request);
+    if (failNextAdd) {
+      failNextAdd = false;
+      throw const ShoppingAddException(ShoppingAddFailure.timeout);
+    }
+    final item = ShoppingViewItem(name: request.name, status: 'pending');
+    addedItems.add(item);
+    return item;
+  }
 }
 
 class NameOnlyFixture implements ShoppingViewClient {
@@ -30,6 +45,10 @@ class NameOnlyFixture implements ShoppingViewClient {
   Future<List<ShoppingViewItem>> load() async => const [
     ShoppingViewItem(name: '豆漿', status: 'pending'),
   ];
+
+  @override
+  Future<ShoppingViewItem> add(AddShoppingItemRequest request) =>
+      throw const ShoppingAddException(ShoppingAddFailure.unavailable);
 }
 
 Widget panel({
@@ -122,8 +141,19 @@ void main() {
     expect(find.byKey(const Key('shopping-add-entry')), findsOneWidget);
   });
 
-  testWidgets('valid item name adds a local intent-only row', (tester) async {
-    await tester.pumpWidget(panel());
+  testWidgets('valid item name is persisted through the Shopping client', (
+    tester,
+  ) async {
+    final client = Fixture(0);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ShoppingOverlay(
+          client: client,
+          onClose: () {},
+          createRequestId: () => 'stable-request',
+        ),
+      ),
+    );
     await tester.pumpAndSettle();
     await openAdd(tester);
     await tester.enterText(
@@ -137,6 +167,44 @@ void main() {
     expect(find.text('1'), findsNothing);
     expect(find.text('瓶'), findsNothing);
     expect(find.byKey(const Key('shopping-add-name')), findsNothing);
+    expect(client.addRequests, hasLength(1));
+    expect(client.addRequests.single.requestId, 'stable-request');
+  });
+
+  testWidgets('retry reuses the same request id after a timeout', (
+    tester,
+  ) async {
+    final client = Fixture(0)..failNextAdd = true;
+    var requestIdsCreated = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ShoppingOverlay(
+          client: client,
+          onClose: () {},
+          createRequestId: () {
+            requestIdsCreated += 1;
+            return 'retryable-request';
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await openAdd(tester);
+    await tester.enterText(find.byKey(const Key('shopping-add-name')), '豆漿');
+
+    await tester.tap(find.text('加入'));
+    await tester.pumpAndSettle();
+    expect(find.text('連線逾時，請重試。'), findsOneWidget);
+
+    await tester.tap(find.text('加入'));
+    await tester.pumpAndSettle();
+
+    expect(client.addRequests, hasLength(2));
+    expect(client.addRequests.map((request) => request.requestId).toSet(), {
+      'retryable-request',
+    });
+    expect(requestIdsCreated, 1);
+    expect(find.text('豆漿'), findsOneWidget);
   });
 
   testWidgets('blank item name is rejected', (tester) async {
@@ -190,14 +258,15 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('local Shopping items reset when the overlay is reopened', (
+  testWidgets('persisted Shopping items reload when the overlay is reopened', (
     tester,
   ) async {
+    final client = Fixture(0);
     await tester.pumpWidget(
       NestockApp(
         agentClient: MockAgentClient(),
         catalog: const DemoCatalog(),
-        shoppingClient: Fixture(0),
+        shoppingClient: client,
       ),
     );
     await tester.tap(find.byKey(const Key('cart')));
@@ -213,8 +282,8 @@ void main() {
     await tester.tap(find.byKey(const Key('cart')));
     await tester.pumpAndSettle();
 
-    expect(find.text('豆漿'), findsNothing);
-    expect(find.text('購物清單目前是空的。'), findsOneWidget);
+    expect(find.text('豆漿'), findsOneWidget);
+    expect(find.text('購物清單目前是空的。'), findsNothing);
   });
 
   testWidgets('close action remains functional', (tester) async {

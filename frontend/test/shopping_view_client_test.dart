@@ -51,6 +51,101 @@ void main() {
   });
 
   test(
+    'HTTP Shopping add sends stable identity and authorized scope',
+    () async {
+      final request = const AddShoppingItemRequest(
+        requestId: 'shopping-request-1',
+        name: '  麵粉  ',
+        quantity: 2,
+        unit: ' 袋 ',
+      );
+      final client = HttpShoppingViewClient(
+        baseUrl: base,
+        householdContext: testHouseholdContext,
+        client: MockClient((httpRequest) async {
+          expect(httpRequest.method, 'POST');
+          expect(httpRequest.url.path, '/shopping');
+          expect(
+            httpRequest.headers['authorization'],
+            'Bearer test-install-token',
+          );
+          expect(httpRequest.headers['x-household-id'], 'test-household');
+          expect(jsonDecode(httpRequest.body), {
+            'request_id': 'shopping-request-1',
+            'name': '麵粉',
+            'quantity': 2,
+            'unit': '袋',
+          });
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'shopping_item_id': 'shopping-item-1',
+                'household_id': 'test-household',
+                'name': '麵粉',
+                'quantity': 2,
+                'unit': '袋',
+                'status': 'pending',
+                'created_at': '2026-11-20T00:00:00Z',
+                'updated_at': '2026-11-20T00:00:00Z',
+              }),
+            ),
+            201,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }),
+      );
+
+      final added = await client.add(request);
+
+      expect(added.name, '麵粉');
+      expect(added.quantity, 2);
+      expect(added.unit, '袋');
+      expect(added.status, 'pending');
+    },
+  );
+
+  test(
+    'HTTP Shopping add maps forbidden and idempotency conflict responses',
+    () async {
+      final forbiddenClient = HttpShoppingViewClient(
+        baseUrl: base,
+        householdContext: testHouseholdContext,
+        client: MockClient((_) async => http.Response('forbidden', 403)),
+      );
+      await expectLater(
+        forbiddenClient.add(
+          const AddShoppingItemRequest(requestId: 'request-1', name: '牛奶'),
+        ),
+        throwsA(
+          isA<ShoppingAddException>().having(
+            (error) => error.failure,
+            'failure',
+            ShoppingAddFailure.forbidden,
+          ),
+        ),
+      );
+
+      final conflictClient = HttpShoppingViewClient(
+        baseUrl: base,
+        householdContext: testHouseholdContext,
+        client: MockClient((_) async => http.Response('conflict', 409)),
+      );
+      await expectLater(
+        conflictClient.add(
+          const AddShoppingItemRequest(requestId: 'request-1', name: '牛奶'),
+        ),
+        throwsA(
+          isA<ShoppingAddException>().having(
+            (error) => error.failure,
+            'failure',
+            ShoppingAddFailure.requestConflict,
+          ),
+        ),
+      );
+    },
+  );
+
+  test(
     'HTTP Shopping client preserves missing intent quantity and unit',
     () async {
       final client = HttpShoppingViewClient(

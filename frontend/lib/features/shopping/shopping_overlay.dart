@@ -61,8 +61,11 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
 
   Future<void> _addItem() async {
     if (_saving) return;
-    final addClient = widget.client;
-    if (addClient is! ShoppingManualAddClient) {
+    final addClient = switch (widget.client) {
+      ShoppingManualAddClient client => client,
+      _ => null,
+    };
+    if (addClient == null) {
       setState(() => _addError = '目前無法儲存購物項目，請稍後再試。');
       return;
     }

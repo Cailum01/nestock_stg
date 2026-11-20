@@ -22,7 +22,7 @@
 | `deploy/check_ai_endpoints.py` | 目前的 OpenAI、Vision、Speech endpoint 真實可達，且 `NESTOCK_SPEECH_MOCK` 未設定 | 否（3 次極小的 API 呼叫） |
 | `python -m app.services.demo_seed --manifest <manifest>`（B1，PR #131） | **不加 `--apply`**：唯讀。分區與 baseline 完全相同回 `action=already_loaded`；不同或非空則拒絕並報錯 | 否 |
 | `python -m app.services.demo_seed --manifest <manifest> --apply --reset --confirm-household demo-household`（B1） | 重設：同一個 household 的**單一 transactional batch** 刪除現有文件並建立 baseline，再讀回驗證 | **是（破壞性）** |
-| `deploy/smoke_test.py --base-url <BASE_URL>` | 打雲端 API 六步驗證，首個失敗即停 | 否（`/agent/messages` 不寫 domain data） |
+| `deploy/smoke_test.py --base-url <BASE_URL>` | 打雲端 API 分層驗證（L0 版本、L1 服務（含 `/agent/open-card`）、L2 不變量、L3 拍照卡片），每項各自回報；加 `--write --yes` 才跑會寫入的 L4 | 預設否（L3 暫存一張待確認卡，留著不取消）；L4 會寫入 `demo-household` |
 
 重設與讀回**一律使用 B1 的 loader**，B2 不另寫刪除或寫入實作。loader 隨 PR #131 合併後才可用；
 合併前本節的 loader 指令無法執行，Demo 當天不得改用其他方式寫入 `demo-household`。
@@ -82,7 +82,7 @@ cd ..
 python3 deploy/smoke_test.py --base-url <BASE_URL>
 ```
 
-預期：`ALL 6 STEPS PASSED`。
+預期：`N passed, 0 failed`（SKIP 不算通過，要看原因）。可用 `--only L1,L3` / `--skip L2` 選層；`--write --yes` 才會跑 L4（真的 +N，不還原）。
 
 - [ ] 勾選 checklist §6「Cloud / Backend」與「Demo data」各項，並把輸出貼進 §7 證據表
   （revision、日期、loader 輸出行、smoke 結果）。
@@ -120,11 +120,13 @@ uv run python -m app.services.demo_seed --manifest $M --apply --reset --confirm-
 | loader 報 `requires N Cosmos transactional batch operations ... limit` | 現有文件 + baseline 超過 100 個操作 | 沒有任何寫入發生；通知 B1，**不要**改用分批刪除 |
 | loader 的 batch 失敗（逾時 / 衝突） | 單一 batch 是原子的，**舊的完整狀態被保留** | 先唯讀確認狀態，再重跑同一指令；連續失敗通知 B1 |
 | loader 報 `without the expected read-back state` | 寫入後讀回與 baseline 不同 | 通知 B1，不開始 Demo |
-| smoke 第 1 步 `cannot reach` | backend 沒起來 / 網址錯 | 查託管服務狀態與 `<BASE_URL>` |
-| smoke 第 2、3 步不符 baseline | 沒重設，或排練留下變更 | 重設後再跑 |
-| smoke 第 4 步 `insufficient_data` 或 days 不符 | 預測時間語意未啟用（G5）或歷史未載入 | 先 `--check` 確認歷史在，再通知 B2 / B1 確認 `created_at` 語意設定 |
-| smoke 第 5 步 `MOCK transcript` | 雲端環境有 `NESTOCK_SPEECH_MOCK` 或沒設 Speech | 修正雲端環境變數 |
-| smoke 第 6 步答案缺 `8` / `浴室櫃子` | Agent 沒用到 Cosmos 資料，或模型回答不穩 | 通知 A1；確認 `/inventory` 那步通過 |
+| smoke L1 `/health` `cannot reach` | backend 沒起來 / 網址錯 | 查託管服務狀態與 `<BASE_URL>` |
+| smoke L2 不變量失敗（`category`、`price`、數量為負、重複 ID） | 資料或程式違反專案規則，不是排練殘留 | 通知 B1；排練殘留不會讓 L2 失敗 |
+| smoke L2 `/forecast` 失敗（`confirmed_quantity` 與庫存不同、狀態不明） | 預測時間語意未啟用（G5）或歷史未載入 | 先 `--check` 確認歷史在，再通知 B2 / B1 確認 `created_at` 語意設定 |
+| smoke L1 speech `MOCK transcript` | 雲端環境有 `NESTOCK_SPEECH_MOCK` 或沒設 Speech | 修正雲端環境變數 |
+| smoke L1 agent 回空答案，或 L3 / L4 `no approval card` | Agent 失敗；訊息若寫 `is open (stored; the response hid it)`，代表回應沒有卡但雲端存了一張 | 通知 A1；那張卡不會被取消，下一次拍照會回同一張，L4 會確認它 |
+| smoke L0 `behind N commits` | 雲端不是最新 main | 從乾淨的 main 跑 `deploy/deploy-aca.sh` |
+| smoke L4 `needs a photo of ONE item` | 家庭有一張別的未決卡（30 分鐘有效），拍照回的是那張舊卡 | 等它過期，或在 App 確認／取消；測試沒有確認它 |
 
 ## 4. 重設的範圍與限制
 
@@ -144,7 +146,7 @@ uv run python -m app.services.demo_seed --manifest $M --apply --reset --confirm-
 
 1. `check_ai_endpoints.py` 四行 PASS。
 2. B1 loader 唯讀執行回 `action=already_loaded`。
-3. `smoke_test.py` 為 `ALL 6 STEPS PASSED`。
+3. `smoke_test.py` 沒有 FAIL（SKIP 要看原因）。
 4. 手機實測拍照與語音成功，且指向 `<BASE_URL>`。
 
 **No-Go**：任何一項不成立。處理順序：看 §3 → 修 → 從失敗的那一步重跑 → 仍失敗則向對應 owner
@@ -227,12 +229,12 @@ az acr token delete -n nestock-api-pull -r <ACR> --yes
    沒有 registry 就建立（admin 保持關閉）、能指派 AcrPull 就用 identity，被拒就改用 pull-only token。
 4. **請 B1 替新的 identity 指派 Cosmos 資料角色**（`deploy/b1-cosmos-api-integration.md` §3；
    B1 自己部署備用實例時，自己指派即可）。沒有這一步，`/inventory` 會讀不到資料。
-5. 驗證：`python3 deploy/smoke_test.py --base-url <新實例的網址>` 六步全過才算可用。
+5. 驗證：`python3 deploy/smoke_test.py --base-url <新實例的網址>` 沒有 FAIL 才算可用。
 
 ### 備用實例（B1）的維持條件
 
 - [ ] 實例存在、單一副本（最小 = 最大 = 1），`/health` 回 200。
-- [ ] 讀的是同一個 Demo Cosmos 與 `demo-household`，smoke test 六步全過。
+- [ ] 讀的是同一個 Demo Cosmos 與 `demo-household`，smoke test 沒有 FAIL。
 - [ ] 使用 token 拉取映像的話，確認密碼到期日晚於 Demo 日（見 §6）。
 - [ ] 每次主要實例更新程式後，備用實例也更新並重跑 smoke test，兩邊版本要一致。
 - [ ] Demo 前把兩個實例的 smoke test 結果（revision、日期）填進證據表。

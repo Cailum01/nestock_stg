@@ -177,9 +177,16 @@ def test_a_card_that_cannot_be_stored_is_not_shown():
 
 
 def test_one_card_per_message():
+    # Two looks in one step: after a photo card the model only speaks (PR #216), so a
+    # second look can only come in the same step as the first.
     model = ScriptedModel(
-        _call("analyze_photo", "call-1"),
-        _call("analyze_photo", "call-2"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "analyze_photo", "args": {}, "id": "call-1"},
+                {"name": "analyze_photo", "args": {}, "id": "call-2"},
+            ],
+        ),
         AIMessage(content="請確認。"),
     )
     agent, container = _agent(model, _Inventory(), _detected("滑鼠", unit="個"))
@@ -188,6 +195,7 @@ def test_one_card_per_message():
 
     assert response.pending_approval is not None
     assert len(container.of_type("pending_approval")) == 1
+    assert response.message == "請確認。"
 
 
 # ----- with purchase cards too: open cards (contract section 8, PR #160) -----------

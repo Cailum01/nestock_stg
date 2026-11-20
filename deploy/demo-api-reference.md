@@ -54,7 +54,7 @@ Agent 請求／回應欄位（`AgentRequest`、`AgentResponse`、`PendingApprova
 | # | 缺口 | 現況 | 負責 |
 | --- | --- | --- | --- |
 | G1 | `/agent/resume` 與確認卡 | **已接上**（有 Cosmos 才可用；雲端對未知卡回 404）。真實的確認、取消、重試冪等，雲端尚未實測 | A1（情境 F/G/H 需 A1 / C1 實測） |
-| G2 | `/health` 不檢查下游 | 仍只回 `{"status":"ok"}`；以 `deploy/smoke_test.py` 的六步取代，**未加 `/health/deep`**（不動共用檔） | B2（已用替代方案） |
+| G2 | `/health` 不檢查下游 | 仍只回 `{"status":"ok"}`；以 `deploy/smoke_test.py` 的分層檢查取代，**未加 `/health/deep`**（不動共用檔） | B2（已用替代方案） |
 | G3 | 沒有獨立的 Vision 路由 | 路由表只有 media 上傳與 speech；照片辨識走哪條路徑需 A2 / A1 確認。雲端 Vision 無獨立證據 | A2 + A1 |
 | G4 | 暫存上傳狀態在記憶體 | 確認卡已改存 Cosmos；**暫存上傳仍可能在記憶體**（雲端未設 Blob Storage，見 Issue #98） | A2 |
 | G5 | 預測時間語意 | **已解決**：雲端預測為 `estimated` / `insufficient_data`，洗衣精剩約 3 天、衛生紙約 40 天 | B2（完成） |
@@ -74,4 +74,4 @@ Agent 請求／回應欄位（`AgentRequest`、`AgentResponse`、`PendingApprova
 
 先前提案的 `/health/deep` 需要改 `routes.py` 與 `dependencies.py`（共用 / B1），B2 沒有加入。
 採用的替代方案是 `deploy/smoke_test.py`：只打既有端點（`/health`、`/inventory`、`/shopping`、
-`/forecast`、`/api/speech/transcribe`、`/agent/messages`），不改任何共用檔，六步全過才算通過。
+`/forecast`、`/api/speech/transcribe`、`/agent/messages`、`/agent/open-card`），不改任何共用檔，無 FAIL 才算通過（SKIP 不算通過）。

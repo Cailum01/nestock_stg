@@ -92,6 +92,15 @@ from app.tools.queries import QueryTools
 
 PROMPT_PATH = Path(__file__).resolve().parents[3] / "prompts" / "agent_system.md"
 MAX_STEPS = 8  # graph steps per message; stops endless tool loops
+TOO_MANY_STEPS = "這個問題我查了太多次還是答不出來，請換個方式問問看。"
+"""Reply when a message stops at `MAX_STEPS` with no card in it."""
+CARD_MADE_STOPPED = "確認卡做好了，請看卡上的內容再按確認或取消。"
+"""Reply when a message stops at `MAX_STEPS` after making a card (PR #216, Issue #213).
+
+The card was stored before the stop, so it still goes to the App with this fixed text,
+instead of `TOO_MANY_STEPS` with no card (a card the user cannot see, which still blocks
+new cards until it expires).
+"""
 MAX_PURCHASE_OPTIONS = 5
 DATED_PURCHASES_VAR = "NESTOCK_DATED_PURCHASES"  # "1": purchase day on (section 11)
 PRICE_NOT_SUPPORTED = json.dumps({"error": "price_search_not_available"})
@@ -289,6 +298,9 @@ class _State(TypedDict, total=False):
     """An open card is shown again with this reply (section 8); no new card is made."""
     open_cards_unknown: bool
     """The open cards could not be listed (section 8); no new card is made."""
+    photo_card_made: bool
+    """`analyze_photo` made a card in this message: the model speaks once more, with no
+    tools, and the message ends (PR #216, Issue #213)."""
 
 
 def load_system_prompt() -> str:
@@ -572,6 +584,8 @@ class ReadAgent:
     ) -> None:
         card_tools = [cards.tool_schema for cards in (purchases, stock) if cards is not None]
         self._model = model.bind_tools([*TOOL_SCHEMAS, *card_tools])
+        # After a photo card the model only speaks (PR #216): the same model, no tools.
+        self._speaker = model
         self._handlers: dict[str, Callable[[str], Awaitable[list[Any]]]] = {
             "list_inventory": tools.list_inventory,
             "list_shopping": tools.list_shopping,
@@ -625,6 +639,7 @@ class ReadAgent:
                         update["vision"] = vision
                     if card is not None:
                         update["pending_approval"] = card
+                        update["photo_card_made"] = True
                 elif call["name"] == "search_purchase_options":
                     content, found = await self._search_prices(call.get("args") or {})
                     if found is not None:
@@ -656,15 +671,27 @@ class ReadAgent:
                 update["messages"].append(ToolMessage(content, tool_call_id=call["id"]))
             return update
 
+        async def speak(state: _State) -> _State:
+            # PR #216, Issue #213: the photo card is made; the model tells the user about
+            # it (photo kept or not, items only reported, what was asked) but cannot call
+            # tools again, so it cannot run into MAX_STEPS and lose the card.
+            reply = await self._speaker.ainvoke(state["messages"])
+            return {"messages": [reply]}
+
         def next_step(state: _State) -> str:
             return "look" if state["messages"][-1].tool_calls else END
+
+        def after_look(state: _State) -> str:
+            return "speak" if state.get("photo_card_made") else "think"
 
         builder = StateGraph(_State)
         builder.add_node("think", think)
         builder.add_node("look", look)
+        builder.add_node("speak", speak)
         builder.add_edge(START, "think")
         builder.add_conditional_edges("think", next_step, ["look", END])
-        builder.add_edge("look", "think")
+        builder.add_conditional_edges("look", after_look, ["think", "speak"])
+        builder.add_edge("speak", END)
         return builder.compile()
 
     async def _inventory_answer(
@@ -1029,10 +1056,19 @@ class ReadAgent:
                 messages.append(SystemMessage(OPEN_CARD.format(card=_card_view(shown), more=more)))
         messages.append(HumanMessage(request.message))
         start["messages"] = messages
+        final: _State = start
+        stopped = False
         try:
-            final = await self._graph.ainvoke(start, {"recursion_limit": MAX_STEPS})
+            # The state after every step is kept, so a stop at MAX_STEPS still knows
+            # whether this message stored a card (PR #216, Issue #213).
+            async for final in self._graph.astream(
+                start, {"recursion_limit": MAX_STEPS}, stream_mode="values"
+            ):
+                pass
         except GraphRecursionError:
-            return AgentResponse(message="這個問題我查了太多次還是答不出來，請換個方式問問看。")
+            stopped = True
+        if stopped and final.get("pending_approval") is None:
+            return AgentResponse(message=TOO_MANY_STEPS)
         if replacing is not None and final.get("pending_approval") is not None:
             # Section 7: the old card is cancelled only after the new one is stored. Unless
             # it ends up cancelled as replaced, the new card is withdrawn and not shown, and
@@ -1082,8 +1118,14 @@ class ReadAgent:
         in_reply = final.get("pending_approval")
         if open_count and in_reply is not None and in_reply == start.get("pending_approval"):
             results.append(_open_card_reminder(open_count))
+        if not stopped:
+            message = _plain(_text(final["messages"][-1]))
+        elif in_reply == start.get("pending_approval"):
+            message = OPEN_CARD_REMINDER  # the open card shown again; no new card made
+        else:
+            message = CARD_MADE_STOPPED
         return AgentResponse(
-            message=_plain(_text(final["messages"][-1])),
+            message=message,
             results=results,
             pending_approval=final.get("pending_approval"),
         )

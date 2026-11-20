@@ -1,9 +1,8 @@
-"""B2 Demo-day smoke test (checklist §6). Baseline reset is B1's loader (PR #131)."""
+"""B2 smoke test and Demo-day scripts (stubbed `az`, fake backend; no cloud access)."""
 
 import importlib.util
 import json
 import threading
-from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -22,133 +21,124 @@ def load_script(name: str):
 smoke = load_script("smoke_test")
 
 STAMP = "2026-11-12T04:00:00Z"
+HOUSE = "demo-household"
+MOUSE = "item-mouse"
 
 
-def inventory_row(item_id, name, quantity, unit, location):
+def inventory_row(item_id, name, quantity, unit="個"):
     return {
         "item_id": item_id,
-        "household_id": "demo-household",
+        "household_id": HOUSE,
         "name": name,
         "quantity": quantity,
         "unit": unit,
         "created_at": STAMP,
         "updated_at": STAMP,
-        "location": location,
     }
 
 
-def shopping_row(slug, name, quantity, unit, item_id):
+def shopping_row(key, name, status="pending"):
     return {
-        "shopping_item_id": f"seed-shopping-{slug}",
-        "household_id": "demo-household",
+        "shopping_item_id": key,
+        "household_id": HOUSE,
         "name": name,
-        "quantity": quantity,
-        "unit": unit,
-        "status": "pending",
+        "quantity": 1,
+        "unit": "個",
+        "status": status,
         "created_at": STAMP,
         "updated_at": STAMP,
-        "item_id": item_id,
     }
-
-
-MANIFEST = {
-    "household_id": "demo-household",
-    "inventory": [
-        inventory_row("seed-detergent", "洗衣精", 1, "瓶", "陽台洗衣機旁"),
-        inventory_row("seed-tissue", "衛生紙", 8, "包", "浴室櫃子"),
-        inventory_row("seed-flour", "麵粉", 0, "包", "廚房食品櫃"),
-    ],
-    "shopping": [
-        shopping_row("detergent", "洗衣精", 2, "瓶", "seed-detergent"),
-        shopping_row("flour", "麵粉", 1, "包", "seed-flour"),
-        shopping_row("toothpaste", "牙膏", 1, "條", None),
-    ],
-    "transactions": [
-        {
-            "transaction_id": "seed-tx-detergent-2026-10-01",
-            "household_id": "demo-household",
-            "item_id": "seed-detergent",
-            "operation_id": "seed-op-detergent-2026-10-01",
-            "quantity_delta": 2,
-            "reason": "purchase",
-            "created_at": "2026-10-01T04:00:00Z",
-        }
-    ],
-}
 
 
 # -- smoke test against a fake backend ---------------------------------------------------
 
 
 class Backend:
-    """Serves the baseline; tests mutate `state` to break one thing at a time."""
+    """A stateful fake of the deployed API. Tests flip one switch in `state` at a time."""
 
     def __init__(self):
         self.state = {
-            "inventory": deepcopy(MANIFEST["inventory"]),
-            "shopping": deepcopy(MANIFEST["shopping"]),
-            "forecast": [
-                {
-                    "item_id": "seed-detergent",
-                    "status": "estimated",
-                    "suggested_action": "consider_restock",
-                    "days_until_empty": 3.0,
-                    "confirmed_quantity": 1,
-                },
-                {
-                    "item_id": "seed-tissue",
-                    "status": "estimated",
-                    "suggested_action": "none",
-                    "days_until_empty": 40.0,
-                    "confirmed_quantity": 8,
-                },
-                {
-                    "item_id": "seed-flour",
-                    "status": "estimated",
-                    "suggested_action": "consider_restock",
-                    "days_until_empty": 0.0,
-                    "confirmed_quantity": 0,
-                },
+            "inventory": [
+                inventory_row(MOUSE, "滑鼠", 4),
+                inventory_row("item-tissue", "衛生紙", 8),
             ],
+            "shopping": [shopping_row("s1", "牙膏")],
             "transcript": "洗衣精還有幾瓶",
-            "agent": {
-                "message": "衛生紙還有 8 包，放在浴室櫃子。",
-                "results": [],
-                "pending_approval": None,
-            },
+            "agent_message": "衛生紙還有 8 包。",
+            "photo": "increase",  # increase | create | none | stray
+            "card": None,  # the open card
+            "completed": {},  # approval_id -> card
+            "before_override": None,  # make the card lie about the quantity
+            "write_on_photo": False,  # a bug: the photo itself changes the quantity
+            "duplicate_on_retry": False,  # a bug: confirming twice writes twice
+            "cancel_writes": False,  # a bug: cancelling still adds
         }
         self.requests = []
+        self.counter = 0
         backend = self
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
 
-            def reply(self, document):
+            def reply(self, document, status=200):
                 payload = json.dumps(document, ensure_ascii=False).encode("utf-8")
-                self.send_response(200)
+                self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
 
+            def body(self):
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                try:
+                    return json.loads(raw)
+                except ValueError:
+                    return {}
+
             def do_GET(self):
                 backend.requests.append(self.path)
+                s = backend.state
+                forecast = [
+                    {
+                        "item_id": r["item_id"],
+                        "status": "estimated",
+                        "suggested_action": "none",
+                        "confirmed_quantity": r["quantity"],
+                    }
+                    for r in s["inventory"]
+                ]
                 routes = {
                     "/health": {"status": "ok"},
-                    "/inventory": backend.state["inventory"],
-                    "/shopping": backend.state["shopping"],
-                    "/forecast": backend.state["forecast"],
+                    "/inventory": s["inventory"],
+                    "/shopping": s["shopping"],
+                    "/forecast": s.get("forecast", forecast),
                 }
+                if self.path.startswith("/agent/open-card"):
+                    if s.get("open_card_broken"):
+                        return self.reply({"message": ""})
+                    self.reply({"message": "", "results": [], "pending_approval": s["card"]})
+                    return
                 self.reply(routes[self.path])
+
+            def do_PUT(self):
+                backend.requests.append(self.path)
+                self.body()
+                self.reply({}, 201)
 
             def do_POST(self):
                 backend.requests.append(self.path)
-                self.rfile.read(int(self.headers["Content-Length"]))
+                document = self.body()
                 if self.path == "/api/speech/transcribe":
                     self.reply({"transcript": backend.state["transcript"]})
+                elif self.path == "/api/media/upload-authorization":
+                    self.reply(
+                        {"upload_url": backend.url + "/upload", "image_ref": "blob://x/1.jpg"}
+                    )
+                elif self.path == "/agent/resume":
+                    self.reply(backend.resume(document))
                 else:
-                    self.reply(backend.state["agent"])
+                    self.reply(backend.message(document))
 
         self.server = HTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -160,6 +150,87 @@ class Backend:
     def close(self):
         self.server.shutdown()
 
+    def quantity(self, item_id):
+        return next(r for r in self.state["inventory"] if r["item_id"] == item_id)
+
+    def make_card(self):
+        self.counter += 1
+        item = self.quantity(MOUSE)
+        if self.state["photo"] == "create":
+            ops = [
+                {
+                    "operation_id": f"op{self.counter}",
+                    "action": "create_item",
+                    "values": {"name": "新東西", "quantity": 1},
+                }
+            ]
+        else:
+            before = self.state["before_override"]
+            ops = [
+                {
+                    "operation_id": f"op{self.counter}",
+                    "action": "increase_stock",
+                    "values": {
+                        "item_id": MOUSE,
+                        "name": "滑鼠",
+                        "quantity_added": 1,
+                        "inventory_quantity_before": item["quantity"] if before is None else before,
+                    },
+                }
+            ]
+        return {"approval_id": f"ap{self.counter}", "operations": ops}
+
+    def message(self, document):
+        s = self.state
+        answer = {"message": s["agent_message"], "results": [], "pending_approval": None}
+        if "image_ref" in document:
+            if s["card"]:
+                answer["message"] = "先前的確認卡還沒確認"
+                answer["pending_approval"] = s["card"]
+                return answer
+            if s["photo"] == "none":
+                answer["message"] = "辨識不出來"
+                return answer
+            s["card"] = self.make_card()
+            if s["write_on_photo"]:
+                self.quantity(MOUSE)["quantity"] += 1
+            answer["results"] = [{"kind": "vision", "data": {}}]
+            if s["photo"] == "stray":
+                answer["message"] = "這個問題我查了太多次還是答不出來"
+            else:
+                answer["pending_approval"] = s["card"]
+        return answer
+
+    def resume(self, document):
+        s = self.state
+        reply = {
+            "message": "",
+            "results": [{"kind": "action_result", "data": {}}],
+            "pending_approval": None,
+        }
+        data = reply["results"][0]["data"]
+        approval_id = document["approval_id"]
+        if not document["approved"]:
+            if s["cancel_writes"]:
+                self.quantity(MOUSE)["quantity"] += 1
+            if s["card"] and s["card"]["approval_id"] == approval_id:
+                s["card"] = None
+            data["outcome"] = "cancelled"
+        elif approval_id in s["completed"]:
+            if s["duplicate_on_retry"]:
+                self.quantity(MOUSE)["quantity"] += 1
+            data["outcome"] = "already_completed"
+        elif s["card"] and s["card"]["approval_id"] == approval_id:
+            for op in s["card"]["operations"]:
+                if op["action"] == "increase_stock":
+                    self.quantity(MOUSE)["quantity"] += op["values"]["quantity_added"]
+            s["completed"][approval_id] = s["card"]
+            s["card"] = None
+            data["outcome"] = "completed"
+        else:
+            data["outcome"] = "not_found"
+        return reply
+
 
 @pytest.fixture
 def backend():
@@ -168,37 +239,75 @@ def backend():
     server.close()
 
 
-def run_smoke(backend, tmp_path):
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps(MANIFEST, ensure_ascii=False), encoding="utf-8")
+def make_ctx(tmp_path, **extra):
     audio = tmp_path / "clip.wav"
     audio.write_bytes(b"RIFF" + b"\0" * 200)
+    image = tmp_path / "photo.jpg"
+    image.write_bytes(b"\xff\xd8" + b"\0" * 100)
+    ctx = {
+        "audio": audio,
+        "image": image,
+        "write": False,
+        "deployed_tag": None,
+        "app": "nestock-api",
+        "az_image": lambda app: None,
+        "commits_behind": lambda commit: 0,
+    }
+    ctx.update(extra)
+    return ctx
+
+
+def run_smoke(backend, tmp_path, layers=None, skipped=None, **extra):
     lines = []
     code = smoke.run(
         smoke.Client(backend.url, 5),
-        {"manifest": smoke.load_manifest(manifest), "audio": audio},
+        make_ctx(tmp_path, **extra),
+        layers,
+        skipped,
         out=lines.append,
     )
     return code, "\n".join(lines)
 
 
-def test_smoke_passes_all_six_steps_on_the_baseline(backend, tmp_path):
-    code, output = run_smoke(backend, tmp_path)
+def test_smoke_passes_every_read_only_layer_on_a_healthy_backend(backend, tmp_path):
+    code, output = run_smoke(backend, tmp_path, deployed_tag="20261119114146-39358d7")
 
     assert code == 0, output
-    assert output.count("PASS  ") == 6
     assert "FAIL" not in output
+    assert "PASS  L0" in output and "PASS  L3" in output
+    assert "SKIP  L4" in output  # the writing check never runs by accident
+    assert backend.quantity(MOUSE)["quantity"] == 4
+    assert backend.state["card"] is not None  # L3 leaves its card to expire
 
 
-def test_smoke_stops_at_the_first_failure_and_runs_nothing_after_it(backend, tmp_path):
-    backend.state["inventory"][1]["quantity"] = 7
+def test_smoke_reports_every_check_and_does_not_stop_at_the_first_failure(backend, tmp_path):
+    backend.state["inventory"][0]["category"] = "3C"
 
     code, output = run_smoke(backend, tmp_path)
 
     assert code == 1
-    assert "FAIL  2 /inventory" in output and "seed-tissue.quantity" in output
-    assert "3 /shopping" not in output
-    assert backend.requests == ["/health", "/inventory"]
+    assert "FAIL  L2 /inventory" in output and "category" in output
+    assert "PASS  L2 /shopping" in output and "PASS  L3" in output
+
+
+def test_open_card_route_is_checked_and_reports_the_open_card(backend, tmp_path):
+    code, output = run_smoke(backend, tmp_path, layers={"L1"})
+    assert code == 0, output
+    assert "PASS  L1 /agent/open-card" in output and "no card is open" in output
+
+    backend.state["card"] = {"approval_id": "open-one", "operations": []}
+    code, output = run_smoke(backend, tmp_path, layers={"L1"})
+    assert code == 0 and "card open-one is open" in output
+    assert "/agent/resume" not in backend.requests
+
+
+def test_open_card_route_with_the_wrong_shape_fails(backend, tmp_path):
+    backend.state["open_card_broken"] = True
+
+    code, output = run_smoke(backend, tmp_path, layers={"L1"})
+
+    assert code == 1
+    assert "FAIL  L1 /agent/open-card" in output and "lacks" in output
 
 
 def test_smoke_rejects_the_mock_speech_transcript(backend, tmp_path):
@@ -207,113 +316,286 @@ def test_smoke_rejects_the_mock_speech_transcript(backend, tmp_path):
     code, output = run_smoke(backend, tmp_path)
 
     assert code == 1
-    assert "FAIL  5 speech" in output and "MOCK" in output
-    assert "6 agent" not in output
+    assert "FAIL  L1 speech" in output and "MOCK" in output
 
 
-def test_smoke_fails_when_forecast_says_insufficient_data(backend, tmp_path):
-    backend.state["forecast"][0]["status"] = "insufficient_data"
+def test_smoke_fails_when_the_agent_answers_with_nothing(backend, tmp_path):
+    backend.state["agent_message"] = "  "
 
-    code, output = run_smoke(backend, tmp_path)
-
-    assert code == 1
-    assert "FAIL  4 /forecast" in output and "insufficient_data" in output
-
-
-def test_smoke_fails_when_normal_stock_item_is_flagged_low(backend, tmp_path):
-    backend.state["forecast"][1]["suggested_action"] = "consider_restock"
-
-    code, output = run_smoke(backend, tmp_path)
+    code, output = run_smoke(backend, tmp_path, layers={"L1"})
 
     assert code == 1
-    assert "seed-tissue.suggested_action" in output
+    assert "FAIL  L1 agent" in output
 
 
-def test_smoke_fails_on_an_unexpected_pending_shopping_row(backend, tmp_path):
-    backend.state["shopping"].append(shopping_row("tissue", "衛生紙", 1, "包", "seed-tissue"))
+def test_smoke_only_and_skip_choose_the_layers(backend, tmp_path):
+    _, only = run_smoke(backend, tmp_path, layers={"L2"})
+    _, skipped = run_smoke(backend, tmp_path, layers={"L1", "L2"}, skipped={"L2"})
 
-    code, output = run_smoke(backend, tmp_path)
-
-    assert code == 1
-    assert "FAIL  3 /shopping" in output and "seed-shopping-tissue" in output
-
-
-def test_smoke_fails_on_an_extra_inventory_item(backend, tmp_path):
-    backend.state["inventory"].append(inventory_row("extra-item", "多餘", 1, "個", "客廳"))
-
-    code, output = run_smoke(backend, tmp_path)
-
-    assert code == 1
-    assert "FAIL  2 /inventory" in output and "extra-item" in output
+    assert "L2" in only and "L1" not in only
+    assert "L1" in skipped and "L2" not in skipped
 
 
-def test_smoke_fails_on_a_duplicate_inventory_item(backend, tmp_path):
-    backend.state["inventory"].append(dict(backend.state["inventory"][0]))
+@pytest.mark.parametrize(
+    "mutate, expected",
+    [
+        (
+            lambda s: (
+                s["inventory"].append(inventory_row("dup", "x", 1))
+                or s["inventory"].append(inventory_row("dup", "x", 1))
+            ),
+            "duplicate item_id dup",
+        ),
+        (
+            lambda s: s["inventory"].__setitem__(0, {**s["inventory"][0], "quantity": -1}),
+            "quantity",
+        ),
+        (
+            lambda s: s["inventory"].__setitem__(0, {**s["inventory"][0], "household_id": "other"}),
+            "not in demo-household",
+        ),
+        (
+            lambda s: s["inventory"].__setitem__(
+                0, {**s["inventory"][0], "image_ref": "data:image/jpeg;base64,AAAA"}
+            ),
+            "image_ref",
+        ),
+        (
+            lambda s: s["inventory"].__setitem__(0, {**s["inventory"][0], "image_ref": "A" * 3000}),
+            "image_ref",
+        ),
+    ],
+    ids=["duplicate", "negative", "other-household", "data-uri", "too-long"],
+)
+def test_inventory_invariants_catch_each_violation(backend, tmp_path, mutate, expected):
+    mutate(backend.state)
 
-    code, output = run_smoke(backend, tmp_path)
-
-    assert code == 1
-    assert "FAIL  2 /inventory" in output and "duplicate" in output
-
-
-def test_smoke_fails_on_an_inventory_item_from_another_household(backend, tmp_path):
-    other = inventory_row("other-house", "別戶", 1, "個", "別處")
-    other["household_id"] = "other-household"
-    backend.state["inventory"].append(other)
-
-    code, output = run_smoke(backend, tmp_path)
-
-    assert code == 1
-    assert "FAIL  2 /inventory" in output and "other-house" in output
-
-
-def test_smoke_fails_on_an_extra_completed_shopping_row(backend, tmp_path):
-    done = shopping_row("tissue", "衛生紙", 1, "包", "seed-tissue")
-    done["status"] = "completed"
-    backend.state["shopping"].append(done)
-
-    code, output = run_smoke(backend, tmp_path)
-
-    assert code == 1
-    assert "FAIL  3 /shopping" in output and "seed-shopping-tissue" in output
-
-
-def test_smoke_fails_when_a_baseline_shopping_row_is_already_completed(backend, tmp_path):
-    backend.state["shopping"][0]["status"] = "completed"
-
-    code, output = run_smoke(backend, tmp_path)
+    code, output = run_smoke(backend, tmp_path, layers={"L2"})
 
     assert code == 1
-    assert "FAIL  3 /shopping" in output and "expected 'pending'" in output
+    assert "FAIL  L2 /inventory" in output and expected in output
 
 
-def test_smoke_fails_when_an_unlinked_baseline_shopping_row_is_missing(backend, tmp_path):
-    backend.state["shopping"] = [
-        r for r in backend.state["shopping"] if r["shopping_item_id"] != "seed-shopping-toothpaste"
+def test_shopping_invariants_reject_a_stored_price_and_an_unknown_status(backend, tmp_path):
+    backend.state["shopping"][0]["price"] = 99
+    backend.state["shopping"].append(shopping_row("s2", "洗衣精", status="ordered"))
+
+    code, output = run_smoke(backend, tmp_path, layers={"L2"})
+
+    assert code == 1
+    assert "stores price" in output and "status is 'ordered'" in output
+
+
+def test_forecast_must_not_change_a_confirmed_quantity(backend, tmp_path):
+    backend.state["forecast"] = [
+        {
+            "item_id": MOUSE,
+            "status": "estimated",
+            "suggested_action": "none",
+            "confirmed_quantity": 2,
+        }
     ]
 
-    code, output = run_smoke(backend, tmp_path)
+    code, output = run_smoke(backend, tmp_path, layers={"L2"})
 
     assert code == 1
-    assert "FAIL  3 /shopping" in output and "seed-shopping-toothpaste" in output
+    assert "FAIL  L2 /forecast" in output and "confirmed_quantity" in output
 
 
-def test_smoke_fails_when_agent_answer_lacks_the_baseline_facts(backend, tmp_path):
-    backend.state["agent"]["message"] = "目前查不到相關資料。"
+# -- L0 version -----------------------------------------------------------------------------
 
-    code, output = run_smoke(backend, tmp_path)
+
+def test_image_tag_commit_reads_the_sha_and_the_dirty_marker():
+    assert smoke.image_tag_commit("20261119114146-39358d7") == ("39358d7", False)
+    assert smoke.image_tag_commit("20261119114146-39358d7-dirty") == ("39358d7", True)
+    assert smoke.image_tag_commit("20261119114146-nogit") == (None, False)
+    assert smoke.image_tag_commit("latest") == (None, False)
+
+
+def test_version_verdicts():
+    assert "is origin/main" in smoke.judge_version("20261119-39358d7", 0)
+    with pytest.raises(smoke.SmokeFailure, match="43 commits behind"):
+        smoke.judge_version("20261118-718ad2d", 43)
+    with pytest.raises(smoke.SmokeWarn, match="dirty"):
+        smoke.judge_version("20261119-39358d7-dirty", 0)
+    with pytest.raises(smoke.SmokeWarn, match="not found"):
+        smoke.judge_version("20261119-39358d7", None)
+    with pytest.raises(smoke.SmokeSkip, match="unknown"):
+        smoke.judge_version(None, None)
+
+
+def test_the_version_check_uses_the_az_image_when_no_tag_is_given(backend, tmp_path):
+    code, output = run_smoke(
+        backend,
+        tmp_path,
+        layers={"L0"},
+        az_image=lambda app: "reg.azurecr.io/nestock-api:20261118-718ad2d",
+        commits_behind=lambda commit: 43 if commit == "718ad2d" else 0,
+    )
 
     assert code == 1
-    assert "FAIL  6 agent" in output
+    assert "FAIL  L0" in output and "718ad2d is 43 commits behind" in output
 
 
-def test_smoke_fails_when_the_agent_answer_has_a_wrong_quantity(backend, tmp_path):
-    backend.state["agent"]["message"] = "衛生紙剩 3 包，放在浴室櫃子，共 18 項。"
+# -- L3 photo -> card -----------------------------------------------------------------------
 
-    code, output = run_smoke(backend, tmp_path)
+
+def test_photo_check_passes_and_leaves_the_card_open(backend, tmp_path):
+    code, output = run_smoke(backend, tmp_path, layers={"L3"})
+
+    assert code == 0, output
+    assert "PASS  L3" in output and "left to expire" in output
+    assert backend.state["card"] is not None
+    assert backend.quantity(MOUSE)["quantity"] == 4
+    assert "/agent/resume" not in backend.requests
+
+
+def test_photo_check_fails_when_the_card_lies_about_the_quantity(backend, tmp_path):
+    backend.state["before_override"] = 99
+
+    code, output = run_smoke(backend, tmp_path, layers={"L3"})
 
     assert code == 1
-    assert "FAIL  6 agent" in output
+    assert "FAIL  L3" in output and "says the quantity is 99" in output
+
+
+def test_photo_check_fails_when_the_photo_alone_changes_a_quantity(backend, tmp_path):
+    backend.state["write_on_photo"] = True
+
+    code, output = run_smoke(backend, tmp_path, layers={"L3"})
+
+    assert code == 1
+    assert "without a confirmation" in output
+
+
+def test_photo_check_fails_when_the_response_shows_no_card(backend, tmp_path):
+    """The 2026-11-19 cloud finding: the Agent said it gave up although a card was stored."""
+    backend.state["photo"] = "stray"
+
+    code, output = run_smoke(backend, tmp_path, layers={"L3"})
+
+    assert code == 1
+    assert "produced no approval card" in output
+    assert "is open (stored; the response hid it)" in output
+    assert "/agent/resume" not in backend.requests
+
+
+def test_photo_check_fails_when_a_photo_gives_no_card(backend, tmp_path):
+    backend.state["photo"] = "none"
+
+    code, output = run_smoke(backend, tmp_path, layers={"L3"})
+
+    assert code == 1
+    assert "produced no approval card" in output
+
+
+# -- L4 write ---------------------------------------------------------------------------------
+
+
+def test_write_check_is_skipped_without_the_write_flag(backend, tmp_path):
+    code, output = run_smoke(backend, tmp_path, layers={"L4"})
+
+    assert code == 0
+    assert "SKIP  L4" in output and "--write --yes" in output
+    assert backend.quantity(MOUSE)["quantity"] == 4
+    assert "/agent/resume" not in backend.requests
+
+
+def test_write_check_confirms_once_and_the_same_card_again_writes_nothing(backend, tmp_path):
+    code, output = run_smoke(backend, tmp_path, layers={"L4"}, write=True)
+
+    assert code == 0, output
+    assert "PASS  L4" in output and "4 -> 5 (+1)" in output
+    assert backend.quantity(MOUSE)["quantity"] == 5
+    assert backend.state["card"] is None
+
+
+def test_write_check_confirms_the_card_an_earlier_photo_left_open(backend, tmp_path):
+    code, output = run_smoke(backend, tmp_path, layers={"L3", "L4"}, write=True)
+
+    assert code == 0, output
+    assert backend.quantity(MOUSE)["quantity"] == 5
+
+
+def test_write_check_catches_a_duplicate_write_on_retry(backend, tmp_path):
+    backend.state["duplicate_on_retry"] = True
+
+    code, output = run_smoke(backend, tmp_path, layers={"L4"}, write=True)
+
+    assert code == 1
+    assert "FAIL  L4" in output and "duplicate write" in output
+
+
+def test_write_check_fails_without_a_card_and_confirms_nothing(backend, tmp_path):
+    backend.state["photo"] = "stray"
+
+    code, output = run_smoke(backend, tmp_path, layers={"L4"}, write=True)
+
+    assert code == 1
+    assert "produced no approval card" in output
+    assert "/agent/resume" not in backend.requests
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("operation_id", None, "operation_id"),
+        ("approval_id", None, "approval_id"),
+        ("quantity_added", True, "positive integer"),
+        ("item_id", None, "matching inventory item"),
+        ("inventory_quantity_before", None, "inventory says"),
+        ("inventory_quantity_before", 3, "inventory says"),
+    ],
+)
+def test_write_check_refuses_malformed_increase_card(
+    field, value, message, backend, tmp_path, monkeypatch
+):
+    operation = {
+        "operation_id": "op1",
+        "action": "increase_stock",
+        "values": {
+            "item_id": MOUSE,
+            "quantity_added": 1,
+            "inventory_quantity_before": 4,
+        },
+    }
+    approval_id = "ap1"
+    if field == "operation_id":
+        operation[field] = value
+    elif field == "approval_id":
+        approval_id = value
+    else:
+        operation["values"][field] = value
+    monkeypatch.setattr(
+        smoke,
+        "photo_message",
+        lambda *_args: {
+            "message": "",
+            "results": [{"kind": "vision", "data": {}}],
+            "pending_approval": {"approval_id": approval_id, "operations": [operation]},
+        },
+    )
+
+    code, output = run_smoke(backend, tmp_path, layers={"L4"}, write=True)
+
+    assert code == 1
+    assert "FAIL  L4" in output and message in output
+    assert "/agent/resume" not in backend.requests
+    assert backend.quantity(MOUSE)["quantity"] == 4
+
+
+def test_write_check_refuses_a_photo_of_a_new_item_and_confirms_nothing(backend, tmp_path):
+    backend.state["photo"] = "create"
+
+    code, output = run_smoke(backend, tmp_path, layers={"L4"}, write=True)
+
+    assert code == 1
+    assert "ONE item the household already has" in output
+    assert backend.quantity(MOUSE)["quantity"] == 4
+    assert "/agent/resume" not in backend.requests
+
+
+# -- command line -----------------------------------------------------------------------------
 
 
 def test_smoke_refuses_a_local_address_without_the_rehearsal_flag():
@@ -326,14 +608,25 @@ def test_smoke_refuses_a_local_address_without_the_rehearsal_flag():
     smoke.require_endpoint_is_cloud("https://demo.example.com", allow_local=False)
 
 
+def test_write_without_yes_is_a_usage_error():
+    assert smoke.main(["--base-url", "https://demo.example.com", "--write"]) == 2
+
+
+def test_an_unknown_layer_is_a_usage_error():
+    assert smoke.main(["--base-url", "https://demo.example.com", "--only", "L9"]) == 2
+
+
+def test_a_local_address_is_a_usage_error_without_the_flag():
+    assert smoke.main(["--base-url", "https://localhost:8000"]) == 2
+
+
 def test_smoke_reports_an_unreachable_server_as_a_failure(tmp_path):
-    manifest = tmp_path / "m.json"
-    manifest.write_text(json.dumps(MANIFEST), encoding="utf-8")
     lines = []
 
     code = smoke.run(
         smoke.Client("http://127.0.0.1:1", 2),
-        {"manifest": MANIFEST, "audio": tmp_path / "x.wav"},
+        make_ctx(tmp_path),
+        {"L1"},
         out=lines.append,
     )
 

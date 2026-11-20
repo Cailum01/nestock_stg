@@ -36,7 +36,7 @@ from app.agent.cards import (
     PhotoItem,
     PurchaseCards,
 )
-from app.agent.read_agent import ReadAgent, load_system_prompt
+from app.agent.read_agent import OPEN_CARD_PENDING, ReadAgent, load_system_prompt
 from app.models.agent import AgentRequest, ApprovalPresentation, ResultKind
 from app.services.approvals import ApprovalService, DomainWritePlan
 from app.services.cosmos_read import CosmosInventoryService, CosmosShoppingService
@@ -233,7 +233,11 @@ def test_no_photo_card_while_an_open_card_is_shown():
     assert response.pending_approval.model_dump(mode="json") == open_card
     assert _stored(container) == [(open_card["approval_id"], "pending")]
     assert "new_item_card" not in _seen_by_model(model)
-    assert [result.kind for result in response.results] == [ResultKind.VISION]
+    assert [result.kind for result in response.results] == [
+        ResultKind.VISION,
+        ResultKind.ACTION_RESULT,
+    ]
+    assert response.results[-1].data == {"code": OPEN_CARD_PENDING, "open_cards": 1}
 
 
 def test_no_photo_card_when_the_open_cards_cannot_be_listed(monkeypatch):

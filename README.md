@@ -128,6 +128,7 @@ Open `http://127.0.0.1:8000/health` for `{"status":"ok"}` and
 | `GET /forecast/reorder` | read-only list of items worth restocking soon (`consider_restock`), soonest first; empty when none qualify; same history source as `/forecast`; same selection the Agent reuses via `ForecastService.reorder_candidates` (B2) |
 | `GET /forecast/{item_id}` | read-only forecast for one inventory item; 404 if missing; same history source and `insufficient_data` behavior as `/forecast`; never changes confirmed quantity (B2) |
 | `POST /agent/messages` | Agent via Azure OpenAI when `backend/.env` is set; otherwise 501. With Cosmos it may return a purchase confirmation card, which writes nothing until confirmed |
+| `GET /agent/open-card` | newest unanswered confirmation card and a fixed reminder for the authorized household; no model call or domain write; 503 if cards cannot be listed; 501 without Azure OpenAI |
 | `POST /agent/resume` | the user's answer to a confirmation card: writes what the stored card holds (v8 flow C purchases so far); 503 without Cosmos |
 | `POST /api/media/upload-authorization` | provisional photo upload authorization (A2, PR #5) |
 | `PUT /staging/upload/{upload_token}` | provisional local photo staging upload (A2, PR #5) |

@@ -121,6 +121,10 @@ OPEN_CARD = (
 OPEN_CARD_MORE = (
     "總共還有 {count} 張沒處理，這張處理完，下一則訊息會再顯示下一張；提醒時請說還有幾張。"
 )
+OPEN_CARD_PENDING = "open_card_pending"
+"""`results[].data.code` for an open card shown again or when the App opens."""
+OPEN_CARD_REMINDER = "上一張卡還沒處理，處理完才會出新卡。"
+"""Fixed App-facing reminder; `data.open_cards` carries the count."""
 CARD_CHANGE_REFUSED = {
     "not_found": "找不到這張確認卡，請再說一次要記錄的內容。",
     "expired": "這張確認卡已經過期，請再說一次要記錄的內容。",
@@ -324,6 +328,15 @@ def _change_refused(
             )
         ],
         pending_approval=card,
+    )
+
+
+def _open_card_reminder(count: int) -> AgentResult:
+    """Fixed App-facing reminder for an open card (approval lifecycle section 8)."""
+    return AgentResult(
+        kind=ResultKind.ACTION_RESULT,
+        summary=OPEN_CARD_REMINDER,
+        data={"code": OPEN_CARD_PENDING, "open_cards": count},
     )
 
 
@@ -948,6 +961,28 @@ class ReadAgent:
             pending_approval=card,
         )
 
+    async def open_card(self, household_id: str) -> AgentResponse | None:
+        """Return the newest unanswered card without invoking the model.
+
+        The lookup has the same expiry handling as the message path. None means open
+        cards could not be listed; an empty response means there is no open card.
+        """
+        if self._purchases is None:
+            return AgentResponse(message="")
+        open_cards = await self._purchases.open_cards(household_id)
+        if open_cards is None:
+            return None
+        if not open_cards:
+            return AgentResponse(message="")
+        reminder = _open_card_reminder(len(open_cards))
+        return AgentResponse(
+            message=reminder.summary,
+            results=[reminder],
+            pending_approval=ApprovalService.to_pending_approval(open_cards[0]).model_dump(
+                mode="json"
+            ),
+        )
+
     async def respond(self, request: AgentRequest) -> AgentResponse:
         if request.card_changes is not None:
             return await self._change_card(request)
@@ -966,6 +1001,7 @@ class ReadAgent:
         elif request.image_ref:  # accepted, not read: no vision service configured
             messages.append(SystemMessage(PHOTO_NOT_SUPPORTED))
         replacing = None
+        open_count = 0
         if request.replaces_approval_id:
             if self._purchases is None:
                 return AgentResponse(message=CARD_CHANGE_UNAVAILABLE)
@@ -988,6 +1024,7 @@ class ReadAgent:
                 card = ApprovalService.to_pending_approval(shown).model_dump(mode="json")
                 start["pending_approval"] = card
                 start["open_card_shown"] = True
+                open_count = len(open_cards)
                 more = OPEN_CARD_MORE.format(count=len(open_cards)) if len(open_cards) > 1 else ""
                 messages.append(SystemMessage(OPEN_CARD.format(card=_card_view(shown), more=more)))
         messages.append(HumanMessage(request.message))
@@ -1042,6 +1079,9 @@ class ReadAgent:
                     data=found,
                 )
             )
+        in_reply = final.get("pending_approval")
+        if open_count and in_reply is not None and in_reply == start.get("pending_approval"):
+            results.append(_open_card_reminder(open_count))
         return AgentResponse(
             message=_plain(_text(final["messages"][-1])),
             results=results,

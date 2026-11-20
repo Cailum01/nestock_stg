@@ -212,6 +212,31 @@ async def agent_message(
         raise HTTPException(502, f"Agent call failed: {type(error).__name__}") from error
 
 
+@router.get(
+    "/agent/open-card",
+    response_model=AgentResponse,
+    tags=["provisional"],
+    responses={
+        501: {"description": "Azure OpenAI not configured (backend/.env)"},
+        503: {"description": "Open cards could not be listed right now; try again later"},
+    },
+)
+async def agent_open_card(
+    household_id: Annotated[str, Query(min_length=1)],
+    context: Annotated[AuthorizedHousehold, Depends(get_authorized_household)],
+    identity: Annotated[IdentityService, Depends(get_required_identity_service)],
+    agent: Annotated[ReadAgent | None, Depends(get_read_agent)],
+) -> AgentResponse:
+    """Return the newest unanswered card to an authorized household without a model call."""
+    identity.require_matching_household(household_id, context.household_id)
+    if agent is None:
+        raise HTTPException(501, "Agent is not configured: set AZURE_OPENAI_* in backend/.env.")
+    reply = await agent.open_card(context.household_id)
+    if reply is None:
+        raise HTTPException(503, "Open cards could not be listed; try again later.")
+    return reply
+
+
 @router.post(
     "/agent/resume",
     response_model=AgentResponse,

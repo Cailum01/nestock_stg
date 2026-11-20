@@ -635,10 +635,19 @@ def get_shopping_service() -> ShoppingService:
 
 
 def get_shopping_intent_service() -> ShoppingIntentService | None:
-    """C1 direct-add writer; only available with both Cosmos read and write ports."""
+    """Direct-add writer using the selected provider's shared durable write port."""
     if cosmos_read_repository is None or cosmos_write_repository is None:
         return None
-    return ShoppingIntentService(cosmos_write_repository, cosmos_read_repository)
+    writer = cosmos_write_repository
+    if isinstance(cosmos_write_repository, FirestoreWriteRepository):
+        # Firestore's approval repository requires a completed approval card for
+        # its specialized transaction path. A direct, explicitly approved Add
+        # instead uses the shared atomic batch port and standard operation receipts.
+        writer = CosmosWriteRepository(
+            cosmos_write_repository.transactional_batch_client,
+            query_client=cosmos_document_reader,
+        )
+    return ShoppingIntentService(writer, cosmos_read_repository)
 
 
 def get_cosmos_read_repository() -> CosmosReadRepository | None:

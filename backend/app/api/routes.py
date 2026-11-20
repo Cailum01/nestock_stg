@@ -107,7 +107,7 @@ async def shopping(
         200: {"description": "This request_id and payload were already applied"},
         422: {"description": "The Shopping request is invalid"},
         409: {"description": "request_id was previously used with different values"},
-        503: {"description": "Shopping writes require Cosmos; nothing was saved"},
+        503: {"description": "Shopping writes are not configured; nothing was saved"},
     },
 )
 async def add_shopping_intent(
@@ -118,7 +118,7 @@ async def add_shopping_intent(
 ) -> ShoppingItem:
     """Persist one pending item after explicit Add within the authorized household."""
     if service is None:
-        raise HTTPException(503, "Shopping writes need Cosmos; no changes were saved.")
+        raise HTTPException(503, "Shopping writes are not configured; no changes were saved.")
     try:
         result = await service.add(
             AddShoppingIntent(

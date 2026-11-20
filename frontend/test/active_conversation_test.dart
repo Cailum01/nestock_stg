@@ -24,6 +24,74 @@ class LocalAgent implements AgentClient {
 }
 
 void main() {
+  testWidgets('conversation action toggles expanded interaction in place', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      NestockApp(agentClient: LocalAgent(), catalog: const DemoCatalog()),
+    );
+
+    final expand = find.byKey(const Key('paw-expand-interaction'));
+    final cluster = find.byKey(const Key('paw-action-cluster'));
+    final input = find.descendant(
+      of: find.byKey(const Key('composer')),
+      matching: find.byType(TextField),
+    );
+    final initialActionRect = tester.getRect(expand);
+    final initialClusterRect = tester.getRect(cluster);
+
+    expect(find.byTooltip('展開對話'), findsOneWidget);
+    expect(
+      find.descendant(of: expand, matching: find.byIcon(Icons.expand_less)),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('work-surface')), findsNothing);
+    await tester.tap(expand);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('work-surface')), findsNothing);
+
+    await tester.enterText(input, '查看對話');
+    await tester.tap(find.byKey(const Key('paw-send')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('work-surface')).hitTestable(), findsOneWidget);
+    expect(find.byTooltip('收合對話'), findsOneWidget);
+    expect(
+      find.descendant(of: expand, matching: find.byIcon(Icons.expand_more)),
+      findsOneWidget,
+    );
+
+    await tester.tap(expand);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('work-surface')).hitTestable(), findsNothing);
+    expect(find.byTooltip('展開對話'), findsOneWidget);
+    expect(
+      find.descendant(of: expand, matching: find.byIcon(Icons.expand_less)),
+      findsOneWidget,
+    );
+    expect(tester.getRect(expand), initialActionRect);
+    expect(tester.getRect(cluster), initialClusterRect);
+    expect(find.byKey(const Key('paw-camera')).hitTestable(), findsOneWidget);
+    expect(find.byTooltip('語音輸入').hitTestable(), findsOneWidget);
+    expect(find.byKey(const Key('paw-send')).hitTestable(), findsOneWidget);
+    expect(input.hitTestable(), findsOneWidget);
+
+    for (var cycle = 0; cycle < 2; cycle++) {
+      await tester.tap(expand);
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('work-surface')).hitTestable(),
+        findsOneWidget,
+      );
+      expect(find.byTooltip('收合對話'), findsOneWidget);
+
+      await tester.tap(expand);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('work-surface')).hitTestable(), findsNothing);
+      expect(find.byTooltip('展開對話'), findsOneWidget);
+    }
+    expect(tester.takeException(), isNull);
+  });
+
   for (final size in [const Size(320, 568), const Size(390, 844)]) {
     testWidgets('active conversation and clear at $size', (tester) async {
       tester.view.physicalSize = size;

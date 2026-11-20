@@ -77,20 +77,15 @@ void main() {
       expect(find.byKey(const Key('window')), findsOneWidget);
       expect(find.byKey(const Key('window-image')), findsOneWidget);
       expect(find.byKey(const Key('weather-viewport')), findsOneWidget);
-      expect(
-        find.descendant(
-          of: find.byKey(const Key('weather-viewport')),
-          matching: find.byWidgetPredicate(
-            (widget) =>
-                widget is Image &&
-                widget.image is AssetImage &&
-                (widget.image as AssetImage).assetName ==
-                    'assets/images/weather/weather_test.png' &&
-                widget.fit == BoxFit.cover,
-          ),
-        ),
-        findsOneWidget,
+      final ambience = tester.widget<Image>(
+        find.byKey(const Key('window-ambience-image')),
       );
+      expect(ambience.image, isA<AssetImage>());
+      expect(
+        (ambience.image as AssetImage).assetName,
+        isIn(windowAmbienceAssets.values.expand((assets) => assets)),
+      );
+      expect(ambience.fit, BoxFit.cover);
       final sceneWindow = tester.widget<Stack>(
         find
             .descendant(

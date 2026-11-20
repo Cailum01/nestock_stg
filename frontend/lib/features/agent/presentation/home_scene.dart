@@ -38,6 +38,46 @@ class SceneWindow extends StatelessWidget {
   );
 }
 
+enum WindowAmbiencePeriod { dawn, day, dusk, night }
+
+const Map<WindowAmbiencePeriod, List<String>> windowAmbienceAssets = {
+  WindowAmbiencePeriod.dawn: ['assets/images/weather/dawn_01.png'],
+  WindowAmbiencePeriod.day: [
+    'assets/images/weather/day_01.png',
+    'assets/images/weather/day_02.png',
+    'assets/images/weather/day_03.png',
+    'assets/images/weather/day_04.png',
+  ],
+  WindowAmbiencePeriod.dusk: ['assets/images/weather/dusk_01.png'],
+  WindowAmbiencePeriod.night: ['assets/images/weather/night_01.png'],
+};
+
+WindowAmbiencePeriod resolveWindowAmbiencePeriod(DateTime localTime) {
+  final hour = localTime.hour;
+  if (hour >= 6 && hour < 9) return WindowAmbiencePeriod.dawn;
+  if (hour >= 9 && hour < 17) return WindowAmbiencePeriod.day;
+  if (hour >= 17 && hour < 19) return WindowAmbiencePeriod.dusk;
+  return WindowAmbiencePeriod.night;
+}
+
+final math.Random _windowAmbienceRandom = math.Random();
+
+String selectWindowAmbienceAsset(
+  WindowAmbiencePeriod period, {
+  math.Random? random,
+}) {
+  final candidates = windowAmbienceAssets[period]!;
+  return candidates[(random ?? _windowAmbienceRandom).nextInt(
+    candidates.length,
+  )];
+}
+
+DateTime deviceLocalTime() => DateTime.now();
+
+typedef WindowAmbienceAssetSelector = String Function(
+  WindowAmbiencePeriod period,
+);
+
 /// Keeps the idle character visually alive without changing its scene bounds.
 ///
 /// The controller runs one breathing cycle at a time, with a brief pause at the
@@ -482,7 +522,7 @@ class _IdleNokiGroupState extends State<_IdleNokiGroup>
   }
 }
 
-class HomeScene extends StatelessWidget {
+class HomeScene extends StatefulWidget {
   const HomeScene({
     super.key,
     required this.onInventory,
@@ -490,12 +530,68 @@ class HomeScene extends StatelessWidget {
     required this.onBackgroundTap,
     this.statusMessage,
     this.workSurfaceOpen = false,
+    this.localTime = deviceLocalTime,
+    this.selectAmbienceAsset = selectWindowAmbienceAsset,
+    this.ambienceCheckInterval = const Duration(minutes: 1),
   });
   final VoidCallback onInventory;
   final VoidCallback onShopping;
   final VoidCallback onBackgroundTap;
   final String? statusMessage;
   final bool workSurfaceOpen;
+
+  final DateTime Function() localTime;
+  final WindowAmbienceAssetSelector selectAmbienceAsset;
+  final Duration ambienceCheckInterval;
+
+  @override
+  State<HomeScene> createState() => _HomeSceneState();
+}
+
+class _HomeSceneState extends State<HomeScene> {
+  late WindowAmbiencePeriod _ambiencePeriod;
+  late String _ambienceAsset;
+  Timer? _ambienceTimer;
+
+  VoidCallback get onInventory => widget.onInventory;
+  VoidCallback get onShopping => widget.onShopping;
+  VoidCallback get onBackgroundTap => widget.onBackgroundTap;
+  String? get statusMessage => widget.statusMessage;
+  bool get workSurfaceOpen => widget.workSurfaceOpen;
+
+  @override
+  void initState() {
+    super.initState();
+    _ambiencePeriod = resolveWindowAmbiencePeriod(widget.localTime());
+    _ambienceAsset = _assetFor(_ambiencePeriod);
+    _ambienceTimer = Timer.periodic(
+      widget.ambienceCheckInterval,
+      (_) => _checkAmbiencePeriod(),
+    );
+  }
+
+  String _assetFor(WindowAmbiencePeriod period) {
+    final asset = widget.selectAmbienceAsset(period);
+    assert(windowAmbienceAssets[period]!.contains(asset));
+    return asset;
+  }
+
+  void _checkAmbiencePeriod() {
+    final nextPeriod = resolveWindowAmbiencePeriod(widget.localTime());
+    if (nextPeriod == _ambiencePeriod) return;
+    if (!mounted) return;
+    setState(() {
+      _ambiencePeriod = nextPeriod;
+      _ambienceAsset = _assetFor(nextPeriod);
+    });
+  }
+
+  @override
+  void dispose() {
+    _ambienceTimer?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
@@ -590,7 +686,8 @@ class HomeScene extends StatelessWidget {
                       aspectRatio: 890 / 1060,
                       child: SceneWindow(
                         weather: Image.asset(
-                          'assets/images/weather/weather_test.png',
+                          _ambienceAsset,
+                          key: const Key('window-ambience-image'),
                           fit: BoxFit.cover,
                           excludeFromSemantics: true,
                         ),

@@ -1198,16 +1198,17 @@ class _AgentHomeState extends State<AgentHome> {
                                           key: const Key(
                                             'paw-expand-interaction',
                                           ),
-                                          tooltip: '顯示互動',
-                                          icon: Icons.expand_less,
+                                          tooltip: _workOpen ? '收合對話' : '展開對話',
+                                          icon: _workOpen
+                                              ? Icons.expand_more
+                                              : Icons.expand_less,
                                           onPressed:
                                               _messages.isEmpty ||
-                                                  _workOpen ||
                                                   _inventoryOpen ||
                                                   _shoppingOpen
                                               ? null
                                               : () => setState(
-                                                  () => _workOpen = true,
+                                                  () => _workOpen = !_workOpen,
                                                 ),
                                         ),
                                       ),

@@ -62,7 +62,6 @@ class NameOnlyFixture implements ShoppingViewClient {
   Future<List<ShoppingViewItem>> load() async => const [
     ShoppingViewItem(name: '豆漿', status: 'pending'),
   ];
-
 }
 
 Widget panel({
@@ -249,6 +248,45 @@ void main() {
       tester.getSize(find.byKey(const Key('shopping-overlay'))).height,
       lessThanOrEqualTo(450),
     );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('shopping add form scrolls above keyboard on a small screen', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 568);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      NestockApp(
+        agentClient: MockAgentClient(),
+        catalog: const DemoCatalog(),
+        shoppingClient: Fixture(0),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('cart')));
+    await tester.pumpAndSettle();
+    await openAdd(tester);
+    await tester.tap(find.byKey(const Key('shopping-add-name')));
+    await tester.enterText(find.byKey(const Key('shopping-add-name')), '豆漿');
+
+    tester.view.viewInsets = const FakeViewPadding(bottom: 260);
+    await tester.pumpAndSettle();
+
+    final nameRect = tester.getRect(find.byKey(const Key('shopping-add-name')));
+    final quantityRect = tester.getRect(
+      find.byKey(const Key('shopping-add-quantity')),
+    );
+    final unitRect = tester.getRect(find.byKey(const Key('shopping-add-unit')));
+    expect(nameRect.bottom, lessThanOrEqualTo(quantityRect.top));
+    expect(quantityRect.bottom, lessThanOrEqualTo(unitRect.top));
+    expect(find.byKey(const Key('shopping-add-scroll')), findsOneWidget);
+
+    await tester.ensureVisible(find.text('加入'));
+    await tester.pumpAndSettle();
+    expect(find.text('加入').hitTestable(), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

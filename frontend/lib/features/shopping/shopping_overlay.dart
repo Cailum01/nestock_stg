@@ -193,144 +193,148 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
   }
 
   @override
-  Widget build(BuildContext context) => Material(
-    key: const Key('shopping-overlay'),
-    color: Theme.of(context).colorScheme.surface,
-    borderRadius: BorderRadius.circular(16),
-    elevation: 4,
-    child: Padding(
-      padding: const EdgeInsets.all(12),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              const Expanded(child: Text('購物清單')),
-              IconButton(
-                onPressed: _saving || _pendingAdd != null
-                    ? null
-                    : widget.onClose,
-                icon: const Icon(Icons.close),
-                tooltip: '關閉購物清單',
-              ),
-            ],
-          ),
-          Flexible(
-            child: FutureBuilder<List<ShoppingViewItem>>(
-              future: _items,
-              builder: (context, snapshot) {
-                if (snapshot.hasError) return const Text('無法載入購物清單。');
-                if (!snapshot.hasData) return const CircularProgressIndicator();
-                final data = snapshot.data!;
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      '待購 ${data.where((item) => item.status == 'pending').length} 件',
-                    ),
-                    if (data.isEmpty && !_adding)
-                      const Padding(
-                        padding: EdgeInsets.all(16),
-                        child: Text('購物清單目前是空的。'),
-                      )
-                    else
-                      Flexible(
-                        child: ListView.builder(
-                          key: const Key('shopping-items'),
-                          shrinkWrap: true,
-                          itemCount: data.length,
-                          itemBuilder: (context, index) {
-                            final item = data[index];
-                            return ListTile(
-                              dense: true,
-                              title: Text(item.name),
-                              trailing: _commerceRequests.contains(item.name)
-                                  ? const SizedBox(
-                                      width: 24,
-                                      height: 24,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
-                                    )
-                                  : TextButton(
-                                      key: Key('shopping-procure-${item.name}'),
-                                      onPressed: () =>
-                                          _showRecommendations(item),
-                                      child: const Text('採購 >'),
-                                    ),
-                            );
-                          },
-                        ),
-                      ),
-                    if (_adding) ...[
-                      const SizedBox(height: 8),
-                      TextField(
-                        key: const Key('shopping-add-name'),
-                        controller: _nameController,
-                        readOnly: _pendingAdd != null,
-                        textInputAction: TextInputAction.done,
-                        decoration: const InputDecoration(labelText: '商品名稱'),
-                      ),
-                      TextField(
-                        key: const Key('shopping-add-quantity'),
-                        controller: _quantityController,
-                        readOnly: _pendingAdd != null,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(labelText: '數量（選填）'),
-                      ),
-                      TextField(
-                        key: const Key('shopping-add-unit'),
-                        controller: _unitController,
-                        readOnly: _pendingAdd != null,
-                        decoration: const InputDecoration(labelText: '單位（選填）'),
-                      ),
-                      if (_addError != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text(
-                            _addError!,
-                            style: TextStyle(
-                              color: Theme.of(context).colorScheme.error,
-                            ),
-                          ),
-                        ),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: Wrap(
-                          spacing: 8,
-                          children: [
-                            TextButton(
-                              onPressed: _saving || _pendingAdd != null
-                                  ? null
-                                  : _cancelAdd,
-                              child: const Text('取消'),
-                            ),
-                            FilledButton(
-                              onPressed: _saving ? null : _addItem,
-                              child: const Text('加入'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ] else
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton.icon(
-                          key: const Key('shopping-add-entry'),
-                          onPressed: _openAdd,
-                          icon: const Icon(Icons.add),
-                          label: const Text('新增購物項目'),
-                        ),
-                      ),
-                  ],
-                );
-              },
+  Widget build(BuildContext context) {
+    final header = Row(
+      children: [
+        const Expanded(child: Text('購物清單')),
+        IconButton(
+          onPressed: _saving || _pendingAdd != null ? null : widget.onClose,
+          icon: const Icon(Icons.close),
+          tooltip: '關閉購物清單',
+        ),
+      ],
+    );
+    final content = FutureBuilder<List<ShoppingViewItem>>(
+      future: _items,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) return const Text('無法載入購物清單。');
+        if (!snapshot.hasData) return const CircularProgressIndicator();
+        final data = snapshot.data!;
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '待購 ${data.where((item) => item.status == 'pending').length} 件',
             ),
-          ),
-        ],
-      ),
-    ),
-  );
+            if (_adding) ...[
+              const SizedBox(height: 8),
+              TextField(
+                key: const Key('shopping-add-name'),
+                controller: _nameController,
+                readOnly: _pendingAdd != null,
+                textInputAction: TextInputAction.done,
+                decoration: const InputDecoration(labelText: '商品名稱'),
+              ),
+              TextField(
+                key: const Key('shopping-add-quantity'),
+                controller: _quantityController,
+                readOnly: _pendingAdd != null,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: '數量（選填）'),
+              ),
+              TextField(
+                key: const Key('shopping-add-unit'),
+                controller: _unitController,
+                readOnly: _pendingAdd != null,
+                decoration: const InputDecoration(labelText: '單位（選填）'),
+              ),
+              if (_addError != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    _addError!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Wrap(
+                  spacing: 8,
+                  children: [
+                    TextButton(
+                      onPressed: _saving || _pendingAdd != null
+                          ? null
+                          : _cancelAdd,
+                      child: const Text('取消'),
+                    ),
+                    FilledButton(
+                      onPressed: _saving ? null : _addItem,
+                      child: const Text('加入'),
+                    ),
+                  ],
+                ),
+              ),
+            ] else if (data.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text('購物清單目前是空的。'),
+              )
+            else
+              Flexible(
+                child: ListView.builder(
+                  key: const Key('shopping-items'),
+                  shrinkWrap: true,
+                  itemCount: data.length,
+                  itemBuilder: (context, index) {
+                    final item = data[index];
+                    return ListTile(
+                      dense: true,
+                      title: Text(item.name),
+                      trailing: _commerceRequests.contains(item.name)
+                          ? const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : TextButton(
+                              key: Key('shopping-procure-${item.name}'),
+                              onPressed: () => _showRecommendations(item),
+                              child: const Text('採購 >'),
+                            ),
+                    );
+                  },
+                ),
+              ),
+            if (!_adding)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  key: const Key('shopping-add-entry'),
+                  onPressed: _openAdd,
+                  icon: const Icon(Icons.add),
+                  label: const Text('新增購物項目'),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+    final panelContent = _adding
+        ? SingleChildScrollView(
+            key: const Key('shopping-add-scroll'),
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [header, content],
+            ),
+          )
+        : Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              header,
+              Flexible(child: content),
+            ],
+          );
+    return Material(
+      key: const Key('shopping-overlay'),
+      color: Theme.of(context).colorScheme.surface,
+      borderRadius: BorderRadius.circular(16),
+      elevation: 4,
+      child: Padding(padding: const EdgeInsets.all(12), child: panelContent),
+    );
+  }
 }
 
 class _CommerceRecommendationSheet extends StatelessWidget {

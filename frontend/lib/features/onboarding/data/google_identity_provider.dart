@@ -5,6 +5,10 @@ abstract interface class GoogleIdentityProvider {
   Future<String> signIn();
 }
 
+class GoogleSignInCancelled implements Exception {
+  const GoogleSignInCancelled();
+}
+
 class GoogleSignInIdentityProvider implements GoogleIdentityProvider {
   GoogleSignInIdentityProvider({required this.serverClientId})
     : _googleSignIn = GoogleSignIn.instance;
@@ -28,7 +32,14 @@ class GoogleSignInIdentityProvider implements GoogleIdentityProvider {
   @override
   Future<String> signIn() async {
     await _initialize();
-    return _requiredIdToken(await _googleSignIn.authenticate());
+    try {
+      return _requiredIdToken(await _googleSignIn.authenticate());
+    } on GoogleSignInException catch (error) {
+      if (error.code == GoogleSignInExceptionCode.canceled) {
+        throw const GoogleSignInCancelled();
+      }
+      rethrow;
+    }
   }
 
   String _requiredIdToken(GoogleSignInAccount account) {

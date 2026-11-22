@@ -14,10 +14,12 @@ class IdentityGate extends StatefulWidget {
     super.key,
     required this.controller,
     required this.authenticatedHomeBuilder,
+    this.connectHouseholdOnStart = false,
   });
 
   final IdentityController controller;
   final AuthenticatedHomeBuilder authenticatedHomeBuilder;
+  final bool connectHouseholdOnStart;
 
   @override
   State<IdentityGate> createState() => _IdentityGateState();
@@ -29,7 +31,9 @@ class _IdentityGateState extends State<IdentityGate> {
     super.initState();
     widget.controller.addListener(_changed);
     if (!widget.controller.initialized) {
-      widget.controller.initialize();
+      widget.controller.initialize(
+        launchGoogleSignIn: !widget.connectHouseholdOnStart,
+      );
     }
   }
 
@@ -64,6 +68,9 @@ class _IdentityGateState extends State<IdentityGate> {
         onRetry: controller.retry,
         onReset: controller.clearLocalCredential,
       );
+    }
+    if (widget.connectHouseholdOnStart) {
+      return HouseholdOnboarding(controller: controller);
     }
     if (!controller.hasCredential) {
       return GoogleIdentityPrompt(controller: controller);
@@ -122,7 +129,11 @@ class GoogleIdentityPrompt extends StatelessWidget {
                         dimension: 20,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Text('Continue with Google'),
+                    : Text(
+                        controller.error == null
+                            ? 'Continue with Google'
+                            : 'Retry with Google',
+                      ),
               ),
             ],
           ),
@@ -191,7 +202,6 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
   final _oneTimeCode = TextEditingController();
   _OnboardingMode _mode = _OnboardingMode.create;
   bool _busy = false;
-  bool _householdChoiceMade = false;
   String? _error;
 
   @override
@@ -380,11 +390,7 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
                 ],
                 const SizedBox(height: 20),
                 FilledButton(
-                  onPressed:
-                      _busy ||
-                          !widget.controller.apiHostConfigured ||
-                          widget.controller.hasCredential &&
-                              !_householdChoiceMade
+                  onPressed: _busy || !widget.controller.apiHostConfigured
                       ? null
                       : _submit,
                   child: _busy
@@ -406,12 +412,7 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
     key: Key('onboarding-mode-${mode.name}'),
     label: Text(label),
     selected: _mode == mode,
-    onSelected: _busy
-        ? null
-        : (_) => setState(() {
-            _mode = mode;
-            _householdChoiceMade = true;
-          }),
+    onSelected: _busy ? null : (_) => setState(() => _mode = mode),
   );
 }
 

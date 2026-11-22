@@ -4,12 +4,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:nestock/app.dart';
+import 'package:nestock/features/agent/data/mock_agent_client.dart';
 import 'package:nestock/features/onboarding/data/identity_api.dart';
 import 'package:nestock/features/onboarding/data/google_identity_provider.dart';
 import 'package:nestock/features/onboarding/data/secure_credential_store.dart';
 import 'package:nestock/features/onboarding/domain/identity_controller.dart';
 import 'package:nestock/features/onboarding/domain/identity_models.dart';
 import 'package:nestock/features/onboarding/presentation/identity_gate.dart';
+import 'package:nestock/shared/data/demo_catalog.dart';
 
 class _MemoryCredentialStore implements SecureCredentialStore {
   String? value;
@@ -29,9 +32,10 @@ class _MemoryCredentialStore implements SecureCredentialStore {
 }
 
 class _FakeGoogleIdentityProvider implements GoogleIdentityProvider {
-  _FakeGoogleIdentityProvider({required this.token});
+  _FakeGoogleIdentityProvider({required this.token, this.cancelFirst = 0});
 
   final String? token;
+  int cancelFirst;
   int signInAttempts = 0;
 
   @override
@@ -40,6 +44,10 @@ class _FakeGoogleIdentityProvider implements GoogleIdentityProvider {
   @override
   Future<String> signIn() async {
     signInAttempts++;
+    if (cancelFirst > 0) {
+      cancelFirst--;
+      throw const GoogleSignInCancelled();
+    }
     return token ?? 'interactive-google-id-token';
   }
 }
@@ -48,7 +56,7 @@ void main() {
   final base = Uri.parse('https://api.example.test');
 
   testWidgets(
-    'startup is silent and Google exchange has no household side effect',
+    'fresh startup launches Google and lands directly on the default household',
     (tester) async {
       final requests = <http.Request>[];
       final provider = _FakeGoogleIdentityProvider(token: 'google-id-token');
@@ -65,7 +73,7 @@ void main() {
                 'google_id_token': 'google-id-token',
               });
               return http.Response(
-                '{"device_id":"device-1",'
+                '{"device_id":"device-1","household_id":"same-household",'
                 '"bearer_credential":"nestock-bearer"}',
                 200,
               );
@@ -73,7 +81,10 @@ void main() {
             if (request.url.path == '/households') {
               expect(request.method, 'GET');
               expect(request.headers['authorization'], 'Bearer nestock-bearer');
-              return http.Response('{"households":[]}', 200);
+              return http.Response(
+                '{"households":[{"household_id":"same-household","role":"owner"}]}',
+                200,
+              );
             }
             fail(
               'Unexpected identity request: ${request.method} ${request.url.path}',
@@ -93,17 +104,11 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(provider.signInAttempts, 0);
-      expect(requests, isEmpty);
-      expect(find.text('Continue with Google'), findsOneWidget);
-
-      await tester.tap(find.text('Continue with Google'));
-      await tester.pumpAndSettle();
-
       expect(provider.signInAttempts, 1);
       expect(store.value, 'nestock-bearer');
-      expect(find.text('Create household'), findsNWidgets(2));
-      expect(find.text('Join household'), findsOneWidget);
+      expect(controller.selectedHouseholdId, 'same-household');
+      expect(find.text('cloud home'), findsOneWidget);
+      expect(find.text('Connect a household'), findsNothing);
       expect(
         requests.map((request) => '${request.method} ${request.url.path}'),
         ['POST /identity/google', 'GET /households'],
@@ -111,42 +116,38 @@ void main() {
     },
   );
 
-  testWidgets('create selection invokes only the create flow after sign-in', (
+  testWidgets('cancelled Google selection stops and offers a retry', (
     tester,
   ) async {
     final requests = <http.Request>[];
-    final client = MockClient((request) async {
-      requests.add(request);
-      if (request.url.path == '/identity/google') {
-        return http.Response(
-          '{"device_id":"device-1",'
-          '"bearer_credential":"install-bearer"}',
-          200,
-        );
-      }
-      if (request.url.path == '/households' && request.method == 'GET') {
-        final hasHousehold = requests.any(
-          (entry) => entry.method == 'POST' && entry.url.path == '/households',
-        );
-        return http.Response(
-          hasHousehold
-              ? '{"households":[{"household_id":"created-household","role":"owner"}]}'
-              : '{"households":[]}',
-          200,
-        );
-      }
-      if (request.url.path == '/households' && request.method == 'POST') {
-        expect(request.headers['authorization'], 'Bearer install-bearer');
-        return http.Response('{"household_id":"created-household"}', 200);
-      }
-      fail(
-        'Unexpected identity request: ${request.method} ${request.url.path}',
-      );
-    });
+    final provider = _FakeGoogleIdentityProvider(
+      token: 'google-id-token',
+      cancelFirst: 1,
+    );
+    final store = _MemoryCredentialStore();
     final controller = IdentityController(
-      api: IdentityApi(baseUrl: base, client: client),
-      credentialStore: _MemoryCredentialStore(),
-      googleIdentityProvider: _FakeGoogleIdentityProvider(token: null),
+      api: IdentityApi(
+        baseUrl: base,
+        client: MockClient((request) async {
+          requests.add(request);
+          if (request.url.path == '/identity/google') {
+            return http.Response(
+              '{"device_id":"device-1","household_id":"default-household",'
+              '"bearer_credential":"install-bearer"}',
+              200,
+            );
+          }
+          if (request.url.path == '/households') {
+            return http.Response(
+              '{"households":[{"household_id":"default-household","role":"owner"}]}',
+              200,
+            );
+          }
+          fail('Unexpected identity request: ${request.url.path}');
+        }),
+      ),
+      credentialStore: store,
+      googleIdentityProvider: provider,
     );
     await tester.pumpWidget(
       MaterialApp(
@@ -157,99 +158,134 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Continue with Google'));
+
+    expect(provider.signInAttempts, 1);
+    expect(requests, isEmpty);
+    expect(store.value, isNull);
+    expect(
+      find.text('Google sign-in was cancelled. Tap Retry to try again.'),
+      findsOneWidget,
+    );
+    expect(find.text('Retry with Google'), findsOneWidget);
+
+    await tester.tap(find.text('Retry with Google'));
     await tester.pumpAndSettle();
 
-    expect(
-      requests
-          .where((request) => request.method == 'POST')
-          .map((request) => request.url.path),
-      ['/identity/google'],
-    );
-    expect(
-      tester
-          .widget<FilledButton>(
-            find.widgetWithText(FilledButton, 'Create household'),
-          )
-          .onPressed,
-      isNull,
-    );
-    await tester.tap(find.byKey(const Key('onboarding-mode-create')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, 'Create household'));
-    await tester.pumpAndSettle();
-
-    expect(
-      requests
-          .where((request) => request.method == 'POST')
-          .map((request) => request.url.path),
-      ['/identity/google', '/households'],
-    );
+    expect(provider.signInAttempts, 2);
+    expect(store.value, 'install-bearer');
     expect(find.text('cloud home'), findsOneWidget);
+    expect(requests.map((request) => '${request.method} ${request.url.path}'), [
+      'POST /identity/google',
+      'GET /households',
+    ]);
   });
 
-  testWidgets('join selection invokes only invite redemption after sign-in', (
+  testWidgets('test start page opens Connect without launching Google', (
     tester,
   ) async {
-    final requests = <http.Request>[];
-    final client = MockClient((request) async {
-      requests.add(request);
-      if (request.url.path == '/identity/google') {
-        return http.Response(
-          '{"device_id":"device-1",'
-          '"bearer_credential":"install-bearer"}',
-          200,
-        );
-      }
-      if (request.url.path == '/households' && request.method == 'GET') {
-        return http.Response(
-          requests.any(
-                (entry) => entry.url.path == '/households/invites/redeem',
-              )
-              ? '{"households":[{"household_id":"joined-household","role":"member"}]}'
-              : '{"households":[]}',
-          200,
-        );
-      }
-      if (request.url.path == '/households/invites/redeem') {
-        expect(request.headers['authorization'], 'Bearer install-bearer');
-        expect(jsonDecode(request.body), {'invite_code': 'invite-once'});
-        return http.Response('{"household_id":"joined-household"}', 200);
-      }
-      fail(
-        'Unexpected identity request: ${request.method} ${request.url.path}',
-      );
-    });
+    final provider = _FakeGoogleIdentityProvider(token: 'unused');
     final controller = IdentityController(
-      api: IdentityApi(baseUrl: base, client: client),
+      api: IdentityApi(
+        baseUrl: base,
+        client: MockClient((_) async => http.Response('{}', 200)),
+      ),
       credentialStore: _MemoryCredentialStore(),
-      googleIdentityProvider: _FakeGoogleIdentityProvider(token: null),
+      googleIdentityProvider: provider,
     );
     await tester.pumpWidget(
       MaterialApp(
         home: IdentityGate(
           controller: controller,
+          connectHouseholdOnStart: true,
           authenticatedHomeBuilder: (_, _) => const Text('cloud home'),
         ),
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Continue with Google'));
-    await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('onboarding-mode-join')));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField).last, 'invite-once');
-    await tester.tap(find.widgetWithText(FilledButton, 'Join household'));
-    await tester.pumpAndSettle();
-
+    expect(provider.signInAttempts, 0);
+    expect(find.text('Connect a household'), findsOneWidget);
+    expect(find.byKey(const Key('onboarding-mode-create')), findsOneWidget);
+    expect(find.byKey(const Key('onboarding-mode-join')), findsOneWidget);
     expect(
-      requests
-          .where((request) => request.method == 'POST')
-          .map((request) => request.url.path),
-      ['/identity/google', '/households/invites/redeem'],
+      find.byKey(const Key('onboarding-mode-householdRecovery')),
+      findsOneWidget,
     );
-    expect(find.text('cloud home'), findsOneWidget);
+  });
+
+  testWidgets('home brand opens Connect and back preserves active household', (
+    tester,
+  ) async {
+    final controller = IdentityController(
+      api: IdentityApi(
+        baseUrl: base,
+        client: MockClient((request) async {
+          expect(request.method, 'GET');
+          expect(request.url.path, '/households');
+          return http.Response(
+            '{"households":[{"household_id":"active-household","role":"owner"}]}',
+            200,
+          );
+        }),
+      ),
+      credentialStore: _MemoryCredentialStore()..value = 'saved-bearer',
+    );
+    await tester.pumpWidget(
+      NestockApp(
+        agentClient: MockAgentClient(),
+        catalog: const DemoCatalog(),
+        identityController: controller,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(controller.selectedHouseholdId, 'active-household');
+    final brand = find.byKey(const Key('home-brand-connect'));
+    expect(brand, findsOneWidget);
+    expect(find.byIcon(Icons.home_outlined), findsOneWidget);
+    await tester.tap(brand);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Connect a household'), findsOneWidget);
+    expect(controller.selectedHouseholdId, 'active-household');
+    expect(find.byKey(const Key('onboarding-mode-create')), findsOneWidget);
+    expect(find.byKey(const Key('onboarding-mode-join')), findsOneWidget);
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.text('Nestock｜窩有'), findsOneWidget);
+    expect(controller.selectedHouseholdId, 'active-household');
+  });
+
+  testWidgets('connect-household test define opens the page before Google', (
+    tester,
+  ) async {
+    final provider = _FakeGoogleIdentityProvider(token: 'unused');
+    final requests = <http.Request>[];
+    final controller = IdentityController(
+      api: IdentityApi(
+        baseUrl: base,
+        client: MockClient((request) async {
+          requests.add(request);
+          return http.Response('{}', 200);
+        }),
+      ),
+      credentialStore: _MemoryCredentialStore(),
+      googleIdentityProvider: provider,
+    );
+    await tester.pumpWidget(
+      NestockApp(
+        agentClient: MockAgentClient(),
+        catalog: const DemoCatalog(),
+        identityController: controller,
+        startPage: 'connect_household',
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Connect a household'), findsOneWidget);
+    expect(provider.signInAttempts, 0);
+    expect(requests, isEmpty);
   });
 
   test('creates, joins, switches and leaves independent households', () async {

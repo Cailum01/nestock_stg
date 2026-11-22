@@ -221,9 +221,10 @@ class GoogleIdentityRequest(ContractModel):
 
 
 class GoogleIdentityResponse(ContractModel):
-    """Per-install bearer issuance only; household onboarding is a separate action."""
+    """Per-install bearer and its verified account's default household."""
 
     device_id: str = Field(min_length=1, max_length=HTTP_ID_MAX_LENGTH)
+    household_id: str = Field(min_length=1, max_length=HTTP_ID_MAX_LENGTH)
     bearer_credential: str = Field(
         min_length=ONE_TIME_SECRET_MIN_LENGTH,
         max_length=ONE_TIME_SECRET_MAX_LENGTH,

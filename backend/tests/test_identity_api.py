@@ -52,11 +52,11 @@ BOOTSTRAP_2 = "install-challenge-0002"
 BOOTSTRAP_3 = "install-challenge-0003"
 
 
-def test_google_identity_exchange_returns_install_only_response():
+def test_google_identity_exchange_returns_default_household_response():
     class GoogleService:
-        async def authenticate(self, token: str) -> tuple[str, str]:
+        async def authenticate(self, token: str) -> tuple[str, str, str]:
             assert token == "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.c2ln"
-            return "install-1", "secure-bearer-credential-value"
+            return "install-1", "secure-bearer-credential-value", "household-1"
 
     app = create_app()
     app.dependency_overrides[get_required_google_identity_service] = GoogleService
@@ -69,6 +69,7 @@ def test_google_identity_exchange_returns_install_only_response():
     assert response.status_code == 200
     assert response.json() == {
         "device_id": "install-1",
+        "household_id": "household-1",
         "bearer_credential": "secure-bearer-credential-value",
     }
 

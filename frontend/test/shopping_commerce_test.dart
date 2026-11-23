@@ -13,7 +13,6 @@ class _ShoppingFixture implements ShoppingViewClient {
   Future<List<ShoppingViewItem>> load() async => [
     ShoppingViewItem(name: name, status: 'pending'),
   ];
-
 }
 
 class _CommerceFixture implements CommerceOptionsClient {

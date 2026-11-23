@@ -60,7 +60,6 @@ class AgentHome extends StatefulWidget {
     required this.photoUpload,
     required this.speechRecorder,
     required this.speechClient,
-    this.appBarActions = const [],
   });
   final AgentClient client;
   final PhotoClient photoClient;
@@ -71,7 +70,6 @@ class AgentHome extends StatefulWidget {
   final InventoryViewClient inventoryClient;
   final ShoppingViewClient shoppingClient;
   final CommerceOptionsClient commerceOptionsClient;
-  final List<Widget> appBarActions;
   @override
   State<AgentHome> createState() => _AgentHomeState();
 }
@@ -648,26 +646,26 @@ class _AgentHomeState extends State<AgentHome> {
 
   Iterable<AgentResultView> _visibleResults(AgentReply reply) {
     final approval = reply.approval;
-    if (!_isPhotoCreateItemApproval(approval)) return reply.results;
-
-    final approvalNames = approval!.operations
-        .map((operation) => _displayName(operation.values['name']))
-        .whereType<String>()
-        .toSet();
-    if (approvalNames.isEmpty) return reply.results;
+    final approvalNames = _isPhotoInventoryApproval(approval)
+        ? approval!.operations
+              .map((operation) => _displayName(operation.values['name']))
+              .whereType<String>()
+              .toSet()
+        : const <String>{};
 
     return reply.results.where(
       (result) => !_isRedundantPhotoVisionResult(result, approvalNames),
     );
   }
 
-  bool _isPhotoCreateItemApproval(ApprovalView? approval) =>
+  bool _isPhotoInventoryApproval(ApprovalView? approval) =>
       approval != null &&
       approval.operations.isNotEmpty &&
       approval.operations.every(
         (operation) =>
-            operation.action == 'create_item' &&
-            !_hasShoppingItemId(operation.values['shopping_item_id']),
+            operation.action == increaseStockApprovalAction ||
+            (operation.action == 'create_item' &&
+                !_hasShoppingItemId(operation.values['shopping_item_id'])),
       );
 
   bool _isRedundantPhotoVisionResult(
@@ -677,17 +675,19 @@ class _AgentHomeState extends State<AgentHome> {
     if (result.kind != ResultKind.vision) return false;
     final rawItems = result.data['items'];
     if (rawItems is! List || rawItems.isEmpty) return false;
-    final visionNames = rawItems
-        .map(
-          (item) => item is Map
-              ? _displayName(item['name']) ?? _displayName(item['seen_as'])
-              : null,
-        )
-        .toList(growable: false);
-    return visionNames.isNotEmpty &&
-        visionNames.every(
-          (name) => name != null && approvalNames.contains(name),
-        );
+    return rawItems.every(
+      (item) => _visionItemNames(item).any(approvalNames.contains),
+    );
+  }
+
+  Iterable<String> _visionItemNames(Object? item) {
+    if (item is! Map) return const <String>[];
+    final match = item['match'];
+    return [
+      _displayName(item['name']),
+      _displayName(item['seen_as']),
+      if (match is Map) _displayName(match['item_name']),
+    ].whereType<String>();
   }
 
   String? _displayName(Object? value) =>
@@ -875,7 +875,6 @@ class _AgentHomeState extends State<AgentHome> {
                 title: const Text('Nestock｜窩有', style: TextStyle(fontSize: 18)),
                 backgroundColor: Colors.transparent,
                 surfaceTintColor: Colors.transparent,
-                actions: widget.appBarActions,
               ),
               body: SafeArea(
                 child: Column(

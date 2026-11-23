@@ -429,6 +429,7 @@ def test_http_identity_envelopes_reject_invalid_or_untrusted_authorization_field
         )
     for side_effect in (
         {"household_id": "household-a"},
+        {"default_household_id": "household-a"},
         {"membership": {"household_id": "household-a", "role": "owner"}},
         {"invite_code": "i" * 24},
     ):

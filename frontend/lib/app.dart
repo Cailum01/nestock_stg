@@ -36,6 +36,7 @@ class NestockApp extends StatelessWidget {
     this.householdContext,
     this.config = AppConfig.fromEnvironment,
     this.networkClient,
+    this.startPage = const String.fromEnvironment('NESTOCK_START_PAGE'),
   });
   final AgentClient agentClient;
   final CatalogClient catalog;
@@ -51,6 +52,7 @@ class NestockApp extends StatelessWidget {
   final HouseholdRequestContext? householdContext;
   final AppConfig config;
   final http.Client? networkClient;
+  final String startPage;
 
   @override
   Widget build(BuildContext context) {
@@ -60,48 +62,47 @@ class NestockApp extends StatelessWidget {
       theme: buildAppTheme(),
       debugShowCheckedModeBanner: false,
       home: controller == null
-          ? Builder(builder: (context) => _buildAgentHome(context, null))
+          ? _buildAgentHome(null)
           : IdentityGate(
               controller: controller,
-              authenticatedHomeBuilder: (context, session) =>
-                  _buildAgentHome(context, session),
+              connectHouseholdOnStart: startPage == 'connect_household',
+              authenticatedHomeBuilder: (_, session) =>
+                  _buildAgentHome(session),
             ),
     );
   }
 
-  Widget _buildAgentHome(BuildContext context, IdentityController? session) =>
-      AgentHome(
-        client: agentClient,
-        photoClient: photoClient,
-        cameraCapture: cameraCapture,
-        speechRecorder: speechRecorder ?? DeviceSpeechRecorder(),
-        speechClient:
-            speechClient ??
-            HttpSpeechClient(
-              Uri.parse(config.mediaApiBaseUrl),
-              householdContext:
-                  householdContext ?? session ?? _UnavailableHouseholdContext(),
-              client:
-                  networkClient ??
-                  SecureTransportClient(allowInsecureLoopback: kDebugMode),
-            ),
-        photoUpload:
-            photoUpload ??
-            HttpPhotoUpload(
-              config: PhotoNetworkConfig.forApiBase(
-                Uri.parse(config.mediaApiBaseUrl),
-              ),
-              householdContext:
-                  householdContext ?? session ?? _UnavailableHouseholdContext(),
-              client:
-                  networkClient ??
-                  SecureTransportClient(allowInsecureLoopback: kDebugMode),
-            ),
-        inventoryClient: inventoryClient,
-        shoppingClient: shoppingClient,
-        commerceOptionsClient: commerceOptionsClient,
-        appBarActions: const [],
-      );
+  Widget _buildAgentHome(IdentityController? session) => AgentHome(
+    client: agentClient,
+    photoClient: photoClient,
+    cameraCapture: cameraCapture,
+    speechRecorder: speechRecorder ?? DeviceSpeechRecorder(),
+    speechClient:
+        speechClient ??
+        HttpSpeechClient(
+          Uri.parse(config.mediaApiBaseUrl),
+          householdContext:
+              householdContext ?? session ?? _UnavailableHouseholdContext(),
+          client:
+              networkClient ??
+              SecureTransportClient(allowInsecureLoopback: kDebugMode),
+        ),
+    photoUpload:
+        photoUpload ??
+        HttpPhotoUpload(
+          config: PhotoNetworkConfig.forApiBase(
+            Uri.parse(config.mediaApiBaseUrl),
+          ),
+          householdContext:
+              householdContext ?? session ?? _UnavailableHouseholdContext(),
+          client:
+              networkClient ??
+              SecureTransportClient(allowInsecureLoopback: kDebugMode),
+        ),
+    inventoryClient: inventoryClient,
+    shoppingClient: shoppingClient,
+    commerceOptionsClient: commerceOptionsClient,
+  );
 }
 
 class _UnavailableHouseholdContext implements HouseholdRequestContext {

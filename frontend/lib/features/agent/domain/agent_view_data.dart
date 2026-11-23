@@ -8,6 +8,8 @@ enum ApprovalPresentation {
   itemMatch,
 }
 
+const increaseStockApprovalAction = 'increase_stock';
+
 class AgentResultView {
   const AgentResultView({
     required this.kind,

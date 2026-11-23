@@ -161,6 +161,165 @@ void main() {
   );
 
   testWidgets(
+    'existing inventory increase uses a concise renderer for photo and spoken approvals',
+    (tester) async {
+      final decisions = <bool>[];
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-existing-increase',
+          presentation: ApprovalPresentation.singleAction,
+          operations: [
+            OperationView(
+              id: 'operation-existing-increase',
+              action: increaseStockApprovalAction,
+              description: '滑鼠 +1 個（家裡已有的品項）',
+              values: {
+                'item_id': 'inventory-mouse',
+                'name': '滑鼠',
+                'quantity_added': 1,
+                'unit': '個',
+                'transaction_id': 'transaction-mouse',
+                'reason': 'adjustment',
+                'inventory_quantity_before': 1,
+              },
+            ),
+          ],
+        ),
+        onDecision: ({
+          required approved,
+          selectedOptionId,
+          approvedOperationIds,
+        }) => decisions.add(approved),
+      );
+
+      expect(
+        find.byKey(const Key('increase-stock-approval-card')),
+        findsOneWidget,
+      );
+      expect(find.text('確認增加庫存'), findsOneWidget);
+      expect(find.text('滑鼠'), findsOneWidget);
+      expect(find.text('增加 1 個'), findsOneWidget);
+      expect(find.text('家裡已有的品項'), findsOneWidget);
+      expect(find.textContaining('item_id'), findsNothing);
+      expect(find.textContaining('transaction_id'), findsNothing);
+      expect(find.textContaining('reason'), findsNothing);
+      expect(find.textContaining('inventory_quantity_before'), findsNothing);
+      expect(
+        tester
+            .widget<TextButton>(find.byKey(const Key('approval-cancel')))
+            .onPressed,
+        isNotNull,
+      );
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+            .onPressed,
+        isNotNull,
+      );
+
+      await tester.tap(find.byKey(const Key('approval-cancel')));
+      await tester.tap(find.byKey(const Key('approval-confirm')));
+      expect(decisions, [false, true]);
+    },
+  );
+
+  testWidgets(
+    'malformed existing inventory increase disables confirmation without exposing metadata',
+    (tester) async {
+      final decisions = <bool>[];
+      await pumpCard(
+        tester,
+        const ApprovalView(
+          id: 'approval-malformed-increase',
+          presentation: ApprovalPresentation.singleAction,
+          operations: [
+            OperationView(
+              id: 'operation-malformed-increase',
+              action: increaseStockApprovalAction,
+              description: '內部增加庫存資料',
+              values: {
+                'item_id': 'inventory-mouse',
+                'transaction_id': 'transaction-mouse',
+                'reason': 'adjustment',
+                'inventory_quantity_before': 1,
+              },
+            ),
+          ],
+        ),
+        onDecision: ({
+          required approved,
+          selectedOptionId,
+          approvedOperationIds,
+        }) => decisions.add(approved),
+      );
+
+      expect(
+        find.byKey(const Key('increase-stock-approval-card')),
+        findsOneWidget,
+      );
+      expect(find.text('確認增加庫存'), findsOneWidget);
+      expect(find.text('這筆增加庫存資料不完整，請取消後重新確認。'), findsOneWidget);
+      expect(find.textContaining('item_id'), findsNothing);
+      expect(find.textContaining('transaction_id'), findsNothing);
+      expect(find.textContaining('reason'), findsNothing);
+      expect(find.textContaining('inventory_quantity_before'), findsNothing);
+      expect(
+        tester
+            .widget<TextButton>(find.byKey(const Key('approval-cancel')))
+            .onPressed,
+        isNotNull,
+      );
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('approval-confirm')))
+            .onPressed,
+        isNull,
+      );
+
+      await tester.tap(find.byKey(const Key('approval-cancel')));
+      await tester.tap(find.byKey(const Key('approval-confirm')));
+      expect(decisions, [false]);
+    },
+  );
+
+  testWidgets('mixed create and increase batch remains a generic batch', (
+    tester,
+  ) async {
+    await pumpCard(
+      tester,
+      const ApprovalView(
+        id: 'approval-mixed-inventory-batch',
+        presentation: ApprovalPresentation.batchAction,
+        operations: [
+          OperationView(
+            id: 'operation-create',
+            action: 'create_item',
+            description: '新增庫存品項：新滑鼠',
+            values: {'name': '新滑鼠', 'quantity': 1, 'unit': '個'},
+          ),
+          OperationView(
+            id: 'operation-increase',
+            action: 'increase_stock',
+            description: '既有滑鼠增加 1 個',
+            values: {'name': '既有滑鼠', 'quantity_added': 1, 'unit': '個'},
+          ),
+        ],
+      ),
+    );
+
+    expect(find.byKey(const Key('increase-stock-approval-card')), findsNothing);
+    expect(
+      find.byKey(const Key('generic-batch-operation-operation-create')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('generic-batch-operation-operation-increase')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
     'create item without a location uses a display placeholder and keeps approval decisions unchanged',
     (tester) async {
       final decisions = <bool>[];

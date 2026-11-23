@@ -231,7 +231,7 @@ def test_a_card_shown_again_comes_with_the_fixed_reminder():
 
     response, _ = next_message(reader, approvals)
 
-    assert response.message == "還有 1 瓶。"  # the model's answer is unchanged
+    assert response.message == "還有 1 瓶。"
     assert response.pending_approval.approval_id == old["approval_id"]
     [reminder] = reminders(response)
     assert reminder.kind is ResultKind.ACTION_RESULT

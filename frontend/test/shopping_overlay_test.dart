@@ -117,7 +117,7 @@ void main() {
     await tester.enterText(find.byKey(const Key('shopping-add-unit')), '瓶');
     await tester.tap(find.text('加入'));
     await tester.pumpAndSettle();
-    expect(find.text('無法儲存購物項目，請重試。'), findsOneWidget);
+    expect(find.text('目前無法儲存購物項目，請稍後再試。'), findsOneWidget);
     expect(shoppingClient.requests, hasLength(1));
     expect(shoppingClient.savedItems, isEmpty);
 
@@ -131,7 +131,7 @@ void main() {
     expect(shoppingClient.requests[1].name, '豆漿');
     expect(shoppingClient.requests[1].quantity, 2);
     expect(shoppingClient.requests[1].unit, '瓶');
-    expect(find.text('無法儲存購物項目，請重試。'), findsNothing);
+    expect(find.text('目前無法儲存購物項目，請稍後再試。'), findsNothing);
     expect(
       find.descendant(
         of: find.byKey(const Key('shopping-items')),

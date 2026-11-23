@@ -94,8 +94,7 @@ class DemoShoppingViewClient
     required String name,
     int? quantity,
     String? unit,
-  }) async =>
-      throw const ShoppingAddException(ShoppingAddFailure.unavailable);
+  }) async => throw const ShoppingAddException(ShoppingAddFailure.unavailable);
 }
 
 class HttpShoppingViewClient
@@ -244,7 +243,10 @@ class HttpShoppingViewClient
 final Random _shoppingRequestRandom = Random.secure();
 
 String newShoppingRequestId() {
-  final bytes = List<int>.generate(16, (_) => _shoppingRequestRandom.nextInt(256));
+  final bytes = List<int>.generate(
+    16,
+    (_) => _shoppingRequestRandom.nextInt(256),
+  );
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   final hex = bytes

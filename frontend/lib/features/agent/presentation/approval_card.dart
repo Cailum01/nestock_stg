@@ -125,6 +125,13 @@ class ApprovalCard extends StatelessWidget {
       onDecision: onDecision,
     ),
     ApprovalPresentation.singleAction
+        when _isExistingInventoryIncrease(approval.operations.first) =>
+      _ExistingInventoryIncreaseApprovalCard(
+        operation: approval.operations.first,
+        busy: busy,
+        onDecision: onDecision,
+      ),
+    ApprovalPresentation.singleAction
         when approval.operations.first.action.isNotEmpty =>
       _SingleActionApprovalCard(
         approval: approval,
@@ -153,6 +160,95 @@ bool _hasNonBlankShoppingItemId(Object? value) =>
 bool _isPhotoCreateItemOperation(OperationView operation) =>
     operation.action == 'create_item' &&
     !_isPurchaseWorkflowOperation(operation);
+
+bool _isExistingInventoryIncrease(OperationView operation) =>
+    operation.action == increaseStockApprovalAction;
+
+class _ExistingInventoryIncreaseValues {
+  const _ExistingInventoryIncreaseValues({
+    required this.name,
+    required this.quantityAdded,
+    required this.unit,
+  });
+
+  final String name;
+  final num quantityAdded;
+  final String unit;
+}
+
+_ExistingInventoryIncreaseValues? _existingInventoryIncreaseValues(
+  OperationView operation,
+) {
+  final name = operation.values['name'];
+  final quantityAdded = operation.values['quantity_added'];
+  final unit = operation.values['unit'];
+  if (name is! String ||
+      name.trim().isEmpty ||
+      quantityAdded is! num ||
+      quantityAdded <= 0 ||
+      unit is! String ||
+      unit.trim().isEmpty) {
+    return null;
+  }
+  return _ExistingInventoryIncreaseValues(
+    name: name.trim(),
+    quantityAdded: quantityAdded,
+    unit: unit.trim(),
+  );
+}
+
+class _ExistingInventoryIncreaseApprovalCard extends StatelessWidget {
+  const _ExistingInventoryIncreaseApprovalCard({
+    required this.operation,
+    required this.busy,
+    required this.onDecision,
+  });
+
+  final OperationView operation;
+  final bool busy;
+  final ApprovalDecisionCallback onDecision;
+
+  @override
+  Widget build(BuildContext context) {
+    final values = _existingInventoryIncreaseValues(operation);
+    return HandDrawnCardShell(
+      key: const Key('increase-stock-approval-card'),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('確認增加庫存', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          if (values == null)
+            const Text('這筆增加庫存資料不完整，請取消後重新確認。')
+          else ...[
+            Text(values.name, style: Theme.of(context).textTheme.titleSmall),
+            Text('增加 ${_quantityText(values.quantityAdded)} ${values.unit}'),
+            const Text('家裡已有的品項'),
+          ],
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                key: const Key('approval-cancel'),
+                onPressed: busy ? null : () => onDecision(approved: false),
+                child: const Text('取消'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                key: const Key('approval-confirm'),
+                onPressed: busy || values == null
+                    ? null
+                    : () => onDecision(approved: true),
+                child: const Text('確認'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 /// Photo and said-new-item cards share this contract. Shopping-backed
 /// `create_item` operations are purchase workflow lines and remain read-only

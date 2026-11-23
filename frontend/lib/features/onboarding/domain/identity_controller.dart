@@ -60,7 +60,7 @@ class IdentityController extends ChangeNotifier
     );
   }
 
-  Future<void> initialize() async {
+  Future<void> initialize({bool launchGoogleSignIn = true}) async {
     _loading = true;
     _error = null;
     notifyListeners();
@@ -68,9 +68,11 @@ class IdentityController extends ChangeNotifier
       _bearer = await credentialStore.readBearerCredential();
       if (_bearer != null) {
         await _refreshHouseholds();
+      } else if (launchGoogleSignIn && canSignInWithGoogle) {
+        await _authenticateWithGoogle();
       }
     } catch (error) {
-      _reportFailure('initialize', error);
+      _reportGoogleFailure(error);
     } finally {
       _initialized = true;
       _loading = false;
@@ -102,8 +104,7 @@ class IdentityController extends ChangeNotifier
   }
 
   Future<void> signInWithGoogle() async {
-    final provider = googleIdentityProvider;
-    if (provider == null || !provider.isConfigured) {
+    if (!canSignInWithGoogle) {
       _error = 'Google sign-in is not configured.';
       notifyListeners();
       return;
@@ -112,9 +113,9 @@ class IdentityController extends ChangeNotifier
     _error = null;
     notifyListeners();
     try {
-      await _exchangeGoogleToken(await provider.signIn());
+      await _authenticateWithGoogle();
     } catch (error) {
-      _reportFailure('Google sign-in', error);
+      _reportGoogleFailure(error);
     } finally {
       _loading = false;
       notifyListeners();
@@ -240,6 +241,23 @@ class IdentityController extends ChangeNotifier
     await credentialStore.writeBearerCredential(session.bearerCredential);
     _bearer = session.bearerCredential;
     await _refreshHouseholds();
+  }
+
+  Future<void> _authenticateWithGoogle() async {
+    final provider = googleIdentityProvider;
+    if (provider == null || !provider.isConfigured) {
+      throw StateError('Google sign-in is not configured.');
+    }
+    await _exchangeGoogleToken(await provider.signIn());
+  }
+
+  void _reportGoogleFailure(Object error) {
+    if (error is GoogleSignInCancelled) {
+      _error = 'Google sign-in was cancelled. Tap Retry to try again.';
+      notifyListeners();
+      return;
+    }
+    _reportFailure('Google sign-in', error);
   }
 
   Future<void> _refreshHouseholds({String? selectHouseholdId}) async {

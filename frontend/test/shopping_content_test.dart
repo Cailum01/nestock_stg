@@ -326,6 +326,7 @@ void main() {
     await tester.pumpAndSettle();
     await openAdd(tester);
     await tester.enterText(find.byKey(const Key('shopping-add-name')), '豆漿');
+    await tester.ensureVisible(find.text('加入'));
     await tester.tap(find.text('加入'));
     await tester.pumpAndSettle();
     expect(find.text('豆漿'), findsOneWidget);

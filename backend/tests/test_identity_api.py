@@ -1238,6 +1238,18 @@ def test_identity_http_flows_bootstrap_create_invite_join_and_switch():
             ).status_code
             == 403
         )
+        fresh_invite = client.post("/households/invites", headers=owner_scope, json={})
+        assert fresh_invite.status_code == 200
+        rejoined = client.post(
+            "/households/invites/redeem",
+            headers=member_headers,
+            json={"invite_code": fresh_invite.json()["invite_code"]},
+        )
+        assert rejoined.status_code == 200
+        assert rejoined.json()["household_id"] == household_id
+        assert client.get("/households", headers=member_headers).json()["households"] == [
+            {"household_id": household_id, "role": "member"}
+        ]
 
 
 def test_recovery_endpoints_revoke_install_and_restore_one_household():

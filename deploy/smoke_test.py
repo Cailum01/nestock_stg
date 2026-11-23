@@ -56,7 +56,7 @@ DEFAULT_AUDIO = Path(__file__).resolve().parent / "smoke-audio-detergent.wav"
 DEFAULT_IMAGE = REPO_ROOT / "backend" / "tests" / "fixtures" / "vision" / "img_single.jpg"
 
 APP_NAME = "nestock-api"
-EXPECTED_BACKEND_VERSION = "v1.0.1"
+EXPECTED_BACKEND_VERSION = "v1.0.2"
 DEFAULT_EXPECTED_COMMIT = "origin/stg"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "10.0.2.2", "::1"}
 

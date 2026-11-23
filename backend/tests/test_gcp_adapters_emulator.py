@@ -612,6 +612,41 @@ def test_firestore_concurrent_invite_redemption_is_single_use():
         assert succeeded[0].household_id == household_id
         members = await repository.list_device_memberships(succeeded[0].device_id)
         assert [item.household_id for item in members.memberships] == [household_id]
+        await repository.leave_household(
+            device_id=succeeded[0].device_id,
+            household_id=household_id,
+            now=NOW + timedelta(seconds=1),
+        )
+        rejoin_code = f"{identity}-fresh-rejoin-invite"
+        rejoin_invite = HouseholdInviteRecord(
+            invite_id=f"invite-{uuid.uuid4().hex}",
+            household_id=household_id,
+            token_hash=hash_secret(rejoin_code),
+            created_by_device_id=owner_id,
+            created_at=NOW + timedelta(seconds=2),
+            expires_at=NOW + timedelta(minutes=10),
+        )
+        await repository.create_invite(
+            actor_device_id=owner_id,
+            invite=rejoin_invite,
+            now=NOW + timedelta(seconds=2),
+            max_per_hour=10,
+        )
+        rejoined = await repository.redeem_invite(
+            token_hash=rejoin_invite.token_hash,
+            device_id=succeeded[0].device_id,
+            network_key=hash_secret(f"{identity}-rejoin"),
+            now=NOW + timedelta(seconds=3),
+            failure_limit=5,
+            failure_window=timedelta(minutes=15),
+            cooldown=timedelta(minutes=15),
+        )
+        assert rejoined.role is HouseholdRole.MEMBER
+        assert rejoined.is_active
+        assert rejoined.created_at == NOW + timedelta(seconds=3)
+        assert (await repository.list_device_memberships(succeeded[0].device_id)).memberships == (
+            rejoined,
+        )
 
     try:
         asyncio.run(execute())

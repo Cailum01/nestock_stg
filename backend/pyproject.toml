@@ -1,6 +1,6 @@
 [project]
 name = "nestock-backend"
-version = "1.0.1"
+version = "1.0.2"
 description = "Nestock skeleton: API and shared domain boundaries"
 requires-python = ">=3.12"
 dependencies = [

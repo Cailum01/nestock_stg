@@ -105,7 +105,7 @@ class IdentityController extends ChangeNotifier
 
   Future<void> signInWithGoogle() async {
     if (!canSignInWithGoogle) {
-      _error = 'Google sign-in is not configured.';
+      _error = '此版本尚未設定 Google 登入。';
       notifyListeners();
       return;
     }
@@ -253,7 +253,7 @@ class IdentityController extends ChangeNotifier
 
   void _reportGoogleFailure(Object error) {
     if (error is GoogleSignInCancelled) {
-      _error = 'Google sign-in was cancelled. Tap Retry to try again.';
+      _error = '已取消 Google 登入，請點選重試。';
       notifyListeners();
       return;
     }
@@ -303,5 +303,5 @@ class IdentityController extends ChangeNotifier
 
   String _safeMessage(Object error) => error is IdentityHttpFailure
       ? error.message
-      : 'Could not load household access. Check the configured API host and retry.';
+      : '無法載入家庭資料，請確認 API 設定後重試。';
 }

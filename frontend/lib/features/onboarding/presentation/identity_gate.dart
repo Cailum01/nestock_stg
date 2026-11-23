@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../data/identity_api.dart';
 import '../domain/identity_controller.dart';
 import '../domain/identity_models.dart';
+import '../../../features/agent/presentation/hand_drawn_card_shell.dart';
 import '../../../shared/theme/app_theme.dart';
 
 typedef AuthenticatedHomeBuilder = Widget Function(
@@ -101,15 +102,15 @@ class GoogleIdentityPrompt extends StatelessWidget {
               const Icon(Icons.cloud_outlined, size: 44),
               const SizedBox(height: 12),
               Text(
-                'Connect to your cloud household',
+                '連結雲端家庭',
                 style: Theme.of(context).textTheme.titleLarge,
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 8),
               Text(
                 controller.canSignInWithGoogle
-                    ? 'Sign in with Google to connect this install to your household.'
-                    : 'Google sign-in is not configured for this build.',
+                    ? '使用 Google 登入，將此裝置連結至家庭。'
+                    : '此版本尚未設定 Google 登入。',
                 textAlign: TextAlign.center,
               ),
               if (controller.error != null) ...[
@@ -133,8 +134,8 @@ class GoogleIdentityPrompt extends StatelessWidget {
                       )
                     : Text(
                         controller.error == null
-                            ? 'Continue with Google'
-                            : 'Retry with Google',
+                            ? '使用 Google 繼續'
+                            : '使用 Google 重試',
                       ),
               ),
             ],
@@ -168,19 +169,19 @@ class _IdentityLoadError extends StatelessWidget {
             const SizedBox(height: 12),
             Text(message, textAlign: TextAlign.center),
             const SizedBox(height: 16),
-            FilledButton(onPressed: onRetry, child: const Text('Retry')),
+            FilledButton(onPressed: onRetry, child: const Text('重試')),
             TextButton(
               onPressed: () async {
                 final confirmed = await _confirm(
                   context,
-                  title: 'Clear this install login?',
+                  title: '清除此裝置的登入資料？',
                   message:
-                      'The saved credential will be removed from this device. '
-                      'Use an operator challenge or recovery code to connect again.',
+                      '此裝置儲存的登入憑證將會移除。'
+                      '如要重新連結，請使用管理員提供的設定碼。',
                 );
                 if (confirmed) await onReset();
               },
-              child: const Text('Clear local login'),
+              child: const Text('清除本機登入資料'),
             ),
           ],
         ),
@@ -189,7 +190,7 @@ class _IdentityLoadError extends StatelessWidget {
   );
 }
 
-enum _OnboardingMode { create, join, householdRecovery, deviceRecovery }
+enum _OnboardingMode { create, join }
 
 class HouseholdOnboarding extends StatefulWidget {
   const HouseholdOnboarding({super.key, required this.controller});
@@ -233,14 +234,9 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
     }
   }
 
-  bool get _requiresCode =>
-      _mode != _OnboardingMode.create && _mode != _OnboardingMode.join;
-
   String get _actionLabel => switch (_mode) {
-    _OnboardingMode.create => 'Create household',
-    _OnboardingMode.join => 'Join household',
-    _OnboardingMode.householdRecovery => 'Recover household owner access',
-    _OnboardingMode.deviceRecovery => 'Revoke old install and recover',
+    _OnboardingMode.create => '建立家庭',
+    _OnboardingMode.join => '使用邀請碼加入',
   };
 
   Future<void> _submit() async {
@@ -259,13 +255,6 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
             await widget.controller.createWithChallenge(challenge);
           case _OnboardingMode.join:
             await widget.controller.joinWithChallenge(challenge, code);
-          case _OnboardingMode.householdRecovery:
-            await widget.controller.recoverHouseholdWithChallenge(
-              challenge,
-              code,
-            );
-          case _OnboardingMode.deviceRecovery:
-            await widget.controller.recoverDeviceWithChallenge(challenge, code);
         }
       } else {
         switch (_mode) {
@@ -273,10 +262,6 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
             await widget.controller.createHousehold();
           case _OnboardingMode.join:
             await widget.controller.joinHousehold(code);
-          case _OnboardingMode.householdRecovery:
-            await widget.controller.redeemHouseholdRecoveryCode(code);
-          case _OnboardingMode.deviceRecovery:
-            await widget.controller.redeemDeviceRecoveryCode(code);
         }
       }
       _challenge.clear();
@@ -290,7 +275,7 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
 
   String _errorMessage(Object error) => error is IdentityHttpFailure
       ? error.message
-      : 'Could not complete this action. Check the code and configured API host.';
+      : '無法完成操作，請確認設定碼或邀請碼後再試。';
 
   @override
   void dispose() {
@@ -320,7 +305,7 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
               children: [
                 const SizedBox(height: 12),
                 Text(
-                  'Choose how this install gets household access.',
+                  '選擇此裝置連結家庭的方式。',
                   style: Theme.of(context).textTheme.titleLarge,
                   textAlign: TextAlign.center,
                 ),
@@ -334,8 +319,8 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
                     icon: const Icon(Icons.login),
                     label: Text(
                       widget.controller.error == null
-                          ? 'Continue with Google'
-                          : 'Retry with Google',
+                          ? '使用 Google 繼續'
+                          : '使用 Google 重試',
                     ),
                   ),
                   if (widget.controller.error != null) ...[
@@ -352,8 +337,8 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
                 if (!widget.controller.apiHostConfigured) ...[
                   const SizedBox(height: 12),
                   Text(
-                    'Configure API_BASE_URL at build time before connecting. '
-                    'MEDIA_API_BASE separately selects the media endpoint.',
+                    '連結前請先設定 API_BASE_URL。'
+                    'MEDIA_API_BASE 用於設定媒體服務端點。',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.error,
@@ -366,16 +351,8 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    _modeChip(_OnboardingMode.create, 'Create household'),
-                    _modeChip(_OnboardingMode.join, 'Join household'),
-                    _modeChip(
-                      _OnboardingMode.householdRecovery,
-                      'Household recovery',
-                    ),
-                    _modeChip(
-                      _OnboardingMode.deviceRecovery,
-                      'Device recovery',
-                    ),
+                    _modeChip(_OnboardingMode.create, '建立家庭'),
+                    _modeChip(_OnboardingMode.join, '加入家庭'),
                   ],
                 ),
                 if (needsBootstrap) ...[
@@ -386,15 +363,14 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
                     autocorrect: false,
                     enableSuggestions: false,
                     decoration: const InputDecoration(
-                      labelText: 'One-time operator setup challenge',
+                      labelText: '管理員提供的一次性設定碼',
                       helperText:
-                          'Obtain this out-of-band from the operator. '
-                          'It is used once and never saved by the app.',
+                          '請向管理員取得。設定碼僅供使用一次，App 不會儲存。',
                       border: OutlineInputBorder(),
                     ),
                   ),
                 ],
-                if (_mode != _OnboardingMode.create) ...[
+                if (_mode == _OnboardingMode.join) ...[
                   const SizedBox(height: 16),
                   TextField(
                     controller: _oneTimeCode,
@@ -402,17 +378,8 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
                     autocorrect: false,
                     enableSuggestions: false,
                     decoration: InputDecoration(
-                      labelText: switch (_mode) {
-                        _OnboardingMode.join => 'Household invite code',
-                        _OnboardingMode.householdRecovery =>
-                          'Household recovery code',
-                        _OnboardingMode.deviceRecovery =>
-                          'Device recovery code',
-                        _OnboardingMode.create => '',
-                      },
-                      helperText: _requiresCode
-                          ? 'One-time codes are not saved by the app.'
-                          : null,
+                      labelText: '家庭邀請碼',
+                      helperText: '邀請碼僅供使用一次，App 不會儲存。',
                       border: const OutlineInputBorder(),
                     ),
                   ),
@@ -452,7 +419,6 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
     final memberships = controller.households;
     final selected = controller.selectedHousehold;
     final canManage = selected?.canManageMembers ?? false;
-    final isOwner = selected?.role == HouseholdRole.owner;
     return _ConnectRoom(
       child: ListView(
         key: const Key('connect-household-page'),
@@ -465,31 +431,30 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
-                  'Your households',
+                  '我的家庭',
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
                 const SizedBox(height: 6),
                 const Text(
-                  'Switching changes the active household for this install. '
-                  'Creating or joining another household keeps your other memberships.',
+                  '切換家庭會變更此裝置目前使用的家庭；建立或加入家庭不會影響其他家庭成員資格。',
                 ),
                 const SizedBox(height: 14),
                 if (memberships.isEmpty)
-                  const Text('No household memberships yet.')
+                  const Text('尚未加入任何家庭。')
                 else
                   DropdownButtonFormField<String>(
                     key: const Key('connect-household-selector'),
                     initialValue: controller.selectedHouseholdId,
                     isExpanded: true,
                     decoration: const InputDecoration(
-                      labelText: 'Active household',
+                      labelText: '目前使用的家庭',
                     ),
                     items: memberships
                         .map(
                           (membership) => DropdownMenuItem(
                             value: membership.householdId,
                             child: Text(
-                              '${membership.householdId} · ${membership.role.name}',
+                              '${membership.householdId} · ${_roleLabel(membership.role)}',
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
@@ -510,13 +475,13 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
                       key: const Key('connect-create-household'),
                       onPressed: _busy ? null : _createAnotherHousehold,
                       icon: const Icon(Icons.add_home_outlined),
-                      label: const Text('Create household'),
+                      label: const Text('建立家庭'),
                     ),
                     OutlinedButton.icon(
                       key: const Key('connect-redeem-invite'),
                       onPressed: _busy ? null : _redeemInvite,
                       icon: const Icon(Icons.key_outlined),
-                      label: const Text('Redeem invite code'),
+                      label: const Text('使用邀請碼加入'),
                     ),
                   ],
                 ),
@@ -529,82 +494,28 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
-                  'Household access',
+                  '家庭邀請',
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
                 const SizedBox(height: 8),
                 if (selected == null)
                   const Text(
-                    'Select a household to see available access actions.',
+                    '請先選擇家庭。',
                   )
                 else ...[
-                  Text('Current role: ${selected.role.name}'),
+                  Text('目前角色：${_roleLabel(selected.role)}'),
                   const SizedBox(height: 12),
                   if (canManage)
                     _actionButton(
                       key: const Key('connect-issue-invite'),
-                      label: 'Issue invite code',
+                      label: '分享家庭邀請碼',
                       icon: Icons.ios_share_outlined,
                       onPressed: () => _issueCode(
                         controller.createInvite,
-                        title: 'One-time household invite',
+                        title: '家庭邀請碼',
                       ),
                     ),
-                  if (isOwner)
-                    _actionButton(
-                      key: const Key('connect-issue-household-recovery'),
-                      label: 'Issue household recovery code',
-                      icon: Icons.shield_outlined,
-                      onPressed: () => _issueCode(
-                        controller.issueHouseholdRecoveryCode,
-                        title: 'One-time household recovery code',
-                      ),
-                    ),
-                  if (canManage)
-                    OutlinedButton.icon(
-                      key: const Key('connect-revoke-member'),
-                      onPressed: _busy ? null : _revokeMembership,
-                      icon: const Icon(Icons.person_remove_outlined),
-                      label: const Text('Revoke member device'),
-                    ),
-                  TextButton.icon(
-                    key: const Key('connect-leave-household'),
-                    onPressed: _busy ? null : _leaveSelectedHousehold,
-                    icon: const Icon(Icons.logout),
-                    label: const Text('Leave selected household'),
-                  ),
                 ],
-                _actionButton(
-                  key: const Key('connect-issue-device-recovery'),
-                  label: 'Issue device recovery code',
-                  icon: Icons.phone_android_outlined,
-                  onPressed: () => _issueCode(
-                    controller.issueDeviceRecoveryCode,
-                    title: 'One-time device recovery code',
-                    deviceRecovery: true,
-                  ),
-                ),
-                const Text(
-                  'Device recovery replaces the old install credential and '
-                  'revokes its access. It does not migrate household data.',
-                ),
-                const SizedBox(height: 4),
-                OutlinedButton.icon(
-                  key: const Key('connect-redeem-household-recovery'),
-                  onPressed: _busy
-                      ? null
-                      : () => _redeemRecovery(household: true),
-                  icon: const Icon(Icons.restore_outlined),
-                  label: const Text('Redeem household recovery code'),
-                ),
-                OutlinedButton.icon(
-                  key: const Key('connect-redeem-device-recovery'),
-                  onPressed: _busy
-                      ? null
-                      : () => _redeemRecovery(household: false),
-                  icon: const Icon(Icons.phonelink_erase_outlined),
-                  label: const Text('Redeem device recovery code'),
-                ),
                 if (_busy)
                   const Padding(
                     padding: EdgeInsets.all(8),
@@ -657,52 +568,13 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
 
   Future<void> _redeemInvite() async {
     final code = await _askForValue(
-      title: 'Redeem household invite',
-      label: 'One-time invite code',
+      title: '加入家庭',
+      label: '家庭邀請碼',
       obscure: true,
     );
     if (code != null) {
       await _run(() => widget.controller.joinHousehold(code));
     }
-  }
-
-  Future<void> _revokeMembership() async {
-    final deviceId = await _askForValue(
-      title: 'Revoke household member',
-      label: 'Target device ID',
-    );
-    if (deviceId != null) {
-      await _run(() => widget.controller.revokeMembership(deviceId));
-    }
-  }
-
-  Future<void> _leaveSelectedHousehold() async {
-    final household = widget.controller.selectedHousehold;
-    if (household == null) return;
-    final confirmed = await _confirm(
-      context,
-      title: 'Leave this household?',
-      message:
-          'Only ${household.householdId} will be left. Your other household '
-          'memberships stay active.',
-    );
-    if (confirmed) await _run(widget.controller.leaveSelectedHousehold);
-  }
-
-  Future<void> _redeemRecovery({required bool household}) async {
-    final code = await _askForValue(
-      title: household
-          ? 'Redeem household recovery code'
-          : 'Redeem device recovery code',
-      label: household ? 'Household recovery code' : 'Device recovery code',
-      obscure: true,
-    );
-    if (code == null) return;
-    await _run(
-      () => household
-          ? widget.controller.redeemHouseholdRecoveryCode(code)
-          : widget.controller.redeemDeviceRecoveryCode(code),
-    );
   }
 
   Future<String?> _askForValue({
@@ -716,7 +588,7 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
         title: title,
         label: label,
         obscure: obscure,
-        submitLabel: 'Redeem',
+        submitLabel: '確認加入',
       ),
     );
     return value == null || value.isEmpty ? null : value;
@@ -725,7 +597,6 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
   Future<void> _issueCode(
     Future<IssuedOneTimeCode> Function() issue, {
     required String title,
-    bool deviceRecovery = false,
   }) async {
     if (_busy) return;
     setState(() {
@@ -741,10 +612,7 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
         builder: (context) => _IssuedCodeDialog(
           title: title,
           code: code,
-          warning: deviceRecovery
-              ? 'Using this code revokes the old install and its access. '
-                    'It does not migrate household data.'
-              : 'This one-time code is shown once. Save it somewhere safe.',
+          warning: '邀請碼僅顯示一次，請複製後分享給要加入的家庭成員。',
         ),
       );
     } catch (error) {
@@ -778,18 +646,13 @@ class _HouseholdOnboardingState extends State<HouseholdOnboarding> {
   );
 }
 
-Widget _paper({required Widget child}) => Container(
-  padding: const EdgeInsets.all(18),
-  decoration: BoxDecoration(
-    color: AppTokens.card.withValues(alpha: .96),
-    border: Border.all(color: AppTokens.border, width: 1.4),
-    borderRadius: const BorderRadius.all(Radius.circular(22)),
-    boxShadow: const [
-      BoxShadow(color: Color(0x1F252A38), blurRadius: 8, offset: Offset(0, 4)),
-    ],
-  ),
-  child: child,
-);
+String _roleLabel(HouseholdRole role) => switch (role) {
+  HouseholdRole.owner => '擁有者',
+  HouseholdRole.admin => '管理員',
+  HouseholdRole.member => '成員',
+};
+
+Widget _paper({required Widget child}) => HandDrawnCardShell(child: child);
 
 class _ConnectRoom extends StatelessWidget {
   const _ConnectRoom({required this.child});
@@ -800,7 +663,7 @@ class _ConnectRoom extends StatelessWidget {
     backgroundColor: Colors.transparent,
     extendBodyBehindAppBar: true,
     appBar: AppBar(
-      title: const Text('Connect a household'),
+      title: const Text('連結家庭'),
       backgroundColor: Colors.transparent,
       surfaceTintColor: Colors.transparent,
       elevation: 0,
@@ -845,73 +708,54 @@ class _ConnectIllustration extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Column(
     children: [
-      const SizedBox(
-        height: 82,
-        width: 112,
-        child: CustomPaint(painter: _HouseDoodlePainter()),
+      SizedBox(
+        height: 104,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Image.asset(
+              'assets/images/agent/noki_original.png',
+              width: 86,
+              height: 96,
+              fit: BoxFit.contain,
+              excludeFromSemantics: true,
+            ),
+            SizedBox(
+              width: 208,
+              height: 96,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Image.asset(
+                    'assets/images/ui/thought_bubble.png',
+                    fit: BoxFit.fill,
+                    excludeFromSemantics: true,
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(34, 20, 30, 18),
+                    child: Text(
+                      '一起把家的日常照顧好！',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: AppTokens.darkBlue,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
       Text(
-        'A little room for every household',
+        '讓每個家庭都有安心的小窩',
         textAlign: TextAlign.center,
         style: Theme.of(context).textTheme.titleMedium
             ?.copyWith(color: AppTokens.darkBlue, fontWeight: FontWeight.w700),
       ),
     ],
   );
-}
-
-class _HouseDoodlePainter extends CustomPainter {
-  const _HouseDoodlePainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final pen = Paint()
-      ..color = AppTokens.darkBlue
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-    final house = Path()
-      ..moveTo(size.width * .19, size.height * .45)
-      ..lineTo(size.width * .5, size.height * .16)
-      ..lineTo(size.width * .81, size.height * .45)
-      ..lineTo(size.width * .77, size.height * .47)
-      ..lineTo(size.width * .77, size.height * .84)
-      ..lineTo(size.width * .24, size.height * .84)
-      ..lineTo(size.width * .24, size.height * .47)
-      ..close();
-    canvas.drawPath(house, pen);
-    final door = Path()
-      ..moveTo(size.width * .44, size.height * .83)
-      ..lineTo(size.width * .44, size.height * .59)
-      ..quadraticBezierTo(
-        size.width * .5,
-        size.height * .52,
-        size.width * .56,
-        size.height * .59,
-      )
-      ..lineTo(size.width * .56, size.height * .83);
-    canvas.drawPath(door, pen);
-    final flourish = Path()
-      ..moveTo(size.width * .12, size.height * .3)
-      ..quadraticBezierTo(
-        size.width * .08,
-        size.height * .12,
-        size.width * .28,
-        size.height * .12,
-      )
-      ..moveTo(size.width * .82, size.height * .24)
-      ..quadraticBezierTo(
-        size.width * .96,
-        size.height * .16,
-        size.width * .9,
-        size.height * .39,
-      );
-    canvas.drawPath(flourish, pen);
-  }
-
-  @override
-  bool shouldRepaint(covariant _HouseDoodlePainter oldDelegate) => false;
 }
 
 class _IssuedCodeDialog extends StatefulWidget {
@@ -947,7 +791,7 @@ class _IssuedCodeDialogState extends State<_IssuedCodeDialog> {
         ),
         if (widget.code.expiresAt != null) ...[
           const SizedBox(height: 8),
-          Text('Expires: ${widget.code.expiresAt!.toLocal()}'),
+          Text('有效期限：${widget.code.expiresAt!.toLocal()}'),
         ],
         const SizedBox(height: 10),
         Text(widget.warning),
@@ -961,11 +805,11 @@ class _IssuedCodeDialogState extends State<_IssuedCodeDialog> {
           if (mounted) setState(() => _copied = true);
         },
         icon: Icon(_copied ? Icons.check : Icons.copy),
-        label: Text(_copied ? 'Copied' : 'Copy code'),
+        label: Text(_copied ? '已複製' : '複製邀請碼'),
       ),
       TextButton(
         onPressed: () => Navigator.pop(context),
-        child: const Text('Done'),
+        child: const Text('完成'),
       ),
     ],
   );
@@ -1011,7 +855,7 @@ class _ValueEntryDialogState extends State<_ValueEntryDialog> {
     actions: [
       TextButton(
         onPressed: () => Navigator.pop(context),
-        child: const Text('Cancel'),
+        child: const Text('取消'),
       ),
       FilledButton(
         onPressed: () => Navigator.pop(context, _input.text.trim()),

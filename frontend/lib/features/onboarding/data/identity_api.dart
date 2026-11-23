@@ -215,21 +215,16 @@ class IdentityApi {
   }
 
   IdentityHttpFailure _failure(http.Response response, String path) {
-    final throttled = response.statusCode == 429;
-    final oneTimeCodeRejected =
-        response.statusCode == 400 ||
-        response.statusCode == 410 ||
-        response.statusCode == 422 ||
-        response.statusCode == 401 && path == '/identity/bootstrap';
-    final message = throttled
-        ? 'Too many attempts. Wait and try again.'
-        : oneTimeCodeRejected
-        ? 'This one-time code is invalid, expired or already used.'
-        : response.statusCode == 401
-        ? 'This install credential is no longer valid. Recover the install.'
-        : response.statusCode == 409
-        ? 'This household membership action is no longer allowed.'
-        : 'Identity request failed (${response.statusCode}).';
+    final message = switch (response.statusCode) {
+      429 => '嘗試次數過多，請稍後再試。',
+      401 when path == '/identity/bootstrap' => '設定碼無效或已使用。',
+      401 => '此裝置的登入憑證已失效，請重新登入。',
+      409 => '家庭成員資格已變更，請重新整理後再試。',
+      400 || 410 || 422 => path == '/households/invites/redeem'
+          ? '邀請碼無效或已過期，請確認後再試。'
+          : '一次性代碼無效或已過期。',
+      _ => '連結服務發生錯誤（${response.statusCode}）。',
+    };
     return IdentityHttpFailure(
       statusCode: response.statusCode,
       message: message,

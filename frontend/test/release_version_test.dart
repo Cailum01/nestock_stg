@@ -11,7 +11,7 @@ void main() {
     ).firstMatch(pubspec);
 
     expect(match, isNotNull);
-    expect(match!.group(1), '1.0.1');
-    expect(int.parse(match.group(2)!), greaterThan(1));
+    expect(match!.group(1), '1.0.2');
+    expect(match.group(2), '3');
   });
 }

@@ -101,7 +101,7 @@ void main() {
           .debugShowCheckedModeBanner,
       isFalse,
     );
-    expect(find.text('Connect a household'), findsNothing);
+    expect(find.text('連結家庭'), findsNothing);
     expect(find.text('Nestock｜窩有'), findsOneWidget);
   });
 

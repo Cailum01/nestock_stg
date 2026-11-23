@@ -41,11 +41,11 @@ void main() {
     await tester.pumpAndSettle();
 
     if (configuredStartPage == 'connect_household') {
-      expect(find.text('Connect a household'), findsOneWidget);
-      expect(find.text('Continue with Google'), findsNothing);
+      expect(find.text('連結家庭'), findsOneWidget);
+      expect(find.text('使用 Google 繼續'), findsNothing);
     } else {
-      expect(find.text('Connect a household'), findsNothing);
-      expect(find.text('Continue with Google'), findsOneWidget);
+      expect(find.text('連結家庭'), findsNothing);
+      expect(find.text('使用 Google 繼續'), findsOneWidget);
     }
   });
 }

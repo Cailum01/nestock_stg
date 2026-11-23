@@ -664,6 +664,14 @@ class FirestoreIdentityRepository(IdentityRepository):
                 if membership_ref is not None
                 else None
             )
+            previous_membership = (
+                _membership_from_snapshot(
+                    membership_snapshot,
+                    household_id=invite_record.household_id,
+                )
+                if membership_snapshot is not None and membership_snapshot.exists
+                else None
+            )
             invite_valid = (
                 invite_record is not None
                 and invite_record.token_hash == token_hash
@@ -671,8 +679,7 @@ class FirestoreIdentityRepository(IdentityRepository):
                 and invite_record.expires_at > current_time
                 and device is not None
                 and device.revoked_at is None
-                and membership_snapshot is not None
-                and not membership_snapshot.exists
+                and (previous_membership is None or not previous_membership.is_active)
             )
             if not invite_valid:
                 fields, limited = _invite_failure_state(
@@ -702,7 +709,7 @@ class FirestoreIdentityRepository(IdentityRepository):
             )
             _, membership_document = _membership_write(membership)
             transaction.set(invite_snapshot.reference, invite_document)
-            transaction.create(membership_ref, membership_document)
+            transaction.set(membership_ref, membership_document)
             if rate_snapshot is not None and rate_snapshot.exists:
                 transaction.delete(rate_ref)
             result["membership"] = membership

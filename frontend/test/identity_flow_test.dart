@@ -107,7 +107,7 @@ void main() {
       expect(store.value, 'nestock-bearer');
       expect(controller.selectedHouseholdId, 'same-household');
       expect(find.text('cloud home'), findsOneWidget);
-      expect(find.text('Connect a household'), findsNothing);
+      expect(find.text('連結家庭'), findsNothing);
       expect(
         requests.map((request) => '${request.method} ${request.url.path}'),
         ['POST /identity/google', 'GET /households'],
@@ -161,12 +161,12 @@ void main() {
     expect(requests, isEmpty);
     expect(store.value, isNull);
     expect(
-      find.text('Google sign-in was cancelled. Tap Retry to try again.'),
+      find.text('已取消 Google 登入，請點選重試。'),
       findsOneWidget,
     );
-    expect(find.text('Retry with Google'), findsOneWidget);
+    expect(find.text('使用 Google 重試'), findsOneWidget);
 
-    await tester.tap(find.text('Retry with Google'));
+    await tester.tap(find.text('使用 Google 重試'));
     await tester.pumpAndSettle();
 
     expect(provider.signInAttempts, 2);
@@ -202,13 +202,17 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(provider.signInAttempts, 0);
-    expect(find.text('Connect a household'), findsOneWidget);
+    expect(find.text('連結家庭'), findsOneWidget);
     expect(find.byKey(const Key('connect-google-sign-in')), findsOneWidget);
     expect(find.byKey(const Key('onboarding-mode-create')), findsOneWidget);
     expect(find.byKey(const Key('onboarding-mode-join')), findsOneWidget);
     expect(
       find.byKey(const Key('onboarding-mode-householdRecovery')),
-      findsOneWidget,
+      findsNothing,
+    );
+    expect(
+      find.byKey(const Key('onboarding-mode-deviceRecovery')),
+      findsNothing,
     );
   });
 
@@ -244,7 +248,7 @@ void main() {
     await tester.tap(connect);
     await tester.pumpAndSettle();
 
-    expect(find.text('Connect a household'), findsOneWidget);
+    expect(find.text('連結家庭'), findsOneWidget);
     expect(find.byKey(const Key('connect-household-page')), findsOneWidget);
     expect(find.byKey(const Key('connect-create-household')), findsOneWidget);
     expect(find.byKey(const Key('connect-redeem-invite')), findsOneWidget);
@@ -282,7 +286,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Connect a household'), findsOneWidget);
+      expect(find.text('連結家庭'), findsOneWidget);
       expect(find.byKey(const Key('connect-google-sign-in')), findsOneWidget);
       expect(provider.signInAttempts, 0);
       expect(requests, isEmpty);
@@ -467,7 +471,7 @@ void main() {
           isA<IdentityHttpFailure>().having(
             (failure) => failure.message,
             'message',
-            contains('invalid, expired or already used'),
+            contains('設定碼無效或已使用'),
           ),
         ),
       );
@@ -477,7 +481,7 @@ void main() {
           isA<IdentityHttpFailure>().having(
             (failure) => failure.message,
             'message',
-            contains('invalid, expired or already used'),
+            contains('邀請碼無效或已過期'),
           ),
         ),
       );
@@ -487,7 +491,7 @@ void main() {
   );
 
   testWidgets(
-    'onboarding offers create or join and explains challenge secrecy',
+    '連結頁只提供建立或加入家庭並說明設定碼保密',
     (tester) async {
       final controller = IdentityController(
         api: IdentityApi(
@@ -500,13 +504,13 @@ void main() {
         MaterialApp(home: HouseholdOnboarding(controller: controller)),
       );
 
-      expect(find.text('Create household'), findsNWidgets(2));
-      expect(find.text('Join household'), findsOneWidget);
-      expect(find.text('One-time operator setup challenge'), findsOneWidget);
-      expect(find.textContaining('never saved by the app'), findsOneWidget);
+      expect(find.text('建立家庭'), findsNWidgets(2));
+      expect(find.text('加入家庭'), findsOneWidget);
+      expect(find.text('管理員提供的一次性設定碼'), findsOneWidget);
+      expect(find.textContaining('App 不會儲存'), findsOneWidget);
       await tester.tap(find.byKey(const Key('onboarding-mode-join')));
       await tester.pumpAndSettle();
-      expect(find.text('Household invite code'), findsOneWidget);
+      expect(find.text('家庭邀請碼'), findsOneWidget);
     },
   );
 

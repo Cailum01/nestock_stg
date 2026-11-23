@@ -238,7 +238,8 @@ void main() {
 
     await _openApproval(tester, client);
 
-    expect(find.text('此確認卡已無法修改。'), findsNWidgets(2));
+    expect(find.text('此確認卡已無法修改。'), findsOneWidget);
+    expect(find.text('操作結果'), findsNothing);
     expect(find.text('舊卡：會新增一個庫存品項：衛生紙'), findsNothing);
     expect(find.byKey(const Key('confirmation-card-shell')), findsNothing);
     expect(find.byKey(const Key('approval-confirm')), findsNothing);

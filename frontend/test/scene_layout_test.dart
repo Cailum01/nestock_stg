@@ -22,6 +22,7 @@ void main() {
       );
       final room = tester.getRect(find.byKey(const Key('room')));
       final cabinet = tester.getRect(find.byKey(const Key('cabinet')));
+      final plant = tester.getRect(find.byKey(const Key('plant')));
       final cart = tester.getRect(find.byKey(const Key('cart')));
       final agent = tester.getRect(find.byKey(const Key('agent')));
       final composer = tester.getRect(find.byKey(const Key('composer')));
@@ -60,6 +61,8 @@ void main() {
       );
       expect(cabinet.center.dy, lessThan(room.center.dy));
       expect(cabinet.center.dx, lessThan(room.center.dx));
+      expect(plant.center.dx, greaterThan(cabinet.center.dx));
+      expect(plant.height, lessThan(cabinet.height));
       expect(cart.center.dx, greaterThan(room.center.dx));
       expect(cart.top, greaterThan(room.top + room.height * .4));
       // The approved shopping-cart placement is anchored near the room's right

@@ -196,7 +196,14 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
   Widget build(BuildContext context) {
     final header = Row(
       children: [
-        const Expanded(child: Text('購物清單')),
+        Expanded(
+          child: Text(
+            '購物清單',
+            key: const Key('shopping-overlay-title'),
+            style: Theme.of(context).textTheme.titleMedium
+                ?.copyWith(fontWeight: FontWeight.w600),
+          ),
+        ),
         IconButton(
           onPressed: _saving || _pendingAdd != null ? null : widget.onClose,
           icon: const Icon(Icons.close),
@@ -213,8 +220,12 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              '待購 ${data.where((item) => item.status == 'pending').length} 件',
+            Align(
+              key: const Key('shopping-pending-count'),
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '待購 ${data.where((item) => item.status == 'pending').length} 件',
+              ),
             ),
             if (_adding) ...[
               const SizedBox(height: 8),
@@ -273,26 +284,38 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
               )
             else
               Flexible(
-                child: ListView.builder(
+                child: ListView.separated(
                   key: const Key('shopping-items'),
                   shrinkWrap: true,
                   itemCount: data.length,
+                  separatorBuilder: (context, index) => const SizedBox(
+                    key: Key('shopping-item-separator'),
+                    height: 2,
+                  ),
                   itemBuilder: (context, index) {
                     final item = data[index];
-                    return ListTile(
-                      dense: true,
-                      title: Text(item.name),
-                      trailing: _commerceRequests.contains(item.name)
-                          ? const SizedBox(
-                              width: 24,
-                              height: 24,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : TextButton(
-                              key: Key('shopping-procure-${item.name}'),
-                              onPressed: () => _showRecommendations(item),
-                              child: const Text('採購 >'),
-                            ),
+                    return ColoredBox(
+                      key: Key('shopping-item-surface-$index'),
+                      color: Theme.of(context)
+                          .colorScheme
+                          .surfaceContainerHighest,
+                      child: ListTile(
+                        dense: true,
+                        title: Text(item.name),
+                        trailing: _commerceRequests.contains(item.name)
+                            ? const SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : TextButton(
+                                key: Key('shopping-procure-${item.name}'),
+                                onPressed: () => _showRecommendations(item),
+                                child: const Text('採購 >'),
+                              ),
+                      ),
                     );
                   },
                 ),

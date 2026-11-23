@@ -654,11 +654,19 @@ class _AgentHomeState extends State<AgentHome> {
               .whereType<String>()
               .toSet()
         : const <String>{};
+    final message = reply.message.trim();
 
     return reply.results.where(
-      (result) => !_isRedundantPhotoVisionResult(result, approvalNames),
+      (result) =>
+          !_isDuplicateActionResult(result, message) &&
+          !_isRedundantPhotoVisionResult(result, approvalNames),
     );
   }
+
+  bool _isDuplicateActionResult(AgentResultView result, String message) =>
+      result.kind == ResultKind.actionResult &&
+      message.isNotEmpty &&
+      result.summary.trim() == message;
 
   bool _isPhotoInventoryApproval(ApprovalView? approval) =>
       approval != null &&
@@ -940,6 +948,7 @@ class _AgentHomeState extends State<AgentHome> {
                                             : _workOpen
                                             ? '歡迎回家'
                                             : null,
+                                        isProcessing: _busy,
                                       ),
                                     ),
                                     if (_messages.isNotEmpty)

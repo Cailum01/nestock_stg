@@ -299,20 +299,85 @@ class _NokiBubblePositionDelegate extends SingleChildLayoutDelegate {
       horizontalOffset != oldDelegate.horizontalOffset;
 }
 
+enum _NokiSpriteKind { original, thinking, shop }
+
+enum _NokiVisualState { idle, shop, ambientThinking, processingThinking }
+
+const _nokiSpriteAssets = [
+  'assets/images/agent/noki_original.png',
+  'assets/images/agent/noki_thinking.png',
+  'assets/images/agent/noki_shop.png',
+];
+
+class _NokiSpritePresentation {
+  const _NokiSpritePresentation._({
+    required this.assetPath,
+    required this.mirrored,
+    required this.groundAnchorOffsetFraction,
+  });
+
+  factory _NokiSpritePresentation.forState({
+    required _NokiVisualState state,
+    required bool facingRight,
+  }) {
+    final kind = switch (state) {
+      _NokiVisualState.idle => _NokiSpriteKind.original,
+      _NokiVisualState.shop => _NokiSpriteKind.shop,
+      _NokiVisualState.ambientThinking ||
+      _NokiVisualState.processingThinking => _NokiSpriteKind.thinking,
+    };
+
+    return switch (kind) {
+      _NokiSpriteKind.original => _NokiSpritePresentation._(
+        assetPath: 'assets/images/agent/noki_original.png',
+        // Original artwork natively faces left.
+        mirrored: facingRight,
+        groundAnchorOffsetFraction: 0,
+      ),
+      _NokiSpriteKind.thinking => _NokiSpritePresentation._(
+        assetPath: 'assets/images/agent/noki_thinking.png',
+        // Thinking artwork natively faces right.
+        mirrored: !facingRight,
+        // Its visible feet sit 23 px higher in the shared 988 px canvas.
+        groundAnchorOffsetFraction: 23 / 988,
+      ),
+      _NokiSpriteKind.shop => _NokiSpritePresentation._(
+        assetPath: 'assets/images/agent/noki_shop.png',
+        // Shop is visually left-facing, with the grocery bag on its left.
+        mirrored: facingRight,
+        // Its feet share Original's canvas baseline.
+        groundAnchorOffsetFraction: 0,
+      ),
+    };
+  }
+
+  final String assetPath;
+  final bool mirrored;
+  final double groundAnchorOffsetFraction;
+}
+
 class _IdleNokiGroup extends StatefulWidget {
   const _IdleNokiGroup({
     required this.characterSize,
     required this.sceneWidth,
     required this.characterLeft,
     required this.statusMessage,
-    required this.noki,
+    required this.isProcessing,
+    required this.ambientThinkingChance,
+    required this.shopMovementChance,
+    required this.ambientThinkingDuration,
+    required this.ambientRandom,
   });
 
   final double characterSize;
   final double sceneWidth;
   final double characterLeft;
   final String? statusMessage;
-  final Widget noki;
+  final bool isProcessing;
+  final double ambientThinkingChance;
+  final double shopMovementChance;
+  final Duration? ambientThinkingDuration;
+  final math.Random? ambientRandom;
 
   @override
   State<_IdleNokiGroup> createState() => _IdleNokiGroupState();
@@ -341,19 +406,35 @@ class _IdleNokiGroupState extends State<_IdleNokiGroup>
 
   late final AnimationController _wanderController;
   late final AnimationController _bubbleFadeController;
+  late final math.Random _ambientRandom;
   Timer? _nextWander;
   Timer? _bubbleTimer;
   Timer? _welcomeTimer;
+  Timer? _ambientThinkingTimer;
   var _wanderTargetIndex = 0;
   var _wanderFrom = 0.0;
   var _wanderTo = -_wanderRange;
+  var _facingRight = false;
   var _idleMessageIndex = 0;
   var _idleMessage = _idleMessages.first;
   var _showingWelcome = true;
   var _showingIdleBubble = false;
   var _hidingIdleBubble = false;
+  var _ambientThinking = false;
+  var _shopMovementActive = false;
 
-  bool get _movingRight => _wanderTo > _wanderFrom;
+  bool get _canShowAmbientThinking =>
+      !widget.isProcessing &&
+      widget.statusMessage == null &&
+      !_showingWelcome &&
+      !_ambientThinking;
+
+  _NokiVisualState get _visualState {
+    if (widget.isProcessing) return _NokiVisualState.processingThinking;
+    if (_ambientThinking) return _NokiVisualState.ambientThinking;
+    if (_shopMovementActive) return _NokiVisualState.shop;
+    return _NokiVisualState.idle;
+  }
 
   @override
   void initState() {
@@ -366,6 +447,7 @@ class _IdleNokiGroupState extends State<_IdleNokiGroup>
       duration: _idleBubbleFadeDuration,
       vsync: this,
     );
+    _ambientRandom = widget.ambientRandom ?? math.Random();
     _startWanderAfter(_wanderInitialDelay);
     _welcomeTimer = Timer(_initialWelcomeDuration, _finishInitialWelcome);
   }
@@ -373,13 +455,17 @@ class _IdleNokiGroupState extends State<_IdleNokiGroup>
   @override
   void didUpdateWidget(covariant _IdleNokiGroup oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.isProcessing != widget.isProcessing) {
+      if (widget.isProcessing) {
+        _beginProcessing();
+      } else {
+        _resumeAfterProcessing();
+      }
+    }
     if (oldWidget.statusMessage == widget.statusMessage) return;
-    if (widget.statusMessage != null) {
-      _bubbleTimer?.cancel();
-      _bubbleFadeController.stop();
-      _hidingIdleBubble = false;
-      _showingIdleBubble = false;
-    } else if (!_showingWelcome) {
+    if (widget.statusMessage != null || widget.isProcessing) {
+      _cancelIdleBubble();
+    } else if (!_showingWelcome && !_ambientThinking) {
       _scheduleIdleBubbleAfter(_idleBubbleHiddenDuration);
     }
   }
@@ -387,7 +473,7 @@ class _IdleNokiGroupState extends State<_IdleNokiGroup>
   void _finishInitialWelcome() {
     if (!mounted) return;
     setState(() => _showingWelcome = false);
-    if (widget.statusMessage == null) {
+    if (widget.statusMessage == null && !widget.isProcessing) {
       _scheduleIdleBubbleAfter(_idleBubbleHiddenDuration);
     }
   }
@@ -395,17 +481,102 @@ class _IdleNokiGroupState extends State<_IdleNokiGroup>
   void _onWanderStatus(AnimationStatus status) {
     if (status != AnimationStatus.completed) return;
     _wanderFrom = _wanderTo;
+    _shopMovementActive = false;
+    if (_canShowAmbientThinking &&
+        _wanderTo == 0 &&
+        _ambientRandom.nextDouble() < widget.ambientThinkingChance) {
+      _startAmbientThinking();
+      return;
+    }
+    _advanceWander();
+  }
+
+  bool get _canChooseShopMovement =>
+      !widget.isProcessing &&
+      widget.statusMessage == null &&
+      !_showingWelcome &&
+      !_ambientThinking;
+
+  void _advanceWander({bool allowShop = true}) {
     _wanderTargetIndex = (_wanderTargetIndex + 1) % _wanderTargets.length;
     _wanderTo = _wanderTargets[_wanderTargetIndex];
+    _facingRight = _wanderTo > _wanderFrom;
+    _shopMovementActive =
+        allowShop &&
+        _canChooseShopMovement &&
+        _ambientRandom.nextDouble() < widget.shopMovementChance;
     _wanderController.reset();
     _startWanderAfter(_betweenWanderLegs);
   }
 
-  void _startWanderAfter(Duration delay) {
+  void _startWanderAfter(Duration delay, {bool resume = false}) {
     _nextWander?.cancel();
     _nextWander = Timer(delay, () {
-      if (mounted) _wanderController.forward(from: 0);
+      if (!mounted || widget.isProcessing || _ambientThinking) return;
+      if (resume && _wanderController.value > 0) {
+        _wanderController.forward();
+      } else {
+        _wanderController.forward(from: 0);
+      }
     });
+  }
+
+  Duration get _nextAmbientThinkingDuration =>
+      widget.ambientThinkingDuration ??
+      Duration(seconds: 2 + _ambientRandom.nextInt(3));
+
+  void _startAmbientThinking() {
+    _cancelIdleBubble();
+    setState(() => _ambientThinking = true);
+    _ambientThinkingTimer?.cancel();
+    _ambientThinkingTimer = Timer(_nextAmbientThinkingDuration, () {
+      if (!mounted || widget.isProcessing) return;
+      setState(() => _ambientThinking = false);
+      _advanceWander(allowShop: false);
+      if (!_showingWelcome && widget.statusMessage == null) {
+        _scheduleIdleBubbleAfter(_idleBubbleHiddenDuration);
+      }
+    });
+  }
+
+  void _beginProcessing() {
+    _nextWander?.cancel();
+    _ambientThinkingTimer?.cancel();
+    final currentOffset = _currentWanderOffset;
+    _wanderController.stop();
+    _wanderController.reset();
+    _wanderFrom = currentOffset;
+    _wanderTo = currentOffset;
+    _cancelIdleBubble();
+    _ambientThinking = false;
+    _shopMovementActive = false;
+  }
+
+  void _resumeAfterProcessing() {
+    final pendingTarget = _wanderTargets[_wanderTargetIndex];
+    if ((pendingTarget - _wanderFrom).abs() < .001) {
+      _advanceWander(allowShop: false);
+    } else {
+      _wanderTo = pendingTarget;
+      _facingRight = _wanderTo > _wanderFrom;
+      _shopMovementActive = false;
+      _startWanderAfter(_betweenWanderLegs);
+    }
+    if (!_showingWelcome && widget.statusMessage == null) {
+      _scheduleIdleBubbleAfter(_idleBubbleHiddenDuration);
+    }
+  }
+
+  double get _currentWanderOffset {
+    final progress = (1 - math.cos(_wanderController.value * math.pi)) / 2;
+    return _wanderFrom + (_wanderTo - _wanderFrom) * progress;
+  }
+
+  void _cancelIdleBubble() {
+    _bubbleTimer?.cancel();
+    _bubbleFadeController.stop();
+    _hidingIdleBubble = false;
+    _showingIdleBubble = false;
   }
 
   void _scheduleIdleBubbleAfter(Duration delay) {
@@ -414,7 +585,12 @@ class _IdleNokiGroupState extends State<_IdleNokiGroup>
   }
 
   void _showIdleBubble() {
-    if (!mounted || widget.statusMessage != null) return;
+    if (!mounted ||
+        widget.statusMessage != null ||
+        widget.isProcessing ||
+        _ambientThinking) {
+      return;
+    }
     setState(() {
       _idleMessage = _idleMessages[_idleMessageIndex];
       _idleMessageIndex = (_idleMessageIndex + 1) % _idleMessages.length;
@@ -429,7 +605,11 @@ class _IdleNokiGroupState extends State<_IdleNokiGroup>
     _hidingIdleBubble = true;
     _bubbleFadeController.reverse();
     _bubbleTimer = Timer(_idleBubbleFadeDuration, () {
-      if (!mounted || widget.statusMessage != null || !_hidingIdleBubble) {
+      if (!mounted ||
+          widget.statusMessage != null ||
+          widget.isProcessing ||
+          _ambientThinking ||
+          !_hidingIdleBubble) {
         return;
       }
       setState(() {
@@ -445,6 +625,7 @@ class _IdleNokiGroupState extends State<_IdleNokiGroup>
     _nextWander?.cancel();
     _bubbleTimer?.cancel();
     _welcomeTimer?.cancel();
+    _ambientThinkingTimer?.cancel();
     _wanderController
       ..removeStatusListener(_onWanderStatus)
       ..dispose();
@@ -467,6 +648,10 @@ class _IdleNokiGroupState extends State<_IdleNokiGroup>
             widget.statusMessage != null ||
             _showingWelcome ||
             _showingIdleBubble;
+        final spritePresentation = _NokiSpritePresentation.forState(
+          state: _visualState,
+          facingRight: _facingRight,
+        );
         return Transform.translate(
           key: const Key('noki-idle-wander'),
           offset: Offset(horizontalOffset, 0),
@@ -478,13 +663,34 @@ class _IdleNokiGroupState extends State<_IdleNokiGroup>
                   key: const Key('noki-idle-sprite'),
                   alignment: Alignment.center,
                   transform: Matrix4.diagonal3Values(
-                    _movingRight ? -1 : 1,
+                    spritePresentation.mirrored ? -1 : 1,
                     1,
                     1,
                   ),
                   child: SizedBox(
                     key: const Key('noki-idle-sprite-content'),
-                    child: widget.noki,
+                    child: _IdleNoki(
+                      child: Transform.translate(
+                        key: const Key('noki-sprite-ground-offset'),
+                        offset: Offset(
+                          0,
+                          widget.characterSize *
+                              spritePresentation.groundAnchorOffsetFraction,
+                        ),
+                        child: Semantics(
+                          label: '窩有小幫手',
+                          child: IgnorePointer(
+                            child: Image.asset(
+                              spritePresentation.assetPath,
+                              key: const Key('noki-sprite-image'),
+                              fit: BoxFit.contain,
+                              gaplessPlayback: true,
+                              excludeFromSemantics: true,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -529,20 +735,31 @@ class HomeScene extends StatefulWidget {
     required this.onShopping,
     required this.onBackgroundTap,
     this.statusMessage,
+    this.isProcessing = false,
     this.workSurfaceOpen = false,
     this.localTime = deviceLocalTime,
     this.selectAmbienceAsset = selectWindowAmbienceAsset,
     this.ambienceCheckInterval = const Duration(minutes: 1),
-  });
+    this.ambientThinkingChance = .25,
+    this.shopMovementChance = .22,
+    this.ambientThinkingDuration,
+    this.ambientRandom,
+  }) : assert(ambientThinkingChance >= 0 && ambientThinkingChance <= 1),
+       assert(shopMovementChance >= 0 && shopMovementChance <= 1);
   final VoidCallback onInventory;
   final VoidCallback onShopping;
   final VoidCallback onBackgroundTap;
   final String? statusMessage;
+  final bool isProcessing;
   final bool workSurfaceOpen;
 
   final DateTime Function() localTime;
   final WindowAmbienceAssetSelector selectAmbienceAsset;
   final Duration ambienceCheckInterval;
+  final double ambientThinkingChance;
+  final double shopMovementChance;
+  final Duration? ambientThinkingDuration;
+  final math.Random? ambientRandom;
 
   @override
   State<HomeScene> createState() => _HomeSceneState();
@@ -552,6 +769,7 @@ class _HomeSceneState extends State<HomeScene> {
   late WindowAmbiencePeriod _ambiencePeriod;
   late String _ambienceAsset;
   Timer? _ambienceTimer;
+  var _nokiSpritesPrecached = false;
 
   VoidCallback get onInventory => widget.onInventory;
   VoidCallback get onShopping => widget.onShopping;
@@ -568,6 +786,16 @@ class _HomeSceneState extends State<HomeScene> {
       widget.ambienceCheckInterval,
       (_) => _checkAmbiencePeriod(),
     );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_nokiSpritesPrecached) return;
+    _nokiSpritesPrecached = true;
+    for (final assetPath in _nokiSpriteAssets) {
+      precacheImage(AssetImage(assetPath), context);
+    }
   }
 
   String _assetFor(WindowAmbiencePeriod period) {
@@ -601,6 +829,10 @@ class _HomeSceneState extends State<HomeScene> {
       final cabinetHeight = height * .672;
       final imageWidth = math.min(cabinetWidth, cabinetHeight / 2);
       final imageHeight = imageWidth * 2;
+      final plantHeight = imageHeight * .62 * 1.1;
+      final plantWidth = plantHeight * (2 / 3);
+      final plantLeft = cabinetWidth * .68;
+      final plantBottomOffset = imageHeight * .13;
       final cartHeight = imageHeight * .51;
       final cartWidth = cartHeight * (1071 / 1118);
       final originalCharacterSize =
@@ -608,6 +840,12 @@ class _HomeSceneState extends State<HomeScene> {
       final characterSize = originalCharacterSize * .9 * 1.15;
       final characterLeft = (width - characterSize) / 2;
       final characterBottom = height * .12 - characterSize / 2;
+      final workSurfaceSprite = _NokiSpritePresentation.forState(
+        state: widget.isProcessing
+            ? _NokiVisualState.processingThinking
+            : _NokiVisualState.idle,
+        facingRight: false,
+      );
       return Container(
         key: const Key('room'),
         decoration: BoxDecoration(
@@ -645,13 +883,33 @@ class _HomeSceneState extends State<HomeScene> {
                           child: Semantics(
                             label: '窩有小幫手',
                             child: IgnorePointer(
-                              child: Image.asset(
-                                'assets/images/agent/noki_original.png',
+                              child: SizedBox(
                                 key: const Key('agent'),
                                 width: size,
                                 height: size,
-                                fit: BoxFit.contain,
-                                excludeFromSemantics: true,
+                                child: Transform(
+                                  alignment: Alignment.center,
+                                  transform: Matrix4.diagonal3Values(
+                                    workSurfaceSprite.mirrored ? -1 : 1,
+                                    1,
+                                    1,
+                                  ),
+                                  child: Transform.translate(
+                                    offset: Offset(
+                                      0,
+                                      size *
+                                          workSurfaceSprite
+                                              .groundAnchorOffsetFraction,
+                                    ),
+                                    child: Image.asset(
+                                      workSurfaceSprite.assetPath,
+                                      key: const Key('noki-sprite-image'),
+                                      fit: BoxFit.contain,
+                                      gaplessPlayback: true,
+                                      excludeFromSemantics: true,
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
@@ -717,12 +975,30 @@ class _HomeSceneState extends State<HomeScene> {
                     width: cabinetWidth,
                     height: cabinetHeight,
                     child: Stack(
+                      clipBehavior: Clip.none,
                       children: [
                         Positioned.fill(
                           child: Image.asset(
                             'assets/images/objects/storage_cabinet.png',
                             fit: BoxFit.contain,
                             excludeFromSemantics: true,
+                          ),
+                        ),
+                        Positioned(
+                          key: const Key('plant-layer'),
+                          left: plantLeft,
+                          bottom:
+                              (cabinetHeight - imageHeight) / 2 +
+                              plantBottomOffset,
+                          width: plantWidth,
+                          height: plantHeight,
+                          child: IgnorePointer(
+                            child: Image.asset(
+                              'assets/images/objects/plant1.png',
+                              key: const Key('plant'),
+                              fit: BoxFit.contain,
+                              excludeFromSemantics: true,
+                            ),
                           ),
                         ),
                         Positioned(
@@ -798,18 +1074,11 @@ class _HomeSceneState extends State<HomeScene> {
                     sceneWidth: width,
                     characterLeft: characterLeft,
                     statusMessage: statusMessage,
-                    noki: _IdleNoki(
-                      child: Semantics(
-                        label: '窩有小幫手',
-                        child: IgnorePointer(
-                          child: Image.asset(
-                            'assets/images/agent/noki_original.png',
-                            fit: BoxFit.contain,
-                            excludeFromSemantics: true,
-                          ),
-                        ),
-                      ),
-                    ),
+                    isProcessing: widget.isProcessing,
+                    ambientThinkingChance: widget.ambientThinkingChance,
+                    shopMovementChance: widget.shopMovementChance,
+                    ambientThinkingDuration: widget.ambientThinkingDuration,
+                    ambientRandom: widget.ambientRandom,
                   ),
                 ),
               ),

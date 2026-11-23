@@ -1,5 +1,7 @@
 import asyncio
+import tomllib
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,11 +23,17 @@ from app.services.cosmos_write import OperationIdConflict, WriteStatus
 from app.services.shopping.intents import ShoppingIntentWriteResult
 from app.services.speech import MockSpeechToTextService
 from app.tools.queries import QueryTools
+from app.version import APP_VERSION, APP_VERSION_LABEL
 
 
 def test_health_and_openapi():
     with authenticated_client(create_app()) as client:
-        assert client.get("/health").json() == {"status": "ok"}
+        response = client.get("/health")
+        assert response.json() == {"status": "ok", "version": APP_VERSION_LABEL}
+        project = tomllib.loads(
+            (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        assert project["project"]["version"] == APP_VERSION
         schema = client.get("/openapi.json").json()
         assert {
             "AgentRequest",

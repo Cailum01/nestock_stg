@@ -20,6 +20,13 @@ Google ID token and returns a separate Nestock bearer. Configure the Android
 package name and signing SHA-1 in the Google OAuth client; never put a client
 secret in the app.
 
+## Release version
+
+`pubspec.yaml` is the Android release metadata source: `MAJOR.MINOR.PATCH` is
+the app version name and the `+BUILD` suffix is the monotonically increasing
+Android version code. The current app version is `1.0.1` (build `2`). Preserve
+the home-to-Connect navigation and approved scene artwork in release builds.
+
 ## C2 development
 
 For Android Emulator, the HTTP clients default to `http://10.0.2.2:8000`.

@@ -3,12 +3,13 @@ from fastapi import FastAPI
 from app.api.forecast import router as forecast_router
 from app.api.routes import router
 from app.core.config import settings
+from app.version import APP_VERSION
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
-        version="0.1.0",
+        version=APP_VERSION,
         description="Skeleton v1. Demo reads only; Agent contracts are provisional.",
     )
     app.include_router(router)

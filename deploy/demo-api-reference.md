@@ -22,7 +22,7 @@
 
 | 端點 | 用途 | 負責 | 本 checkout 狀態 | 對應 Demo 情境 |
 | --- | --- | --- | --- | --- |
-| `GET /health` | 存活檢查 | 共用 | ✅ 只回 `{"status":"ok"}`，**不檢查任何下游** | A 雲端連線 |
+| `GET /health` | 存活檢查 | 共用 | ✅ 回 `{"status":"ok","version":"v1.0.1"}`；**不檢查任何下游** | A 雲端連線 |
 | `GET /inventory` | 庫存列表 | B1 | ✅ 有 Cosmos opt-in | B、D、F、G |
 | `GET /shopping` | 待購清單 | B1 / C1 | ✅ 有 Cosmos opt-in | D、F |
 | `GET /forecast` | 全家預測 | B2 | ✅ 已完成 | C（洗衣精快用完） |
@@ -54,7 +54,7 @@ Agent 請求／回應欄位（`AgentRequest`、`AgentResponse`、`PendingApprova
 | # | 缺口 | 現況 | 負責 |
 | --- | --- | --- | --- |
 | G1 | `/agent/resume` 與確認卡 | **已接上**（有 Cosmos 才可用；雲端對未知卡回 404）。真實的確認、取消、重試冪等，雲端尚未實測 | A1（情境 F/G/H 需 A1 / C1 實測） |
-| G2 | `/health` 不檢查下游 | 仍只回 `{"status":"ok"}`；以 `deploy/smoke_test.py` 的分層檢查取代，**未加 `/health/deep`**（不動共用檔） | B2（已用替代方案） |
+| G2 | `/health` 不檢查下游 | 回報版本識別與 `status`，不執行下游探測；以 `deploy/smoke_test.py` 的分層檢查取代，**未加 `/health/deep`** | B2（已用替代方案） |
 | G3 | 沒有獨立的 Vision 路由 | 路由表只有 media 上傳與 speech；照片辨識走哪條路徑需 A2 / A1 確認。雲端 Vision 無獨立證據 | A2 + A1 |
 | G4 | 暫存上傳狀態在記憶體 | 確認卡已改存 Cosmos；**暫存上傳仍可能在記憶體**（雲端未設 Blob Storage，見 Issue #98） | A2 |
 | G5 | 預測時間語意 | **已解決**：雲端預測為 `estimated` / `insufficient_data`，洗衣精剩約 3 天、衛生紙約 40 天 | B2（完成） |

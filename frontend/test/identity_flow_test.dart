@@ -212,7 +212,7 @@ void main() {
     );
   });
 
-  testWidgets('main home does not expose Connect household management', (
+  testWidgets('home brand opens Connect without changing active household', (
     tester,
   ) async {
     final controller = IdentityController(
@@ -239,9 +239,20 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(controller.selectedHouseholdId, 'active-household');
+    final connect = find.byKey(const Key('home-brand-connect'));
+    expect(connect, findsOneWidget);
+    await tester.tap(connect);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Connect a household'), findsOneWidget);
+    expect(find.byKey(const Key('connect-household-page')), findsOneWidget);
+    expect(find.byKey(const Key('connect-create-household')), findsOneWidget);
+    expect(find.byKey(const Key('connect-redeem-invite')), findsOneWidget);
+    expect(controller.selectedHouseholdId, 'active-household');
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
     expect(find.text('Nestock｜窩有'), findsOneWidget);
-    expect(find.byKey(const Key('home-brand-connect')), findsNothing);
-    expect(find.text('Connect a household'), findsNothing);
     expect(controller.selectedHouseholdId, 'active-household');
   });
 

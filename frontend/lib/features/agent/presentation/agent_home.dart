@@ -60,6 +60,7 @@ class AgentHome extends StatefulWidget {
     required this.photoUpload,
     required this.speechRecorder,
     required this.speechClient,
+    this.onConnectHousehold,
   });
   final AgentClient client;
   final PhotoClient photoClient;
@@ -70,6 +71,7 @@ class AgentHome extends StatefulWidget {
   final InventoryViewClient inventoryClient;
   final ShoppingViewClient shoppingClient;
   final CommerceOptionsClient commerceOptionsClient;
+  final VoidCallback? onConnectHousehold;
   @override
   State<AgentHome> createState() => _AgentHomeState();
 }
@@ -872,7 +874,34 @@ class _AgentHomeState extends State<AgentHome> {
             Scaffold(
               backgroundColor: Colors.transparent,
               appBar: AppBar(
-                title: const Text('Nestock｜窩有', style: TextStyle(fontSize: 18)),
+                title: widget.onConnectHousehold == null
+                    ? const Text('Nestock｜窩有', style: TextStyle(fontSize: 18))
+                    : Semantics(
+                        button: true,
+                        label: 'Connect a household',
+                        child: InkWell(
+                          key: const Key('home-brand-connect'),
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: widget.onConnectHousehold,
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 6,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.home_outlined, size: 20),
+                                SizedBox(width: 8),
+                                Text(
+                                  'Nestock｜窩有',
+                                  style: TextStyle(fontSize: 18),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
                 backgroundColor: Colors.transparent,
                 surfaceTintColor: Colors.transparent,
               ),

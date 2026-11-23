@@ -66,13 +66,24 @@ class NestockApp extends StatelessWidget {
           : IdentityGate(
               controller: controller,
               connectHouseholdOnStart: startPage == 'connect_household',
-              authenticatedHomeBuilder: (_, session) =>
-                  _buildAgentHome(session),
+              authenticatedHomeBuilder: (context, session) => _buildAgentHome(
+                session,
+                onConnectHousehold: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => HouseholdOnboarding(controller: session),
+                    ),
+                  );
+                },
+              ),
             ),
     );
   }
 
-  Widget _buildAgentHome(IdentityController? session) => AgentHome(
+  Widget _buildAgentHome(
+    IdentityController? session, {
+    VoidCallback? onConnectHousehold,
+  }) => AgentHome(
     client: agentClient,
     photoClient: photoClient,
     cameraCapture: cameraCapture,
@@ -102,6 +113,7 @@ class NestockApp extends StatelessWidget {
     inventoryClient: inventoryClient,
     shoppingClient: shoppingClient,
     commerceOptionsClient: commerceOptionsClient,
+    onConnectHousehold: onConnectHousehold,
   );
 }
 

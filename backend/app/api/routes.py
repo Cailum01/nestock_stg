@@ -63,6 +63,7 @@ from app.services.shopping.intents import (
 )
 from app.services.shopping.media_handoff import MediaRetentionPostCommitTrigger
 from app.services.speech import SpeechServiceError, SpeechToTextService
+from app.version import APP_VERSION_LABEL
 
 router = APIRouter(route_class=IdentityErrorRoute)
 router.include_router(identity_router)
@@ -72,11 +73,12 @@ logger = logging.getLogger(__name__)
 
 class HealthResponse(ContractModel):
     status: Literal["ok"] = "ok"
+    version: str
 
 
 @router.get("/health", response_model=HealthResponse, tags=["health"])
 async def health() -> HealthResponse:
-    return HealthResponse()
+    return HealthResponse(version=APP_VERSION_LABEL)
 
 
 @router.get("/inventory", response_model=list[InventoryItem], tags=["demo"])

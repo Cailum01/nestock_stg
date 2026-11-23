@@ -121,7 +121,10 @@ class Backend:
                     for r in s["inventory"]
                 ]
                 routes = {
-                    "/health": {"status": "ok"},
+                    "/health": {
+                        "status": "ok",
+                        "version": smoke.EXPECTED_BACKEND_VERSION,
+                    },
                     "/inventory": s["inventory"],
                     "/shopping": s["shopping"],
                     "/forecast": s.get("forecast", forecast),
@@ -316,6 +319,24 @@ def test_smoke_passes_every_read_only_layer_on_a_healthy_backend(backend, tmp_pa
     assert backend.quantity(MOUSE)["quantity"] == 4
     assert backend.state["card"] is None
     assert "/agent/messages" not in backend.requests
+
+
+@pytest.mark.parametrize(
+    "health",
+    [
+        {"status": "ok"},
+        {"status": "ok", "version": "v1.0.0"},
+        {"status": "degraded", "version": smoke.EXPECTED_BACKEND_VERSION},
+    ],
+)
+def test_health_requires_the_expected_stg_version(health):
+    class Client:
+        def get_json(self, path):
+            assert path == "/health"
+            return health
+
+    with pytest.raises(smoke.SmokeFailure, match="expected status='ok'"):
+        smoke.check_health(Client(), {})
 
 
 def test_default_unauthenticated_run_expects_401_and_leaves_no_cards_or_data(backend, tmp_path):

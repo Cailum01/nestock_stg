@@ -56,6 +56,7 @@ DEFAULT_AUDIO = Path(__file__).resolve().parent / "smoke-audio-detergent.wav"
 DEFAULT_IMAGE = REPO_ROOT / "backend" / "tests" / "fixtures" / "vision" / "img_single.jpg"
 
 APP_NAME = "nestock-api"
+EXPECTED_BACKEND_VERSION = "v1.0.1"
 DEFAULT_EXPECTED_COMMIT = "origin/stg"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "10.0.2.2", "::1"}
 
@@ -296,9 +297,16 @@ def check_version(client: Client, ctx: dict) -> str:
 
 def check_health(client: Client, ctx: dict) -> str:
     body = client.get_json("/health")
-    if body != {"status": "ok"}:
-        raise SmokeFailure(f"/health returned {body!r}, expected {{'status': 'ok'}}")
-    return "status ok"
+    if (
+        not isinstance(body, dict)
+        or body.get("status") != "ok"
+        or body.get("version") != EXPECTED_BACKEND_VERSION
+    ):
+        raise SmokeFailure(
+            f"/health returned {body!r}, expected status='ok' and "
+            f"version={EXPECTED_BACKEND_VERSION!r}"
+        )
+    return f"status ok ({EXPECTED_BACKEND_VERSION})"
 
 
 def unauthenticated_probe(

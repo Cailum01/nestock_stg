@@ -1,7 +1,7 @@
 name: nestock
 description: Nestock｜窩有 — scene-based household inventory skeleton.
 publish_to: none
-version: 1.0.3+4
+version: 1.0.6+7
 environment:
   sdk: ^3.13.5
 dependencies:

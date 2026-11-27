@@ -24,7 +24,7 @@ secret in the app.
 
 `pubspec.yaml` is the Android release metadata source: `MAJOR.MINOR.PATCH` is
 the app version name and the `+BUILD` suffix is the monotonically increasing
-Android version code. The current app version is `1.0.1` (build `2`). Preserve
+Android version code. The current app version is `1.0.7` (build `8`). Preserve
 the home-to-Connect navigation and approved scene artwork in release builds.
 
 ## C2 development

@@ -8,6 +8,24 @@ From the repository root, run:
 .\deploy\build-stg-apk.ps1
 ```
 
+The release build uses an explicit Android `release` signing configuration.
+Before building, the helper requires these four environment variables to be
+available locally: `NESTOCK_ANDROID_KEYSTORE_PATH`,
+`NESTOCK_ANDROID_STORE_PASSWORD`, `NESTOCK_ANDROID_KEY_ALIAS`, and
+`NESTOCK_ANDROID_KEY_PASSWORD`. Supply them through a protected local
+environment or approved secret store; never put credential values in source,
+`.env`, shell history, or build logs. The key file must be owned by the current
+Windows user and grant access only to that user, `SYSTEM`, and local
+Administrators.
+
+The helper verifies that the configured certificate has SHA-256 fingerprint
+`7e940a27cde13001c0cffd0b676c3723ea8cc2622f5ecb35a729bad6af396d27` before
+building, then verifies the APK signature against the same fingerprint.
+Gradle's release build no longer falls back to the debug signing configuration.
+The existing keystore is used as-is; the build does not generate or modify key
+material. A missing, inaccessible, or mismatched key blocks both dry-run and
+build.
+
 ### Release-ready workflow
 
 1. Land the intended source and version change on `origin/stg`; check out its
@@ -33,8 +51,10 @@ The build is blocked if the checkout is not clean `stg`, `HEAD` differs from
 either the local tracking ref or live `origin/stg`, the GitHub release/version
 cannot be read, the candidate app version or build number is not newer, the
 active gcloud project/service/client ID is invalid, live OpenAPI lacks the
-identity route, or Flutter is unavailable. Fix the source/version and land it
-on `origin/stg` yourself; the script never bypasses these checks.
+identity route, Flutter is unavailable, or the configured signer is missing,
+inaccessible, or does not match the approved certificate. Fix the source,
+version, or local signer configuration and land source changes on `origin/stg`;
+the script never bypasses these checks.
 
 ## Enable per-record TTL on `household-data`
 

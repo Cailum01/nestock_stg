@@ -12,6 +12,13 @@ $Service = 'nestock-stg-api'
 $GitHubRepository = 'Cailum01/nestock_stg'
 $GoogleClientIdVariable = 'NESTOCK_GOOGLE_CLIENT_ID'
 $RetiredAzureHost = 'nestock-api.ambitiousgrass-c37169f5.eastasia.azurecontainerapps.io'
+$ExpectedSigningCertificateSha256 = '7e940a27cde13001c0cffd0b676c3723ea8cc2622f5ecb35a729bad6af396d27'
+$SigningEnvironmentVariables = @(
+    'NESTOCK_ANDROID_KEYSTORE_PATH',
+    'NESTOCK_ANDROID_STORE_PASSWORD',
+    'NESTOCK_ANDROID_KEY_ALIAS',
+    'NESTOCK_ANDROID_KEY_PASSWORD'
+)
 
 function Invoke-QuietNative {
     param(
@@ -43,6 +50,152 @@ function Invoke-Gcloud {
     }
 
     return ($output -join [Environment]::NewLine).Trim()
+}
+
+function Initialize-ReleaseSigningConfiguration {
+    $missing = @(
+        $SigningEnvironmentVariables | Where-Object {
+            [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_))
+        }
+    )
+    if ($missing.Count -gt 0) {
+        throw "Release signing is blocked; configure local environment variable(s): $($missing -join ', ')."
+    }
+
+    $keystorePath = [Environment]::GetEnvironmentVariable('NESTOCK_ANDROID_KEYSTORE_PATH')
+    $keyAlias = [Environment]::GetEnvironmentVariable('NESTOCK_ANDROID_KEY_ALIAS')
+    if (-not [System.IO.Path]::IsPathRooted($keystorePath)) {
+        throw 'Release signing is blocked; NESTOCK_ANDROID_KEYSTORE_PATH must be an absolute path.'
+    }
+    if (-not (Test-Path -LiteralPath $keystorePath -PathType Leaf)) {
+        throw 'Release signing is blocked; the configured keystore file is unavailable.'
+    }
+    if ((Get-Item -LiteralPath $keystorePath).Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        throw 'Release signing is blocked; reparse-point keystore paths are not accepted.'
+    }
+
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+        throw 'Release signing is blocked; this gate requires Windows keystore ACL verification.'
+    }
+
+    try {
+        $keystoreAcl = Get-Acl -LiteralPath $keystorePath
+        $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        if ($keystoreAcl.Owner -ne $currentIdentity) {
+            throw 'The signing keystore is not owned by the current Windows user.'
+        }
+        $trustedIdentities = @(
+            $currentIdentity,
+            'NT AUTHORITY\SYSTEM',
+            'BUILTIN\Administrators'
+        )
+        foreach ($rule in $keystoreAcl.Access) {
+            if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                $trustedIdentities -notcontains $rule.IdentityReference.Value) {
+                throw 'The signing keystore grants access beyond the current user, SYSTEM, or Administrators.'
+            }
+        }
+    }
+    catch {
+        throw "Release signing is blocked by keystore custody validation: $($_.Exception.Message)"
+    }
+
+    $keytool = Get-Command keytool -ErrorAction SilentlyContinue
+    if ($null -eq $keytool) {
+        throw 'Release signing is blocked; keytool is required to verify the configured certificate.'
+    }
+    $configuredJavaHome = $env:JAVA_HOME
+    if ([string]::IsNullOrWhiteSpace($configuredJavaHome) -or
+        -not (Test-Path -LiteralPath (Join-Path $configuredJavaHome 'bin\java.exe') -PathType Leaf)) {
+        $keytoolJdkHome = Split-Path -Parent (Split-Path -Parent $keytool.Source)
+        if (-not (Test-Path -LiteralPath (Join-Path $keytoolJdkHome 'bin\java.exe') -PathType Leaf)) {
+            throw 'Release signing is blocked; JAVA_HOME does not identify a usable JDK.'
+        }
+        $env:JAVA_HOME = $keytoolJdkHome
+    }
+    $keytoolOutput = @(& $keytool.Source -list -v `
+        -keystore $keystorePath `
+        -alias $keyAlias `
+        -storepass:env NESTOCK_ANDROID_STORE_PASSWORD 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Release signing is blocked; the configured keystore or alias could not be verified.'
+    }
+
+    $fingerprintLine = @(
+        $keytoolOutput | Where-Object { [string]$_ -match 'SHA256:' }
+    ) | Select-Object -First 1
+    if ([string]$fingerprintLine -notmatch 'SHA256:\s*(?<digest>(?:[0-9A-Fa-f]{2}:?){32})') {
+        throw 'Release signing is blocked; keytool did not report a SHA-256 certificate fingerprint.'
+    }
+    $actualFingerprint = ($Matches.digest -replace ':', '').ToLowerInvariant()
+    if ($actualFingerprint -ne $ExpectedSigningCertificateSha256) {
+        throw 'Release signing is blocked; the configured key does not match the approved update signer.'
+    }
+
+}
+
+function Get-ApkSignerPath {
+    $command = Get-Command apksigner -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+
+    $sdkRoots = @(
+        $env:ANDROID_SDK_ROOT,
+        $env:ANDROID_HOME,
+        $(if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+            Join-Path $env:LOCALAPPDATA 'Android\Sdk'
+        })
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+
+    $signerPaths = @(
+        foreach ($sdkRoot in $sdkRoots) {
+            $buildToolsPath = Join-Path $sdkRoot 'build-tools'
+            if (Test-Path -LiteralPath $buildToolsPath -PathType Container) {
+                foreach ($versionDirectory in Get-ChildItem -LiteralPath $buildToolsPath -Directory) {
+                    foreach ($signerName in @('apksigner.bat', 'apksigner.exe')) {
+                        $candidate = Join-Path $versionDirectory.FullName $signerName
+                        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                            [pscustomobject]@{
+                                Path = $candidate
+                                Version = $versionDirectory.Name
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+    $signer = $signerPaths |
+        Sort-Object { try { [version]$_.Version } catch { [version]'0.0' } } -Descending |
+        Select-Object -First 1
+    if ($null -eq $signer) {
+        throw 'Release signing is blocked; Android SDK apksigner is required to verify the final APK.'
+    }
+    return $signer.Path
+}
+
+function Test-ApkSignerFingerprint {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ApkPath
+    )
+
+    $signerOutput = @(& $script:ApkSignerPath verify --print-certs $ApkPath 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'APK verification failed; apksigner could not validate the APK signature.'
+    }
+    $fingerprints = @(
+        foreach ($line in $signerOutput) {
+            if ([string]$line -match 'Signer #\d+ certificate SHA-256 digest:\s*(?<digest>[0-9A-Fa-f]{64})') {
+                $Matches.digest.ToLowerInvariant()
+            }
+        }
+    )
+    if ($fingerprints.Count -ne 1 -or
+        $fingerprints[0] -ne $ExpectedSigningCertificateSha256) {
+        throw 'APK verification failed; the release certificate does not match the approved update signer.'
+    }
 }
 
 function Test-ApkContainsText {
@@ -249,6 +402,9 @@ if ($null -eq $flutterCommand) {
     throw 'Flutter is not available on PATH.'
 }
 
+Initialize-ReleaseSigningConfiguration
+$script:ApkSignerPath = Get-ApkSignerPath
+
 $activeProject = Invoke-Gcloud -Arguments @('config', 'get-value', 'project')
 if ($activeProject -ne $Project) {
     throw "Active gcloud project must be '$Project' (current project: '$activeProject')."
@@ -326,6 +482,7 @@ Write-Host "STG API: $apiBaseUrl"
 Write-Host "Flutter app version: $appVersion"
 Write-Host "Release APK output: $apkPath"
 Write-Host $script:StgReleaseSummary
+Write-Host 'Release signing: PASS (local key custody and approved certificate verified).'
 
 if ($releaseGateBlockers.Count -eq 0) {
     Write-Host 'Release gate: PASS (clean current stg checkout; version and build exceed the latest STG release).'
@@ -388,6 +545,7 @@ try {
     if (-not (Test-ApkContainsText -ApkPath $apkPath -Text $googleClientId)) {
         throw 'APK verification failed: the Google client ID was not found in the built APK.'
     }
+    Test-ApkSignerFingerprint -ApkPath $apkPath
     if (Test-ApkContainsText -ApkPath $apkPath -Text $RetiredAzureHost) {
         throw 'APK verification failed: the retired Azure API host is embedded in the built APK.'
     }
@@ -400,6 +558,12 @@ catch {
             $outputLine = [string]$line
             if (-not [string]::IsNullOrEmpty($googleClientId)) {
                 $outputLine = $outputLine.Replace($googleClientId, '[REDACTED]')
+            }
+            foreach ($variableName in $SigningEnvironmentVariables) {
+                $sensitiveValue = [Environment]::GetEnvironmentVariable($variableName)
+                if (-not [string]::IsNullOrEmpty($sensitiveValue)) {
+                    $outputLine = $outputLine.Replace($sensitiveValue, '[REDACTED]')
+                }
             }
             Write-Host $outputLine
         }
@@ -429,4 +593,4 @@ finally {
 
 Write-Host "Release APK built and verified: $apkPath"
 Write-Host "Version: $appVersion"
-Write-Host 'Verified: GCP API URL and Google OAuth client ID are embedded; retired Azure host is absent.'
+Write-Host 'Verified: approved update signer, GCP API URL, and Google OAuth client ID are present; retired Azure host is absent.'

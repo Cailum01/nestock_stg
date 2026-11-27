@@ -34,6 +34,15 @@ APK. It stops before invoking Flutter when the client ID is missing. It requires
 authenticated `gcloud` access; do not copy the client ID into source or local
 configuration files.
 
+Release APKs use a separate explicit Gradle `release` signing configuration.
+The approved local keystore, passwords, and alias are supplied through the
+`NESTOCK_ANDROID_KEYSTORE_PATH`, `NESTOCK_ANDROID_STORE_PASSWORD`,
+`NESTOCK_ANDROID_KEY_ALIAS`, and `NESTOCK_ANDROID_KEY_PASSWORD` environment
+variables. The release helper fails closed unless the keystore is private to the
+current Windows user and its certificate matches the existing update signer.
+Do not generate or replace this keystore; missing credentials or a different
+certificate require stopping the release build.
+
 ## Release version
 
 `pubspec.yaml` is the Android release metadata source: `MAJOR.MINOR.PATCH` is

@@ -18,13 +18,23 @@ environment or approved secret store; never put credential values in source,
 Windows user and grant access only to that user, `SYSTEM`, and local
 Administrators.
 
-The helper verifies that the configured certificate has SHA-256 fingerprint
-`7e940a27cde13001c0cffd0b676c3723ea8cc2622f5ecb35a729bad6af396d27` before
-building, then verifies the APK signature against the same fingerprint.
-Gradle's release build no longer falls back to the debug signing configuration.
-The existing keystore is used as-is; the build does not generate or modify key
-material. A missing, inaccessible, or mismatched key blocks both dry-run and
-build.
+The helper verifies the new release certificate and the v1.0.6 migration
+certificate before building. It signs the APK with the committed public
+certificate lineage in `frontend/android/app/stg-signing-lineage.bin`, then
+verifies the effective signer for Android API 27 and API 28. Android 9+ uses
+the new release key and can update v1.0.6 in place without uninstalling or
+clearing app data; the lineage grants installed-data transfer and disallows
+rollback to the old signer. Older Android versions continue using the old
+certificate to preserve compatibility. The old certificate is the standard
+Android debug certificate and is not secure; those older devices retain this
+risk until the minimum supported Android version is raised.
+
+The new keystore is local and must be protected by the current Windows user,
+`SYSTEM`, and local Administrators. Keep an encrypted, recoverable backup of
+the new keystore and its credentials outside the repository. Never put private
+key material or passwords in source, `.env`, shell history, or build logs. A
+missing, inaccessible, or mismatched key, lineage, or old migration signer
+blocks both dry-run and build.
 
 ### Release-ready workflow
 
@@ -45,16 +55,18 @@ build.
    `NESTOCK_GOOGLE_CLIENT_ID` from the `nestock-stg-api` Cloud Run service in
    `nestocke-stg` / `us-central1`, verifies live `/openapi.json` exposes
    `/identity/google`, then supplies the API, media, OAuth, and HTTP transport
-   Dart defines. The client ID is not printed or duplicated in a local `.env`.
+   Dart defines. It signs Android 9+ artifacts with the rotated release signer
+   and leaves the legacy signer for older supported Android versions. The
+   client ID is not printed or duplicated in a local `.env`.
 
 The build is blocked if the checkout is not clean `stg`, `HEAD` differs from
 either the local tracking ref or live `origin/stg`, the GitHub release/version
 cannot be read, the candidate app version or build number is not newer, the
 active gcloud project/service/client ID is invalid, live OpenAPI lacks the
-identity route, Flutter is unavailable, or the configured signer is missing,
-inaccessible, or does not match the approved certificate. Fix the source,
-version, or local signer configuration and land source changes on `origin/stg`;
-the script never bypasses these checks.
+identity route, Flutter is unavailable, or the configured signer, lineage, or
+migration certificate is missing, inaccessible, or does not match its approved
+fingerprint. Fix the source, version, or local signer configuration and land
+source changes on `origin/stg`; the script never bypasses these checks.
 
 ## Enable per-record TTL on `household-data`
 

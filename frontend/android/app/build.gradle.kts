@@ -13,7 +13,7 @@ val releaseSigningVariableNames = listOf(
     "NESTOCK_ANDROID_KEY_PASSWORD",
 )
 val expectedReleaseCertificateSha256 =
-    "7e940a27cde13001c0cffd0b676c3723ea8cc2622f5ecb35a729bad6af396d27"
+    "8a37ee353bc83da4601dd6e87046ed38cceadec34a7e04297da5fa0c5bc3c271"
 val releaseSigningValues = releaseSigningVariableNames.associateWith { System.getenv(it) }
 val releaseBuildRequested = gradle.startParameter.taskNames.any { taskName ->
     taskName.substringAfterLast(':').contains("release", ignoreCase = true)
@@ -78,7 +78,7 @@ if (releaseBuildRequested) {
         ?.replace(":", "")
         ?.lowercase()
     if (actualFingerprint != expectedReleaseCertificateSha256) {
-        throw GradleException("Release signing certificate does not match the approved update signer.")
+        throw GradleException("Release signing certificate does not match the configured release signer.")
     }
 }
 

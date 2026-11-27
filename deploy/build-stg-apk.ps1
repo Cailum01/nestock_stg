@@ -12,12 +12,22 @@ $Service = 'nestock-stg-api'
 $GitHubRepository = 'Cailum01/nestock_stg'
 $GoogleClientIdVariable = 'NESTOCK_GOOGLE_CLIENT_ID'
 $RetiredAzureHost = 'nestock-api.ambitiousgrass-c37169f5.eastasia.azurecontainerapps.io'
-$ExpectedSigningCertificateSha256 = '7e940a27cde13001c0cffd0b676c3723ea8cc2622f5ecb35a729bad6af396d27'
+$ExpectedLegacySigningCertificateSha256 = '7e940a27cde13001c0cffd0b676c3723ea8cc2622f5ecb35a729bad6af396d27'
+$ExpectedSigningCertificateSha256 = '8a37ee353bc83da4601dd6e87046ed38cceadec34a7e04297da5fa0c5bc3c271'
+$LegacySigningKeystorePath = Join-Path $env:USERPROFILE '.android\debug.keystore'
+$LegacySigningKeyAlias = 'androiddebugkey'
+$SigningLineagePath = Join-Path $RepositoryRoot 'frontend\android\app\stg-signing-lineage.bin'
+$SigningRotationMinSdkVersion = 28
 $SigningEnvironmentVariables = @(
     'NESTOCK_ANDROID_KEYSTORE_PATH',
     'NESTOCK_ANDROID_STORE_PASSWORD',
     'NESTOCK_ANDROID_KEY_ALIAS',
     'NESTOCK_ANDROID_KEY_PASSWORD'
+)
+$SigningSensitiveEnvironmentVariables = @(
+    $SigningEnvironmentVariables
+    'NESTOCK_ANDROID_LEGACY_STORE_PASSWORD'
+    'NESTOCK_ANDROID_LEGACY_KEY_PASSWORD'
 )
 
 function Invoke-QuietNative {
@@ -129,9 +139,36 @@ function Initialize-ReleaseSigningConfiguration {
     }
     $actualFingerprint = ($Matches.digest -replace ':', '').ToLowerInvariant()
     if ($actualFingerprint -ne $ExpectedSigningCertificateSha256) {
-        throw 'Release signing is blocked; the configured key does not match the approved update signer.'
+        throw 'Release signing is blocked; the configured key does not match the approved release signer.'
     }
 
+    if (-not (Test-Path -LiteralPath $LegacySigningKeystorePath -PathType Leaf)) {
+        throw 'Release signing is blocked; the v1.0.6 migration signer is unavailable.'
+    }
+    if (-not (Test-Path -LiteralPath $SigningLineagePath -PathType Leaf)) {
+        throw 'Release signing is blocked; the committed Android signing lineage is unavailable.'
+    }
+    $env:NESTOCK_ANDROID_LEGACY_STORE_PASSWORD = 'android'
+    $env:NESTOCK_ANDROID_LEGACY_KEY_PASSWORD = 'android'
+    $legacyOutput = @(& $keytool.Source -list -v `
+        -keystore $LegacySigningKeystorePath `
+        -alias $LegacySigningKeyAlias `
+        -storepass:env NESTOCK_ANDROID_LEGACY_STORE_PASSWORD 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Release signing is blocked; the v1.0.6 migration signer could not be verified.'
+    }
+    $legacyFingerprintLine = @(
+        $legacyOutput | Where-Object { [string]$_ -match 'SHA256:' }
+    ) | Select-Object -First 1
+    if ([string]$legacyFingerprintLine -notmatch 'SHA256:\s*(?<digest>(?:[0-9A-Fa-f]{2}:?){32})') {
+        throw 'Release signing is blocked; the migration signer has no SHA-256 fingerprint.'
+    }
+    $legacyFingerprint = ($Matches.digest -replace ':', '').ToLowerInvariant()
+    if ($legacyFingerprint -ne $ExpectedLegacySigningCertificateSha256) {
+        throw 'Release signing is blocked; the migration signer does not match the v1.0.6 certificate.'
+    }
+    Remove-Item Env:NESTOCK_ANDROID_LEGACY_STORE_PASSWORD,
+        Env:NESTOCK_ANDROID_LEGACY_KEY_PASSWORD -ErrorAction SilentlyContinue
 }
 
 function Get-ApkSignerPath {
@@ -181,20 +218,80 @@ function Test-ApkSignerFingerprint {
         [string]$ApkPath
     )
 
-    $signerOutput = @(& $script:ApkSignerPath verify --print-certs $ApkPath 2>$null)
-    if ($LASTEXITCODE -ne 0) {
-        throw 'APK verification failed; apksigner could not validate the APK signature.'
-    }
-    $fingerprints = @(
-        foreach ($line in $signerOutput) {
-            if ([string]$line -match 'Signer #\d+ certificate SHA-256 digest:\s*(?<digest>[0-9A-Fa-f]{64})') {
-                $Matches.digest.ToLowerInvariant()
-            }
+    $platformSigners = @(
+        [pscustomobject]@{
+            MinimumSdk = 27
+            ExpectedFingerprint = $ExpectedLegacySigningCertificateSha256
+            Description = 'legacy update signer before Android 9'
+        },
+        [pscustomobject]@{
+            MinimumSdk = $SigningRotationMinSdkVersion
+            ExpectedFingerprint = $ExpectedSigningCertificateSha256
+            Description = 'rotated release signer on Android 9 and later'
         }
     )
-    if ($fingerprints.Count -ne 1 -or
-        $fingerprints[0] -ne $ExpectedSigningCertificateSha256) {
-        throw 'APK verification failed; the release certificate does not match the approved update signer.'
+    foreach ($platformSigner in $platformSigners) {
+        $signerOutput = @(& $script:ApkSignerPath verify `
+            --print-certs `
+            --min-sdk-version $platformSigner.MinimumSdk `
+            --max-sdk-version $platformSigner.MinimumSdk `
+            $ApkPath 2>$null)
+        if ($LASTEXITCODE -ne 0) {
+            throw "APK verification failed for the $($platformSigner.Description)."
+        }
+        $fingerprints = @(
+            foreach ($line in $signerOutput) {
+                if ([string]$line -match 'Signer #\d+ certificate SHA-256 digest:\s*(?<digest>[0-9A-Fa-f]{64})') {
+                    $Matches.digest.ToLowerInvariant()
+                }
+            }
+        )
+        if ($fingerprints.Count -ne 1 -or
+            $fingerprints[0] -ne $platformSigner.ExpectedFingerprint) {
+            throw "APK verification failed; the signer is not correct for the $($platformSigner.Description)."
+        }
+    }
+}
+
+function Sign-ApkWithLineage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ApkPath
+    )
+
+    $rotatedApkPath = "$ApkPath.rotated-$([guid]::NewGuid().ToString('N'))"
+    $env:NESTOCK_ANDROID_LEGACY_STORE_PASSWORD = 'android'
+    $env:NESTOCK_ANDROID_LEGACY_KEY_PASSWORD = 'android'
+    try {
+        $arguments = @(
+            'sign',
+            '--ks', $LegacySigningKeystorePath,
+            '--ks-key-alias', $LegacySigningKeyAlias,
+            '--ks-pass', 'env:NESTOCK_ANDROID_LEGACY_STORE_PASSWORD',
+            '--key-pass', 'env:NESTOCK_ANDROID_LEGACY_KEY_PASSWORD',
+            '--next-signer',
+            '--ks', [Environment]::GetEnvironmentVariable('NESTOCK_ANDROID_KEYSTORE_PATH'),
+            '--ks-key-alias', [Environment]::GetEnvironmentVariable('NESTOCK_ANDROID_KEY_ALIAS'),
+            '--ks-pass', 'env:NESTOCK_ANDROID_STORE_PASSWORD',
+            '--key-pass', 'env:NESTOCK_ANDROID_KEY_PASSWORD',
+            '--lineage', $SigningLineagePath,
+            '--rotation-min-sdk-version', [string]$SigningRotationMinSdkVersion,
+            '--out', $rotatedApkPath,
+            $ApkPath
+        )
+        $null = @(& $script:ApkSignerPath @arguments 2>$null)
+        if ($LASTEXITCODE -ne 0 -or
+            -not (Test-Path -LiteralPath $rotatedApkPath -PathType Leaf)) {
+            throw 'APK signing rotation failed; no rotated artifact was produced.'
+        }
+        [System.IO.File]::Copy($rotatedApkPath, $ApkPath, $true)
+    }
+    finally {
+        Remove-Item Env:NESTOCK_ANDROID_LEGACY_STORE_PASSWORD,
+            Env:NESTOCK_ANDROID_LEGACY_KEY_PASSWORD -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $rotatedApkPath -PathType Leaf) {
+            Remove-Item -LiteralPath $rotatedApkPath -Force
+        }
     }
 }
 
@@ -482,7 +579,7 @@ Write-Host "STG API: $apiBaseUrl"
 Write-Host "Flutter app version: $appVersion"
 Write-Host "Release APK output: $apkPath"
 Write-Host $script:StgReleaseSummary
-Write-Host 'Release signing: PASS (local key custody and approved certificate verified).'
+Write-Host 'Release signing: PASS (local key custody and signer lineage verified).'
 
 if ($releaseGateBlockers.Count -eq 0) {
     Write-Host 'Release gate: PASS (clean current stg checkout; version and build exceed the latest STG release).'
@@ -545,6 +642,7 @@ try {
     if (-not (Test-ApkContainsText -ApkPath $apkPath -Text $googleClientId)) {
         throw 'APK verification failed: the Google client ID was not found in the built APK.'
     }
+    Sign-ApkWithLineage -ApkPath $apkPath
     Test-ApkSignerFingerprint -ApkPath $apkPath
     if (Test-ApkContainsText -ApkPath $apkPath -Text $RetiredAzureHost) {
         throw 'APK verification failed: the retired Azure API host is embedded in the built APK.'
@@ -559,7 +657,7 @@ catch {
             if (-not [string]::IsNullOrEmpty($googleClientId)) {
                 $outputLine = $outputLine.Replace($googleClientId, '[REDACTED]')
             }
-            foreach ($variableName in $SigningEnvironmentVariables) {
+            foreach ($variableName in $SigningSensitiveEnvironmentVariables) {
                 $sensitiveValue = [Environment]::GetEnvironmentVariable($variableName)
                 if (-not [string]::IsNullOrEmpty($sensitiveValue)) {
                     $outputLine = $outputLine.Replace($sensitiveValue, '[REDACTED]')
@@ -593,4 +691,4 @@ finally {
 
 Write-Host "Release APK built and verified: $apkPath"
 Write-Host "Version: $appVersion"
-Write-Host 'Verified: approved update signer, GCP API URL, and Google OAuth client ID are present; retired Azure host is absent.'
+Write-Host 'Verified: legacy and rotated Android signers, GCP API URL, and Google OAuth client ID are present; retired Azure host is absent.'

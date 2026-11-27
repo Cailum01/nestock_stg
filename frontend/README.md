@@ -34,14 +34,16 @@ APK. It stops before invoking Flutter when the client ID is missing. It requires
 authenticated `gcloud` access; do not copy the client ID into source or local
 configuration files.
 
-Release APKs use a separate explicit Gradle `release` signing configuration.
-The approved local keystore, passwords, and alias are supplied through the
-`NESTOCK_ANDROID_KEYSTORE_PATH`, `NESTOCK_ANDROID_STORE_PASSWORD`,
-`NESTOCK_ANDROID_KEY_ALIAS`, and `NESTOCK_ANDROID_KEY_PASSWORD` environment
-variables. The release helper fails closed unless the keystore is private to the
-current Windows user and its certificate matches the existing update signer.
-Do not generate or replace this keystore; missing credentials or a different
-certificate require stopping the release build.
+Release APKs use a separate explicit Gradle `release` signing configuration
+with a new private key. The release helper verifies a certificate lineage from
+the v1.0.6 Android debug certificate to the new key. Android 9+ accepts the
+rotated signer for in-place updates with app data preserved; the lineage
+disallows rollback to the old signer. Android 8.1 and earlier continue using
+the legacy signer for compatibility. The helper requires the new keystore,
+passwords, and alias through `NESTOCK_ANDROID_KEYSTORE_PATH`,
+`NESTOCK_ANDROID_STORE_PASSWORD`, `NESTOCK_ANDROID_KEY_ALIAS`, and
+`NESTOCK_ANDROID_KEY_PASSWORD`. Keep the private key and its encrypted backup
+outside source control.
 
 ## Release version
 

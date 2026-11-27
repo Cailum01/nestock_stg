@@ -20,6 +20,20 @@ Google ID token and returns a separate Nestock bearer. Configure the Android
 package name and signing SHA-1 in the Google OAuth client; never put a client
 secret in the app.
 
+### STG debug/test APK
+
+From the repository root, build a staging APK with:
+
+```powershell
+.\deploy\build-stg-debug-apk.ps1
+```
+
+The script reads the STG API URL and Google client ID from Cloud Run, supplies
+them as Dart defines, and verifies the client ID is embedded in the resulting
+APK. It stops before invoking Flutter when the client ID is missing. It requires
+authenticated `gcloud` access; do not copy the client ID into source or local
+configuration files.
+
 ## Release version
 
 `pubspec.yaml` is the Android release metadata source: `MAJOR.MINOR.PATCH` is

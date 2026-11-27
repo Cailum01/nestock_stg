@@ -99,7 +99,14 @@ connect it by USB, run `adb reverse tcp:8000 tcp:8000` and pass
 dart format --output=none --set-exit-if-changed lib test
 flutter analyze
 flutter test
-flutter build apk --debug
+```
+
+For a staging debug/test APK, run this from the repository root in PowerShell.
+It reads the Google client ID and API URL from the configured STG Cloud Run
+service and refuses to build if either is unavailable:
+
+```powershell
+.\deploy\build-stg-debug-apk.ps1
 ```
 
 On macOS, also validate `flutter build ios --simulator` and launch on a simulator.

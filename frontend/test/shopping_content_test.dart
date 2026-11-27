@@ -155,6 +155,22 @@ void main() {
     expect(find.byKey(const Key('shopping-add-entry')), findsOneWidget);
   });
 
+  testWidgets('add form fields have 12px vertical gaps', (tester) async {
+    await tester.pumpWidget(panel());
+    await tester.pumpAndSettle();
+    await openAdd(tester);
+
+    final nameRect = tester.getRect(find.byKey(const Key('shopping-add-name')));
+    final quantityRect = tester.getRect(
+      find.byKey(const Key('shopping-add-quantity')),
+    );
+    final unitRect = tester.getRect(find.byKey(const Key('shopping-add-unit')));
+
+    expect(quantityRect.top - nameRect.bottom, 12);
+    expect(unitRect.top - quantityRect.bottom, 12);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('valid item name is persisted through the Shopping client', (
     tester,
   ) async {

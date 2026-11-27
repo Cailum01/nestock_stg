@@ -236,6 +236,7 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
                 textInputAction: TextInputAction.done,
                 decoration: const InputDecoration(labelText: '商品名稱'),
               ),
+              const SizedBox(height: 12),
               TextField(
                 key: const Key('shopping-add-quantity'),
                 controller: _quantityController,
@@ -243,6 +244,7 @@ class _ShoppingOverlayState extends State<ShoppingOverlay> {
                 keyboardType: TextInputType.number,
                 decoration: const InputDecoration(labelText: '數量（選填）'),
               ),
+              const SizedBox(height: 12),
               TextField(
                 key: const Key('shopping-add-unit'),
                 controller: _unitController,

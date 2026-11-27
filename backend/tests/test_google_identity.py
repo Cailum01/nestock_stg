@@ -18,11 +18,12 @@ class FakeGoogleInstallRepository:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    async def provision_google_install(self, **kwargs: Any) -> None:
+    async def provision_google_install(self, **kwargs: Any) -> str:
         self.calls.append(kwargs)
+        return "default-household"
 
 
-def test_google_exchange_issues_install_credential_without_household_scope() -> None:
+def test_google_exchange_issues_install_credential_and_default_household() -> None:
     repository = FakeGoogleInstallRepository()
 
     def verify(token: str, audience: str) -> dict[str, Any]:
@@ -41,9 +42,10 @@ def test_google_exchange_issues_install_credential_without_household_scope() -> 
         verifier=verify,
     )
 
-    device_id, bearer = asyncio.run(service.authenticate("signed-google-id-token"))
+    device_id, bearer, household_id = asyncio.run(service.authenticate("signed-google-id-token"))
 
     assert device_id
+    assert household_id == "default-household"
     assert len(bearer) >= 32
     assert len(repository.calls) == 1
     call = repository.calls[0]
@@ -53,6 +55,8 @@ def test_google_exchange_issues_install_credential_without_household_scope() -> 
     assert device.credential_hash != bearer
     assert call["max_per_hour"] == GOOGLE_INSTALLS_PER_HOUR
     assert call["window"] == GOOGLE_INSTALL_WINDOW == timedelta(hours=1)
+    assert len(call["subject_hash"]) == 64
+    assert call["subject_hash"] != "google-subject"
 
 
 def test_google_exchange_fails_closed_before_install_persistence() -> None:

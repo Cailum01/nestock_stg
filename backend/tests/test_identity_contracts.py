@@ -247,11 +247,16 @@ def test_identity_http_request_and_response_envelopes_round_trip():
     )
     google_response = GoogleIdentityResponse(
         device_id="install-1",
+        household_id="household-1",
         bearer_credential="b" * 32,
     )
     assert GoogleIdentityRequest.model_validate(google_request.model_dump())
     assert GoogleIdentityResponse.model_validate(google_response.model_dump())
-    assert set(GoogleIdentityResponse.model_fields) == {"device_id", "bearer_credential"}
+    assert set(GoogleIdentityResponse.model_fields) == {
+        "device_id",
+        "household_id",
+        "bearer_credential",
+    }
 
     bootstrap_request = BootstrapInstallRequest(bootstrap_challenge="c" * 24)
     bootstrap_response = BootstrapInstallResponse(
@@ -428,7 +433,6 @@ def test_http_identity_envelopes_reject_invalid_or_untrusted_authorization_field
             household_id="household-a",
         )
     for side_effect in (
-        {"household_id": "household-a"},
         {"default_household_id": "household-a"},
         {"membership": {"household_id": "household-a", "role": "owner"}},
         {"invite_code": "i" * 24},
@@ -436,6 +440,7 @@ def test_http_identity_envelopes_reject_invalid_or_untrusted_authorization_field
         with pytest.raises(ValidationError):
             GoogleIdentityResponse(
                 device_id="install-1",
+                household_id="household-1",
                 bearer_credential="b" * 32,
                 **side_effect,
             )

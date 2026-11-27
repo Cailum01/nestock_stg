@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
+import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from google.api_core.exceptions import AlreadyExists
+from google.api_core.exceptions import Aborted, AlreadyExists
 from google.cloud.firestore_v1 import FieldFilter
 
 from app.models.identity import (
@@ -18,6 +20,7 @@ from app.models.identity import (
     HouseholdCreation,
     HouseholdInviteRecord,
     HouseholdMembership,
+    HouseholdRecord,
     HouseholdRecoveryRecord,
     HouseholdRole,
 )
@@ -60,6 +63,25 @@ def _parse_timestamp(value: object) -> datetime | None:
         except ValueError:
             return None
     return None
+
+
+def _run_transaction_with_contention_retry(
+    client: Any,
+    callback: Any,
+    *,
+    max_attempts: int = 100,
+) -> Any:
+    """Retry aborted commits with jitter and a fresh Firestore transaction."""
+    for attempt in range(max_attempts):
+        try:
+            return _run_transaction(client, callback, max_attempts=1)
+        except ValueError as error:
+            if not isinstance(error.__cause__, Aborted) or attempt + 1 == max_attempts:
+                raise
+            ceiling = min(0.05, 0.002 * (2 ** min(attempt, 5)))
+            jitter = uuid.uuid4().int / (2**128)
+            time.sleep(0.001 + jitter * (ceiling - 0.001))
+    raise AssertionError("Transaction retry loop exited unexpectedly.")
 
 
 def _read_model(
@@ -263,18 +285,28 @@ class FirestoreIdentityRepository(IdentityRepository):
         now: datetime,
         max_per_hour: int,
         window: timedelta,
-    ) -> None:
-        """Atomically persist a verified Google install without household access."""
+    ) -> str:
+        """Atomically create/reuse an account household and grant this install access."""
         if len(subject_hash) != 64 or any(
             character not in "0123456789abcdef" for character in subject_hash
         ):
             raise ValueError("Google subject must be represented by a SHA-256 digest.")
 
+        identity_ref = self._client.document(f"google_identities/{subject_hash}")
         limit_ref = self._client.document(f"identity_attempt_limits/google-install-{subject_hash}")
         installation_ref = self._client.document(f"installations/{device.device_id}")
         cutoff = _utc(now) - window
+        candidate_household_id = uuid.uuid4().hex
+        candidate_household = HouseholdRecord(
+            household_id=candidate_household_id,
+            created_by_device_id=device.device_id,
+            created_at=now,
+        )
+        mapped_household, household_document = _identity_write(candidate_household)
+        result: dict[str, str] = {"household_id": ""}
 
         def commit(transaction: Any) -> None:
+            identity_snapshot = _single_snapshot(transaction, identity_ref)
             limit_snapshot = _single_snapshot(transaction, limit_ref)
             limit_document = (
                 dict(limit_snapshot.to_dict() or {})
@@ -293,7 +325,75 @@ class FirestoreIdentityRepository(IdentityRepository):
             if installation_snapshot is not None and installation_snapshot.exists:
                 raise ValueError("Generated Google installation identifier already exists.")
 
-            mapped_device, device_document = _identity_write(device)
+            identity_document = (
+                dict(identity_snapshot.to_dict() or {})
+                if identity_snapshot is not None and identity_snapshot.exists
+                else None
+            )
+            if identity_document is None:
+                household_id = candidate_household_id
+                household_ref = self._client.document(mapped_household.path)
+                is_new_household = True
+            else:
+                if (
+                    identity_document.get("record_type") != "google_identity"
+                    or identity_document.get("id") != subject_hash
+                    or identity_document.get("subject_hash") != subject_hash
+                ):
+                    raise ValueError("Stored Google identity mapping is inconsistent.")
+                household_id = identity_document.get("default_household_id")
+                if not isinstance(household_id, str) or not household_id:
+                    raise ValueError("Stored Google identity mapping has no default household.")
+                household_ref = self._client.document(f"households/{household_id}")
+                is_new_household = False
+
+            membership = HouseholdMembership(
+                household_id=household_id,
+                device_id=device.device_id,
+                role=HouseholdRole.OWNER if is_new_household else HouseholdRole.MEMBER,
+                created_at=now,
+            )
+            mapped_membership, membership_document = _membership_write(membership)
+            membership_ref = self._client.document(mapped_membership.path)
+            household_snapshot = _single_snapshot(transaction, household_ref)
+            membership_snapshot = _single_snapshot(transaction, membership_ref)
+            if is_new_household:
+                if household_snapshot is not None and household_snapshot.exists:
+                    raise ValueError("Generated Google household identifier already exists.")
+                if membership_snapshot is not None and membership_snapshot.exists:
+                    raise ValueError("Generated Google membership identifier already exists.")
+            else:
+                stored_household = (
+                    dict(household_snapshot.to_dict() or {})
+                    if household_snapshot is not None and household_snapshot.exists
+                    else {}
+                )
+                if stored_household.get("record_type") != "household":
+                    raise ValueError("Google identity's default household is missing.")
+                if (
+                    stored_household.get("id") != household_id
+                    or stored_household.get("household_id") != household_id
+                ):
+                    raise ValueError("Google identity's default household mapping is inconsistent.")
+                if membership_snapshot is not None and membership_snapshot.exists:
+                    raise ValueError("Generated Google installation already has membership.")
+
+            installed_device = device.model_copy(update={"default_household_id": household_id})
+            mapped_device, device_document = _identity_write(installed_device)
+
+            if is_new_household:
+                transaction.create(household_ref, household_document)
+                transaction.create(
+                    identity_ref,
+                    {
+                        "id": subject_hash,
+                        "record_type": "google_identity",
+                        "subject_hash": subject_hash,
+                        "default_household_id": household_id,
+                        "created_at": _utc(now).isoformat(),
+                    },
+                )
+            transaction.create(membership_ref, membership_document)
             transaction.create(installation_ref, device_document)
             transaction.set(
                 limit_ref,
@@ -303,13 +403,10 @@ class FirestoreIdentityRepository(IdentityRepository):
                     "expires_at": max(timestamps) + window,
                 },
             )
+            result["household_id"] = household_id
 
-        await asyncio.to_thread(
-            _run_transaction,
-            self._client,
-            commit,
-            max_attempts=20,
-        )
+        await asyncio.to_thread(_run_transaction_with_contention_retry, self._client, commit)
+        return result["household_id"]
 
     async def bootstrap_install(
         self,

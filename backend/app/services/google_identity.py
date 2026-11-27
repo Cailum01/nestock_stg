@@ -42,7 +42,7 @@ class GoogleIdentityRepository(Protocol):
         now: datetime,
         max_per_hour: int,
         window: timedelta,
-    ) -> None: ...
+    ) -> str: ...
 
 
 def verify_google_id_token(token: str, audience: str) -> Mapping[str, Any]:
@@ -80,7 +80,7 @@ class GoogleIdentityService:
         self._audience = audience.strip()
         self._verifier = verifier
 
-    async def authenticate(self, google_id_token: str) -> tuple[str, str]:
+    async def authenticate(self, google_id_token: str) -> tuple[str, str, str]:
         if not self._audience:
             raise RuntimeError("Google OAuth audience is not configured.")
         try:
@@ -106,7 +106,7 @@ class GoogleIdentityService:
             credential_hash=hash_secret(bearer),
             created_at=now,
         )
-        await self._repository.provision_google_install(
+        household_id = await self._repository.provision_google_install(
             subject_hash=hash_secret(subject),
             device=device,
             now=now,
@@ -114,4 +114,4 @@ class GoogleIdentityService:
             window=GOOGLE_INSTALL_WINDOW,
         )
         logger.info("identity.google.install.issued device_id=%s", device_id)
-        return device_id, bearer
+        return device_id, bearer, household_id

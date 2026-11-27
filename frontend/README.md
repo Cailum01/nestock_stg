@@ -39,7 +39,8 @@ with a new private key. The release helper verifies a certificate lineage from
 the v1.0.6 Android debug certificate to the new key. Android 9+ accepts the
 rotated signer for in-place updates with app data preserved; the lineage
 disallows rollback to the old signer. Android 8.1 and earlier continue using
-the legacy signer for compatibility. The helper requires the new keystore,
+the legacy signer for compatibility. The helper verifies the minimum supported
+Android API 24 and the rotated API 28 boundary. It requires the new keystore,
 passwords, and alias through `NESTOCK_ANDROID_KEYSTORE_PATH`,
 `NESTOCK_ANDROID_STORE_PASSWORD`, `NESTOCK_ANDROID_KEY_ALIAS`, and
 `NESTOCK_ANDROID_KEY_PASSWORD`. Keep the private key and its encrypted backup

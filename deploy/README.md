@@ -21,7 +21,7 @@ Administrators.
 The helper verifies the new release certificate and the v1.0.6 migration
 certificate before building. It signs the APK with the committed public
 certificate lineage in `frontend/android/app/stg-signing-lineage.bin`, then
-verifies the effective signer for Android API 27 and API 28. Android 9+ uses
+verifies the effective signer for Android API 24 and API 28. Android 9+ uses
 the new release key and can update v1.0.6 in place without uninstalling or
 clearing app data; the lineage grants installed-data transfer and disallows
 rollback to the old signer. Older Android versions continue using the old

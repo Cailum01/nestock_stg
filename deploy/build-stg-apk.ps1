@@ -220,9 +220,9 @@ function Test-ApkSignerFingerprint {
 
     $platformSigners = @(
         [pscustomobject]@{
-            MinimumSdk = 27
+            MinimumSdk = 24
             ExpectedFingerprint = $ExpectedLegacySigningCertificateSha256
-            Description = 'legacy update signer before Android 9'
+            Description = 'legacy update signer on Android 7 through 8.1'
         },
         [pscustomobject]@{
             MinimumSdk = $SigningRotationMinSdkVersion
